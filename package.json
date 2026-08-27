@@ -9,6 +9,6 @@
     "@truefoundry/trueforge": "0.1.4"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.14.0"
   }
 }

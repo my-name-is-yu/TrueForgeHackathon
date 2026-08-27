@@ -6,7 +6,7 @@ Project workspace for the [Agent Harness Hackathon](https://www.wemakedevs.org/h
 
 Requirements:
 
-- Node.js 22 or later
+- Node.js 22.14 or later
 - A model-provider API key
 
 Install and start the pinned TrueForge version:
