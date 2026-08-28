@@ -9,7 +9,7 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>exec ./scripts/symphony start</string>
+    <string>exec /bin/zsh ./scripts/symphony start</string>
   </array>
 
   <key>WorkingDirectory</key>
