@@ -63,6 +63,10 @@ per-issue workspaces live under `.env` and `.symphony/`. The source build applie
 [`symphony/patches/add-castore.patch`](symphony/patches/add-castore.patch) to the pinned
 official commit to supply the CA certificate bundle missing from the macOS release executable.
 
+The Mac mini service definition is [`ops/com.trueforge.symphony.plist`](ops/com.trueforge.symphony.plist).
+Inspect it with `launchctl print gui/$(id -u)/com.trueforge.symphony` and stop it with
+`launchctl bootout gui/$(id -u)/com.trueforge.symphony`.
+
 ## Participation checklist
 
 - [x] Complete the official hackathon registration form
@@ -82,4 +86,3 @@ official commit to supply the CA certificate bundle missing from the macOS relea
 ## Local data and secrets
 
 TrueForge standalone mode is intended for localhost development, not shared internet exposure. Its local state currently lives under `~/Library/Application Support/trueforge/`; it is deliberately not part of the repository.
-
