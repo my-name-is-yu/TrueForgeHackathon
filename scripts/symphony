@@ -27,10 +27,7 @@ load_env_file() {
           export "$key=$value"
         fi
         ;;
-      *)
-        echo "Unsupported entry in .env: ${line%%=*}" >&2
-        exit 1
-        ;;
+      *) continue ;;
     esac
   done < "$ENV_FILE"
 }
@@ -54,36 +51,51 @@ install_symphony() {
     git clone https://github.com/openai/symphony.git "$SOURCE_DIR"
   fi
 
-  source_changes=$(git -C "$SOURCE_DIR" diff --name-only | sort)
-  if [ -n "$(git -C "$SOURCE_DIR" ls-files --others --exclude-standard)" ] ||
-     { [ -n "$source_changes" ] &&
-       [ "$source_changes" != "elixir/mix.exs
-elixir/mix.lock" ]; }; then
+  if [ -n "$(git -C "$SOURCE_DIR" ls-files --others --exclude-standard)" ]; then
     echo "Symphony source has unexpected local changes: $SOURCE_DIR" >&2
     echo "Refusing to overwrite the managed source checkout." >&2
     exit 1
   fi
 
-  patch_applied=false
-  if git -C "$SOURCE_DIR" apply --unidiff-zero --reverse --check "$CASTORE_PATCH" 2>/dev/null; then
-    patch_applied=true
-  elif [ -n "$source_changes" ]; then
-    echo "Symphony source changes do not match the managed CAStore patch." >&2
-    exit 1
-  fi
-
   current_commit=$(git -C "$SOURCE_DIR" rev-parse HEAD)
   if [ "$current_commit" != "$SYMPHONY_COMMIT" ]; then
-    if [ "$patch_applied" = true ]; then
-      echo "Symphony source is patched at an unexpected commit; refusing to switch it." >&2
+    if ! git -C "$SOURCE_DIR" diff --quiet ||
+       ! git -C "$SOURCE_DIR" diff --cached --quiet; then
+      echo "Symphony source has changes at an unexpected commit; refusing to switch it." >&2
       exit 1
     fi
     git -C "$SOURCE_DIR" fetch --depth 1 origin "$SYMPHONY_COMMIT"
     git -C "$SOURCE_DIR" checkout --detach "$SYMPHONY_COMMIT"
   fi
 
-  if [ "$patch_applied" = false ]; then
+  if ! git -C "$SOURCE_DIR" diff --cached --quiet; then
+    echo "Symphony source has staged changes; refusing to build it." >&2
+    exit 1
+  fi
+
+  if git -C "$SOURCE_DIR" diff --quiet; then
     git -C "$SOURCE_DIR" apply --unidiff-zero "$CASTORE_PATCH"
+  else
+    expected_index=$(mktemp "${TMPDIR:-/tmp}/symphony-expected-index.XXXXXX")
+    actual_index=$(mktemp "${TMPDIR:-/tmp}/symphony-actual-index.XXXXXX")
+    rm -f "$expected_index" "$actual_index"
+    trap 'rm -f "$expected_index" "$actual_index"' EXIT HUP INT TERM
+
+    GIT_INDEX_FILE="$expected_index" git -C "$SOURCE_DIR" read-tree "$SYMPHONY_COMMIT"
+    GIT_INDEX_FILE="$expected_index" git -C "$SOURCE_DIR" apply --cached --unidiff-zero "$CASTORE_PATCH"
+    expected_tree=$(GIT_INDEX_FILE="$expected_index" git -C "$SOURCE_DIR" write-tree)
+
+    GIT_INDEX_FILE="$actual_index" git -C "$SOURCE_DIR" read-tree "$SYMPHONY_COMMIT"
+    GIT_INDEX_FILE="$actual_index" git -C "$SOURCE_DIR" add -u
+    actual_tree=$(GIT_INDEX_FILE="$actual_index" git -C "$SOURCE_DIR" write-tree)
+
+    if [ "$actual_tree" != "$expected_tree" ]; then
+      echo "Symphony source changes do not exactly match the managed CAStore patch." >&2
+      exit 1
+    fi
+
+    rm -f "$expected_index" "$actual_index"
+    trap - EXIT HUP INT TERM
   fi
 
   (
