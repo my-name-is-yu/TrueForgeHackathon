@@ -53,9 +53,9 @@ personal API key:
 ```sh
 cp .env.example .env
 brew install mise
-./scripts/symphony install
-./scripts/symphony check
-./scripts/symphony start
+zsh scripts/symphony install
+zsh scripts/symphony check
+zsh scripts/symphony start
 ```
 
 Local credentials, the pinned Symphony source/build, logs, generated workflow files, and
