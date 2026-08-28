@@ -178,7 +178,7 @@ render_workflow() {
 check_setup() {
   require_build_tools
   [ -x "$SYMPHONY_BIN" ] || {
-    echo "Symphony is not built. Run: ./scripts/symphony install" >&2
+    echo "Symphony is not built. Run: zsh scripts/symphony install" >&2
     exit 1
   }
   render_workflow
@@ -186,7 +186,7 @@ check_setup() {
   built_commit=$(git -C "$SOURCE_DIR" rev-parse HEAD)
   if [ "$built_commit" != "$SYMPHONY_COMMIT" ]; then
     echo "Symphony source is at $built_commit, expected $SYMPHONY_COMMIT." >&2
-    echo "Run: ./scripts/symphony install" >&2
+    echo "Run: zsh scripts/symphony install" >&2
     exit 1
   fi
 
