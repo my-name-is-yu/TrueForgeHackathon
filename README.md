@@ -28,6 +28,45 @@ The current local setup has been smoke-tested with:
 
 Provider keys and personal data must not be added to this repository or shown in the demo video.
 
+## Symphony + Linear
+
+[OpenAI Symphony](https://github.com/openai/symphony) monitors a dedicated Linear project
+and dispatches isolated Codex workspaces for explicitly opted-in issues.
+
+Configured Linear resources:
+
+- Workspace/team: `Yu`
+- Project: [TrueForgeHackathon](https://linear.app/yuarenotyu/project/trueforgehackathon-e396beca278f)
+- Project slug: `trueforgehackathon-e396beca278f`
+- Active states: `Todo`, `In Progress`
+- Review state: `In Review`
+- Required issue label: `symphony`
+
+Symphony runs continuously on the Mac mini. The workflow deliberately uses one concurrent
+agent, isolated workspaces, `yu/` branches, human review before merge, and no automatic merge.
+The HTTP dashboard is disabled because the pinned preview build reports known vulnerabilities
+in several web-server dependencies.
+
+For a fresh host, create the ignored environment file and add a narrowly scoped Linear
+personal API key:
+
+```sh
+cp .env.example .env
+brew install mise
+zsh scripts/symphony install
+zsh scripts/symphony check
+zsh scripts/symphony start
+```
+
+Local credentials, the pinned Symphony source/build, logs, generated workflow files, and
+per-issue workspaces live under `.env` and `.symphony/`. The source build applies only
+[`symphony/patches/add-castore.patch`](symphony/patches/add-castore.patch) to the pinned
+official commit to supply the CA certificate bundle missing from the macOS release executable.
+
+The Mac mini service definition is [`ops/com.trueforge.symphony.plist`](ops/com.trueforge.symphony.plist).
+Inspect it with `launchctl print gui/$(id -u)/com.trueforge.symphony` and stop it with
+`launchctl bootout gui/$(id -u)/com.trueforge.symphony`.
+
 ## Participation checklist
 
 - [x] Complete the official hackathon registration form

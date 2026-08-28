@@ -1,0 +1,64 @@
+---
+tracker:
+  kind: linear
+  provider:
+    api_key: $LINEAR_API_KEY
+    project_slug: "__LINEAR_PROJECT_SLUG__"
+    assignee: $LINEAR_ASSIGNEE
+  required_labels:
+    - symphony
+  active_states:
+    - Todo
+    - In Progress
+  terminal_states:
+    - In Review
+    - Closed
+    - Cancelled
+    - Canceled
+    - Duplicate
+    - Done
+polling:
+  interval_ms: 5000
+workspace:
+  root: $SYMPHONY_WORKSPACE_ROOT
+hooks:
+  after_create: |
+    git clone --depth 1 "$SOURCE_REPO_URL" .
+agent:
+  max_concurrent_agents: 1
+  max_turns: 12
+codex:
+  command: codex app-server
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: true
+---
+
+You are implementing Linear issue `{{ issue.identifier }}` in an isolated clone of
+the TrueForgeHackathon repository.
+
+Issue title: {{ issue.title }}
+Current state: {{ issue.state }}
+Issue URL: {{ issue.url }}
+
+{% if issue.description %}
+Description:
+{{ issue.description }}
+{% else %}
+The issue has no description. Treat missing acceptance criteria as a blocker and
+record that clearly in Linear instead of inventing product requirements.
+{% endif %}
+
+Operating rules:
+
+1. Work only inside the provided repository clone. Never inspect or modify another checkout.
+2. If the issue is in `Todo`, move it to `In Progress` before changing files.
+3. Reproduce or inspect the current state before implementing. Keep the change limited to the issue.
+4. Preserve unrelated work. Never use destructive Git commands.
+5. Run the most relevant available checks and report exactly what was and was not verified.
+6. Create a branch prefixed with `yu/`, make focused commits, push it, and open a pull request against `main`.
+7. Add the pull request URL and verification evidence to the Linear issue.
+8. Move the issue to `In Review` only after the pull request is ready for review.
+9. Never merge the pull request or mark the issue `Done`; those are human decisions.
+10. If blocked by missing requirements, credentials, or permissions, leave the issue in `In Progress` and add a concise blocker comment.
