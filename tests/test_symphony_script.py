@@ -136,10 +136,17 @@ def test_existing_pr_and_sol_commands_are_unambiguous() -> None:
 def test_review_protocol_requests_each_missing_source_once_per_head() -> None:
     template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
 
-    assert "exactly one top-level request comment" in template
-    assert "`@codex review` for OpenAI Codex" in template
-    assert "`/agentic_review`\n     for Qodo" in template
-    assert "source, exact head SHA, request timestamp" in template
-    assert "Treat that tuple as the idempotency key" in template
-    assert "never\n     publish a second request for the same source and head" in template
+    assert "publish exactly one top-level comment" in template
+    assert "`@codex review`" in template
+    assert "`/agentic_review`" in template
+    assert "OpenAI Codex or" in template
+    assert "first record a `pending` request intent" in template
+    assert "symphony-review-request:v1 source=<codex|qodo> head=<40-char-sha>" in template
+    assert "whose second line is an HTML comment containing" in template
+    assert "Update the intent to `published`" in template
+    assert "source plus full head SHA as the idempotency key" in template
+    assert "never publish a second request for" in template
+    assert "the same source and head" in template
+    assert "reconcile only a comment containing the exact marker" in template
+    assert "never match\n     the command text alone or an older-head request" in template
     assert "A timeout does not authorize another request" in template

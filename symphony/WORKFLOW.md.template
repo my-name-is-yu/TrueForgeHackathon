@@ -102,13 +102,17 @@ Operating rules:
    to `Auto Review` and execute the review protocol below.
 9. Review protocol, always scoped to the recorded head SHA:
    - Re-read current-head reviews and top-level PR comments before requesting a source. For each
-     source that is not already complete for the exact head, use the GitHub connector to publish
-     exactly one top-level request comment: `@codex review` for OpenAI Codex and `/agentic_review`
-     for Qodo. Immediately record the source, exact head SHA, request timestamp, and returned
-     comment ID or URL in the Workpad. Treat that tuple as the idempotency key: on resume, never
-     publish a second request for the same source and head. If publishing returns an ambiguous
-     result, re-read top-level comments and record an existing matching request; if none exists,
-     move to `Blocked`. A timeout does not authorize another request for the same source and head.
+     source that is not already complete for the exact head, first record a `pending` request intent
+     in the Workpad with source, full head SHA, timestamp, and the deterministic marker
+     `symphony-review-request:v1 source=<codex|qodo> head=<40-char-sha>`. Then use the GitHub
+     connector to publish exactly one top-level comment whose first line is `@codex review` for
+     OpenAI Codex or `/agentic_review` for Qodo and whose second line is an HTML comment containing
+     that exact marker. Update the intent to `published` with the returned comment ID or URL. Treat
+     source plus full head SHA as the idempotency key: on resume, never publish a second request for
+     the same source and head. For a `pending` or ambiguous publication, re-read top-level comments
+     and reconcile only a comment containing the exact marker for that source and head; never match
+     the command text alone or an older-head request. If the exact marker is absent, move to
+     `Blocked`. A timeout does not authorize another request for the same source and head.
    - Poll the GitHub connector every 30 seconds for both the configured OpenAI Codex review and
      Qodo review. A source completes only when its review/check/comment can be attributed to this
      PR head after the push; old-head comments are context only. Wait at most 10 minutes per source.
