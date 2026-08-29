@@ -183,13 +183,20 @@ render_workflow() {
   mkdir -p "$RUNTIME_DIR"
 
   escaped_slug=$(printf '%s' "$LINEAR_PROJECT_SLUG" | sed 's/[&|]/\\&/g')
+  controller_path="$PROJECT_ROOT/scripts/symphony_sol_review"
+  quoted_controller_inner=$(printf '%s' "$controller_path" | sed "s/'/'\\\\''/g")
+  quoted_controller_word="'$quoted_controller_inner'"
+  escaped_controller_word=$(printf '%s' "$quoted_controller_word" | sed 's/[\\&|]/\\&/g')
   temporary_workflow=$(mktemp "$RUNTIME_DIR/.WORKFLOW.md.XXXXXX")
   temporary_sha=$(mktemp "$RUNTIME_DIR/.WORKFLOW.sha256.XXXXXX")
   trap 'rm -f "$temporary_workflow" "$temporary_sha"' EXIT HUP INT TERM
-  sed "s|__LINEAR_PROJECT_SLUG__|$escaped_slug|g" "$TEMPLATE" > "$temporary_workflow"
+  sed \
+    -e "s|__LINEAR_PROJECT_SLUG__|$escaped_slug|g" \
+    -e "s|__SYMPHONY_CONTROLLER_WORD__|$escaped_controller_word|g" \
+    "$TEMPLATE" > "$temporary_workflow"
 
-  if grep -q '__LINEAR_PROJECT_SLUG__' "$temporary_workflow"; then
-    echo "Failed to render the Linear project slug." >&2
+  if grep -Eq '__LINEAR_PROJECT_SLUG__|__SYMPHONY_CONTROLLER_WORD__' "$temporary_workflow"; then
+    echo "Failed to render required workflow values." >&2
     exit 1
   fi
 
