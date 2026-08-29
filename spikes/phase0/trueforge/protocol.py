@@ -234,13 +234,21 @@ class DummyFacade:
         return Counter(self.tool_calls)
 
 
-def _contains_image_content(value: Any) -> bool:
+def _contains_image_content(value: Any, image_data: str | None = None) -> bool:
     if isinstance(value, dict):
         if value.get("type") in {"image", "image_url"}:
             return True
-        return any(_contains_image_content(child) for child in value.values())
+        return any(_contains_image_content(child, image_data) for child in value.values())
     if isinstance(value, list):
-        return any(_contains_image_content(child) for child in value)
+        return any(_contains_image_content(child, image_data) for child in value)
+    if isinstance(value, str):
+        if "data:image/" in value or "iVBORw0KGgo" in value or (image_data is not None and image_data in value):
+            return True
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return False
+        return parsed != value and _contains_image_content(parsed, image_data)
     return False
 
 
@@ -265,8 +273,9 @@ class _ModelServerServer(ThreadingHTTPServer):
 
 
 class ModelServer:
-    def __init__(self, checkout_root: Path) -> None:
+    def __init__(self, checkout_root: Path, image: bytes | None = None) -> None:
         self.checkout_root = checkout_root
+        self.image_data = base64.b64encode(image).decode("ascii") if image is not None else None
         self.request_count = 0
         self.saw_ltr_reference = False
         self.saw_sandbox_analysis = False
@@ -297,7 +306,7 @@ class ModelServer:
                     _json_response(self, 400, {"error": {"message": "invalid model request"}})
                     return
                 owner.request_bodies.append(body)
-                owner.saw_image_data |= _contains_image_content(body)
+                owner.saw_image_data |= _contains_image_content(body, owner.image_data)
                 messages = body.get("messages", [])
                 text = json.dumps(messages, separators=(",", ":"))
                 ltr_match = re.search(r"Result saved to: (.*?)(?:\\n|$)", text)

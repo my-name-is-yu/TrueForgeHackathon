@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import base64
 import json
 from copy import deepcopy
 
 import pytest
 
-from spikes.phase0.trueforge.protocol import DUMMY_TOOLS, PLANNED_TOOLS, inspection_payload, make_png, planned_tool_schemas, png_dimensions
+from spikes.phase0.trueforge.protocol import (
+    DUMMY_TOOLS,
+    PLANNED_TOOLS,
+    _contains_image_content,
+    inspection_payload,
+    make_png,
+    planned_tool_schemas,
+    png_dimensions,
+)
 from spikes.phase0.trueforge.runner import (
     _approval_evidence,
     _contains_boundary_data,
@@ -41,6 +50,11 @@ def test_large_tool_fixture_is_exactly_256_rows() -> None:
 
 def test_image_fixture_is_160_by_120_png() -> None:
     assert png_dimensions(make_png()) == (160, 120)
+
+
+def test_string_encoded_image_payload_is_detected() -> None:
+    image_data = base64.b64encode(make_png()).decode("ascii")
+    assert _contains_image_content({"content": json.dumps({"data": image_data})}, image_data)
 
 
 def _passing_evidence() -> dict:

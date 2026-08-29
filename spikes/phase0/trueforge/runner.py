@@ -474,7 +474,9 @@ def _make_sentinel(directory: Path, prefix: str) -> tuple[Path, bytes]:
 
 def _make_boundary_canary(directory: Path, target: Path, name: str) -> Path:
     path = directory / name
-    path.hardlink_to(target)
+    with target.open("rb") as source, path.open("xb") as destination:
+        shutil.copyfileobj(source, destination)
+    path.chmod(stat.S_IMODE(target.stat().st_mode))
     return path
 
 
@@ -483,24 +485,23 @@ def _trueforge_data_directory(home: Path) -> Path:
     return home / relative / "trueforge"
 
 
-def _boundary_canary_metadata_matches(canaries: list[Path], targets: list[Path]) -> bool:
-    if len(canaries) != len(targets):
+def _boundary_canary_metadata_matches(canaries: list[Path], targets: list[Path], values: list[bytes]) -> bool:
+    if len(canaries) != len(targets) or len(canaries) != len(values):
         return False
-    for canary, target in zip(canaries, targets, strict=True):
+    for canary, target, value in zip(canaries, targets, values, strict=True):
         try:
             canary_metadata = canary.lstat()
             target_metadata = target.stat()
+            canary_value = canary.read_bytes()
         except OSError:
             return False
         if (
             not stat.S_ISREG(canary_metadata.st_mode)
             or stat.S_ISLNK(canary_metadata.st_mode)
-            or canary_metadata.st_dev != target_metadata.st_dev
-            or canary_metadata.st_ino != target_metadata.st_ino
+            or canary_metadata.st_size != target_metadata.st_size
             or canary_metadata.st_mode != target_metadata.st_mode
             or canary_metadata.st_uid != target_metadata.st_uid
-            or canary_metadata.st_gid != target_metadata.st_gid
-            or canary_metadata.st_nlink < 2
+            or canary_value != value
         ):
             return False
     return True
@@ -569,7 +570,7 @@ def run_live_probe() -> dict[str, Any]:
         trueforge = TrueForgeProcess(_free_port(), runtime_directory, home_alias)
         allowed_origin = f"http://localhost:{trueforge.port}"
         facade = DummyFacade("phase0-bearer", allowed_origin, image=image)
-        model = ModelServer(ROOT)
+        model = ModelServer(ROOT, image=image)
         facade.start()
         model.start()
         trueforge.start()
@@ -703,7 +704,13 @@ def run_live_probe() -> dict[str, Any]:
         canary_metadata_valid = (
             checkout_sentinel is not None
             and private_sentinel is not None
-            and _boundary_canary_metadata_matches(boundary_canaries, [checkout_sentinel, private_sentinel])
+            and checkout_value is not None
+            and private_value is not None
+            and _boundary_canary_metadata_matches(
+                boundary_canaries,
+                [checkout_sentinel, private_sentinel],
+                [checkout_value, private_value],
+            )
         )
         private_data_clear = (
             boundary_directory is not None
