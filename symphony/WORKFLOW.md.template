@@ -101,6 +101,14 @@ Operating rules:
    `Reviewed heads - 1`. This is not a Qodo or per-reviewer quota. Move the issue
    to `Auto Review` and execute the review protocol below.
 9. Review protocol, always scoped to the recorded head SHA:
+   - Re-read current-head reviews and top-level PR comments before requesting a source. For each
+     source that is not already complete for the exact head, use the GitHub connector to publish
+     exactly one top-level request comment: `@codex review` for OpenAI Codex and `/agentic_review`
+     for Qodo. Immediately record the source, exact head SHA, request timestamp, and returned
+     comment ID or URL in the Workpad. Treat that tuple as the idempotency key: on resume, never
+     publish a second request for the same source and head. If publishing returns an ambiguous
+     result, re-read top-level comments and record an existing matching request; if none exists,
+     move to `Blocked`. A timeout does not authorize another request for the same source and head.
    - Poll the GitHub connector every 30 seconds for both the configured OpenAI Codex review and
      Qodo review. A source completes only when its review/check/comment can be attributed to this
      PR head after the push; old-head comments are context only. Wait at most 10 minutes per source.

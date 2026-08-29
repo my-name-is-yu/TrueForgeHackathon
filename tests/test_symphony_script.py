@@ -131,3 +131,15 @@ def test_existing_pr_and_sol_commands_are_unambiguous() -> None:
     assert "poll that same session until it exits" in template
     assert "terminate the original session and its child processes" in template
     assert "wait until all of them have exited" in template
+
+
+def test_review_protocol_requests_each_missing_source_once_per_head() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    assert "exactly one top-level request comment" in template
+    assert "`@codex review` for OpenAI Codex" in template
+    assert "`/agentic_review`\n     for Qodo" in template
+    assert "source, exact head SHA, request timestamp" in template
+    assert "Treat that tuple as the idempotency key" in template
+    assert "never\n     publish a second request for the same source and head" in template
+    assert "A timeout does not authorize another request" in template
