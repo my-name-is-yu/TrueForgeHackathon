@@ -17,6 +17,7 @@ const remote = new RemoteMCP({
   headers: {
     Authorization: `Bearer ${process.env.TFY_PHASE0_BEARER}`,
     Origin: process.env.TFY_PHASE0_ORIGIN,
+    'X-Phase0-Image-Probe': '1',
   },
   logger,
   requestTimeoutMs: 10_000,
@@ -34,7 +35,20 @@ if (images.length !== 1 || images[0].mimeType !== 'image/png') {
   throw new Error('expected one PNG image content block');
 }
 const image = Buffer.from(images[0].data, 'base64');
-if (image.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' || image.readUInt32BE(16) !== 160 || image.readUInt32BE(20) !== 120) {
+const hostPathExposed = blocks.some(block => Object.entries(block).some(([key, value]) => {
+  if (key === 'data') return false;
+  if (key === 'path' || key === 'filePath' || key === 'hostPath') return typeof value === 'string';
+  return typeof value === 'string' && (value.startsWith('/') || value.startsWith('file://') || /^[A-Za-z]:[\\/]/.test(value));
+}));
+const width = image.readUInt32BE(16);
+const height = image.readUInt32BE(20);
+if (image.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' || width !== 160 || height !== 120) {
   throw new Error('unexpected image dimensions');
 }
-console.log(JSON.stringify({ image_blocks: images.length, mime_type: images[0].mimeType, image_bytes: image.length }));
+console.log(JSON.stringify({
+  image_blocks: images.length,
+  mime_type: images[0].mimeType,
+  width,
+  height,
+  host_path_exposed: hostPathExposed,
+}));

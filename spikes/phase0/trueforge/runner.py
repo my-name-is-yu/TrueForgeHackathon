@@ -23,6 +23,7 @@ from .protocol import DUMMY_TOOLS, PLANNED_TOOLS, DummyFacade, ModelServer, plan
 
 ROOT = Path(__file__).resolve().parents[3]
 TRUEFORGE_VERSION = "0.1.4"
+SUCCESSFUL_TURN_STATUSES = {"done"}
 
 
 def _free_port() -> int:
@@ -54,6 +55,13 @@ def _request(base_url: str, method: str, path: str, payload: Any | None = None) 
 
 def _data(payload: dict[str, Any]) -> Any:
     return payload.get("data", payload)
+
+
+def _events(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    value = _data(payload)
+    if not isinstance(value, list):
+        return []
+    return [entry.get("event", entry) if isinstance(entry, dict) else {} for entry in value]
 
 
 def _render_cgl_png() -> bytes:
@@ -88,6 +96,7 @@ class TrueForgeProcess:
         self.port = port
         self.runtime_root = runtime_root
         self.process: subprocess.Popen[bytes] | None = None
+        self.temp_directory: Path | None = None
 
     @property
     def base_url(self) -> str:
@@ -98,9 +107,10 @@ class TrueForgeProcess:
         if not executable.is_file():
             raise RuntimeError("TrueForge 0.1.4 runtime is not installed")
         home = self.runtime_root / "home"
-        temp = Path("/tmp") / f"tfy-yu21-{self.port}"
+        temp = self.runtime_root / "tmp"
         home.mkdir()
         temp.mkdir()
+        self.temp_directory = temp
         environment = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": str(home),
@@ -132,14 +142,18 @@ class TrueForgeProcess:
         raise RuntimeError("TrueForge health check timed out")
 
     def stop(self) -> None:
-        if self.process is None or self.process.poll() is not None:
-            return
-        self.process.terminate()
         try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=5)
+            if self.process is not None and self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+        finally:
+            if self.temp_directory is not None:
+                shutil.rmtree(self.temp_directory, ignore_errors=True)
+                self.temp_directory = None
 
 
 def _save_mcp_connection(trueforge: TrueForgeProcess, facade: DummyFacade, bearer: str, origin: str) -> int:
@@ -159,6 +173,139 @@ def _save_mcp_connection(trueforge: TrueForgeProcess, facade: DummyFacade, beare
     )[0]
 
 
+def _remote_tools_attempt(
+    trueforge: TrueForgeProcess,
+    facade: DummyFacade,
+    bearer: str,
+    origin: str,
+) -> dict[str, Any]:
+    request_start = len(facade.requests)
+    saved_status = _save_mcp_connection(trueforge, facade, bearer, origin)
+    trueforge_status, payload = _request(trueforge.base_url, "GET", "/api/v1/mcp-servers/phase0-facade/tools")
+    requests = [request for request in facade.requests[request_start:] if request.get("path") == "/mcp"]
+    return {
+        "saved_status": saved_status,
+        "trueforge_status": trueforge_status,
+        "payload": payload,
+        "request_count": len(requests),
+        "request": requests[0] if len(requests) == 1 else None,
+    }
+
+
+def _rejection_matches(attempt: dict[str, Any], expected_status: int, auth_ok: bool, origin_ok: bool) -> bool:
+    request = attempt.get("request")
+    return (
+        attempt.get("request_count") == 1
+        and attempt.get("trueforge_status") != 200
+        and isinstance(request, dict)
+        and request.get("path") == "/mcp"
+        and request.get("auth_ok") is auth_ok
+        and request.get("origin_ok") is origin_ok
+        and request.get("response_status") == expected_status
+    )
+
+
+def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], bool]:
+    http = evidence["http"]
+    wrong_bearer = _rejection_matches(http["wrong_bearer"], 401, auth_ok=False, origin_ok=True)
+    wrong_origin = _rejection_matches(http["wrong_origin"], 403, auth_ok=True, origin_ok=False)
+    http_tools = http["streamable_http_tools"] is True
+    http_saved = http["saved_connection"] is True
+    http_result = http_saved and http_tools and wrong_bearer and wrong_origin
+
+    ltr = evidence["ltr"]
+    sandbox = evidence["sandbox"]
+    ltr_result = (
+        evidence["turn_status"] in SUCCESSFUL_TURN_STATUSES
+        and ltr.get("offloaded_reference_seen") is True
+        and sandbox.get("matching_response_count") == 1
+        and sandbox.get("successful") is True
+        and sandbox.get("rows") is True
+        and sandbox.get("analyzed") is True
+    )
+    sandbox_result = (
+        evidence["turn_status"] in SUCCESSFUL_TURN_STATUSES
+        and sandbox.get("matching_response_count") == 1
+        and sandbox.get("successful") is True
+        and sandbox.get("checkout_isolated") is True
+        and sandbox.get("private_runtime_isolated") is True
+        and sandbox.get("network_attempted") is True
+        and sandbox.get("network") == "blocked"
+    )
+
+    approval = evidence["approval"]
+    approval_result = (
+        evidence["turn_status"] in SUCCESSFUL_TURN_STATUSES
+        and evidence["exact_spec"] is True
+        and evidence["only_publish_destructive"] is True
+        and approval.get("approval_event_seen") is True
+        and approval.get("publish_approval_call_match") is True
+        and evidence["publish_calls"] == 0
+    )
+
+    image = evidence["image"]
+    image_result = (
+        image.get("image_blocks") == 1
+        and image.get("mime_type") == "image/png"
+        and image.get("width") == 160
+        and image.get("height") == 120
+        and image.get("host_path_exposed") is False
+        and image.get("model_context_image_data") is False
+    )
+
+    wrong_bearer_request = http["wrong_bearer"].get("request")
+    wrong_origin_request = http["wrong_origin"].get("request")
+
+    gates = {
+        "http_auth_origin": {
+            "result": "PASS" if http_result else "BLOCKED_HARD_GATE",
+            "saved_connection": http_saved,
+            "streamable_http_tools": http_tools,
+            "wrong_bearer_rejected": wrong_bearer,
+            "wrong_bearer_expected_status": 401,
+            "wrong_bearer_observed_status": (
+                wrong_bearer_request.get("response_status") if isinstance(wrong_bearer_request, dict) else None
+            ),
+            "wrong_origin_rejected": wrong_origin,
+            "wrong_origin_expected_status": 403,
+            "wrong_origin_observed_status": (
+                wrong_origin_request.get("response_status") if isinstance(wrong_origin_request, dict) else None
+            ),
+        },
+        "large_tool_response": {
+            "result": "PASS" if ltr_result else "BLOCKED_HARD_GATE",
+            "rows": 256,
+            "offloaded_reference_seen": ltr.get("offloaded_reference_seen") is True,
+            "sandbox_analysis_seen": sandbox.get("analyzed") is True,
+        },
+        "sandbox": {
+            "result": "PASS" if sandbox_result else "BLOCKED_HARD_GATE",
+            "checkout_isolated": sandbox.get("checkout_isolated") is True,
+            "private_runtime_isolated": sandbox.get("private_runtime_isolated") is True,
+            "outbound_network_attempted": sandbox.get("network_attempted") is True,
+            "outbound_network_blocked": sandbox.get("network") == "blocked",
+        },
+        "agent_spec_approval": {
+            "result": "PASS" if approval_result else "BLOCKED_HARD_GATE",
+            "serial": evidence["exact_spec"] is True,
+            "planned_tool_count": len(PLANNED_TOOLS),
+            "dummy_tool_count": len(DUMMY_TOOLS),
+            "publish_approval_pause": approval.get("publish_approval_call_match") is True,
+            "publish_calls": evidence["publish_calls"],
+            "turn_completed_successfully": evidence["turn_status"] in SUCCESSFUL_TURN_STATUSES,
+        },
+        "image_transport": {
+            "result": "PASS" if image_result else "BLOCKED_HARD_GATE",
+            "cgl_dimensions": [image.get("width"), image.get("height")],
+            "image_blocks": image.get("image_blocks"),
+            "mime_type": image.get("mime_type"),
+            "host_path_exposed": image.get("host_path_exposed"),
+            "model_context_image_data": image.get("model_context_image_data"),
+        },
+    }
+    return gates, all(gate["result"] == "PASS" for gate in gates.values())
+
+
 def _save_model_provider(trueforge: TrueForgeProcess, model: ModelServer) -> int:
     return _request(
         trueforge.base_url,
@@ -175,45 +322,79 @@ def _save_model_provider(trueforge: TrueForgeProcess, model: ModelServer) -> int
     )[0]
 
 
-def _contains_type(value: Any, expected: str) -> bool:
-    if isinstance(value, dict):
-        if value.get("type") == expected:
-            return True
-        return any(_contains_type(item, expected) for item in value.values())
-    if isinstance(value, list):
-        return any(_contains_type(item, expected) for item in value)
-    return False
+def _tool_call_ids(payload: dict[str, Any], tool_name: str) -> list[str]:
+    ids: list[str] = []
+    for event in _events(payload):
+        if event.get("type") != "model.message":
+            continue
+        for tool_call in event.get("tool_calls", []):
+            if not isinstance(tool_call, dict) or not isinstance(tool_call.get("function"), dict):
+                continue
+            if tool_call["function"].get("name") == tool_name and isinstance(tool_call.get("id"), str):
+                ids.append(tool_call["id"])
+    return ids
 
 
-def _sandbox_analysis_evidence(payload: dict[str, Any]) -> dict[str, bool]:
-    evidence = {
-        "rows": False,
-        "analyzed": False,
-        "checkout_isolated": False,
-        "private_runtime_isolated": False,
-        "network_measured": False,
+def _approval_evidence(payload: dict[str, Any], publish_call_ids: list[str]) -> dict[str, Any]:
+    approval_call_ids: list[str] = []
+    for event in _events(payload):
+        if event.get("type") != "tool.approval_required":
+            continue
+        for tool_call in event.get("tool_calls", []):
+            if isinstance(tool_call, dict) and isinstance(tool_call.get("id"), str):
+                approval_call_ids.append(tool_call["id"])
+    matched = len(publish_call_ids) == 1 and approval_call_ids.count(publish_call_ids[0]) == 1
+    return {
+        "approval_event_seen": bool(approval_call_ids),
+        "publish_call_count": len(publish_call_ids),
+        "publish_approval_call_match": matched,
     }
-    events = _data(payload)
-    if not isinstance(events, list):
-        return evidence
-    for entry in events:
-        event = entry.get("event", entry) if isinstance(entry, dict) else {}
-        if event.get("type") != "tool.response" or not isinstance(event.get("content"), str):
+
+
+def _sandbox_analysis_evidence(payload: dict[str, Any], sandbox_call_id: str | None) -> dict[str, Any]:
+    matches: list[dict[str, Any]] = []
+    if sandbox_call_id is None:
+        return {"matching_response_count": 0}
+    for event in _events(payload):
+        if event.get("type") != "tool.response" or event.get("tool_call_id") != sandbox_call_id:
+            continue
+        content = event.get("content")
+        if not isinstance(content, str):
             continue
         try:
-            outer = json.loads(event["content"])
-            result = outer.get("response", {}).get("result", "")
+            outer = json.loads(content)
+            response = outer.get("response", {})
+            result = response.get("result", "")
             analysis = json.loads(result.strip())
         except (AttributeError, TypeError, json.JSONDecodeError):
             continue
-        if not isinstance(analysis, dict):
+        if not isinstance(response, dict) or not isinstance(analysis, dict):
             continue
-        evidence["rows"] |= analysis.get("rows") == 256
-        evidence["analyzed"] |= analysis.get("analyzed") is True
-        evidence["checkout_isolated"] |= analysis.get("checkout_present") is False
-        evidence["private_runtime_isolated"] |= analysis.get("private_runtime_present") is False
-        evidence["network_measured"] |= analysis.get("network_attempted") is True
-    return evidence
+        matches.append(
+            {
+                "success": outer.get("success") is True,
+                "exit_code": response.get("exitCode"),
+                "rows": analysis.get("rows"),
+                "analyzed": analysis.get("analyzed"),
+                "checkout_isolated": analysis.get("checkout_isolated"),
+                "private_runtime_isolated": analysis.get("private_runtime_isolated"),
+                "network_attempted": analysis.get("network_attempted"),
+                "network": analysis.get("network"),
+            }
+        )
+    if len(matches) != 1:
+        return {"matching_response_count": len(matches)}
+    observation = matches[0]
+    return {
+        "matching_response_count": 1,
+        "successful": observation["success"] and observation["exit_code"] == 0,
+        "rows": observation["rows"] == 256,
+        "analyzed": observation["analyzed"] is True,
+        "checkout_isolated": observation["checkout_isolated"] is True,
+        "private_runtime_isolated": observation["private_runtime_isolated"] is True,
+        "network_attempted": observation["network_attempted"] is True,
+        "network": observation["network"],
+    }
 
 
 def _turn_from(payload: dict[str, Any]) -> dict[str, Any]:
@@ -250,41 +431,68 @@ def _wait_for_turn(trueforge: TrueForgeProcess, session_id: str, initial: dict[s
     raise RuntimeError("TrueForge turn did not finish")
 
 
+def _make_sentinel(directory: Path, prefix: str) -> Path:
+    with tempfile.NamedTemporaryFile(mode="wb", dir=directory, prefix=prefix, delete=False) as handle:
+        handle.write(os.urandom(32))
+        return Path(handle.name)
+
+
 def run_live_probe() -> dict[str, Any]:
     package = json.loads((ROOT / "package.json").read_text())
+    package_lock = json.loads((ROOT / "package-lock.json").read_text())
     if package.get("dependencies", {}).get("@truefoundry/trueforge") != TRUEFORGE_VERSION:
         raise RuntimeError("TrueForge package pin is not 0.1.4")
+    if package_lock.get("packages", {}).get("", {}).get("dependencies", {}).get("@truefoundry/trueforge") != TRUEFORGE_VERSION:
+        raise RuntimeError("TrueForge lockfile pin is not 0.1.4")
 
-    runtime_directory = Path(tempfile.mkdtemp(prefix="trueforge-phase0-"))
-    trueforge = TrueForgeProcess(_free_port(), runtime_directory)
-    allowed_origin = f"http://localhost:{trueforge.port}"
-    facade = DummyFacade("phase0-bearer", allowed_origin, image=_render_cgl_png())
-    model = ModelServer(ROOT)
+    runtime_directory = Path(tempfile.mkdtemp(prefix="tf0-", dir="/tmp"))
+    checkout_sentinel: Path | None = None
+    trueforge: TrueForgeProcess | None = None
+    facade: DummyFacade | None = None
+    model: ModelServer | None = None
     try:
+        checkout_sentinel = _make_sentinel(ROOT, ".trueforge-phase0-checkout-")
+        private_runtime = runtime_directory / "private-runtime"
+        private_runtime.mkdir()
+        private_sentinel = _make_sentinel(private_runtime, "sentinel-")
+        image = _render_cgl_png()
+        trueforge = TrueForgeProcess(_free_port(), runtime_directory)
+        allowed_origin = f"http://localhost:{trueforge.port}"
+        boundary_targets = {
+            "checkout": {"path": str(checkout_sentinel), "host_exists": checkout_sentinel.is_file()},
+            "private_runtime": {"path": str(private_sentinel), "host_exists": private_sentinel.is_file()},
+        }
+        facade = DummyFacade("phase0-bearer", allowed_origin, image=image, boundary_targets=boundary_targets)
+        model = ModelServer(ROOT)
         facade.start()
         model.start()
         trueforge.start()
 
-        saved_status = _save_mcp_connection(trueforge, facade, "phase0-bearer", allowed_origin)
-        if saved_status != 200:
-            raise RuntimeError("saved MCP connection was rejected")
-
-        _save_mcp_connection(trueforge, facade, "wrong-bearer", allowed_origin)
-        bad_bearer_status, _ = _request(trueforge.base_url, "GET", "/api/v1/mcp-servers/phase0-facade/tools")
-        _save_mcp_connection(trueforge, facade, "phase0-bearer", "http://localhost:1")
-        bad_origin_status, _ = _request(trueforge.base_url, "GET", "/api/v1/mcp-servers/phase0-facade/tools")
-        _save_mcp_connection(trueforge, facade, "phase0-bearer", allowed_origin)
-        tools_status, tools_payload = _request(trueforge.base_url, "GET", "/api/v1/mcp-servers/phase0-facade/tools")
-        tools = _data(tools_payload)
-        tool_names = sorted(tool.get("name") for tool in tools if isinstance(tool, dict)) if isinstance(tools, list) else []
+        wrong_bearer = _remote_tools_attempt(trueforge, facade, "wrong-bearer", allowed_origin)
+        wrong_origin = _remote_tools_attempt(trueforge, facade, "phase0-bearer", "http://localhost:1")
+        valid_connection = _remote_tools_attempt(trueforge, facade, "phase0-bearer", allowed_origin)
+        tools = _data(valid_connection["payload"])
+        tool_names = [tool.get("name") for tool in tools] if isinstance(tools, list) else []
         expected_schemas = {tool["name"]: tool for tool in planned_tool_schemas()}
         actual_schemas = {tool.get("name"): tool for tool in tools if isinstance(tool, dict)} if isinstance(tools, list) else {}
-        exact_annotations = all(actual_schemas.get(name, {}).get("annotations") == expected_schemas[name]["annotations"] for name in PLANNED_TOOLS)
-        only_publish_destructive = [
+        normalized_schemas = {
+            name: {key: value for key, value in tool.items() if key != "preload"}
+            for name, tool in actual_schemas.items()
+            if isinstance(tool, dict)
+        }
+        exact_schemas = len(tools) == len(PLANNED_TOOLS) and normalized_schemas == expected_schemas
+        only_publish_destructive = {
             name for name, tool in actual_schemas.items() if tool.get("annotations", {}).get("destructiveHint") is True
-        ] == ["publish_revision"]
-        if tools_status != 200 or tool_names != sorted(PLANNED_TOOLS) or not exact_annotations or not only_publish_destructive:
-            raise RuntimeError("saved Streamable HTTP connection did not list the dummy tools")
+        } == {"publish_revision"}
+        http_evidence = {
+            "saved_connection": valid_connection["saved_status"] == 200,
+            "streamable_http_tools": valid_connection["trueforge_status"] == 200
+            and len(tool_names) == len(PLANNED_TOOLS)
+            and set(tool_names) == set(PLANNED_TOOLS)
+            and exact_schemas,
+            "wrong_bearer": wrong_bearer,
+            "wrong_origin": wrong_origin,
+        }
 
         if _save_model_provider(trueforge, model) != 200:
             raise RuntimeError("custom model provider was rejected")
@@ -312,6 +520,21 @@ def run_live_probe() -> dict[str, Any]:
             raise RuntimeError("TrueForge session creation was rejected")
         session = _data(session_payload)
         stored_spec = session.get("agent", {}).get("spec", {}) if isinstance(session, dict) else {}
+        stored_servers = stored_spec.get("mcp_servers") if isinstance(stored_spec, dict) else None
+        stored_server = stored_servers[0] if isinstance(stored_servers, list) and len(stored_servers) == 1 else {}
+        exact_spec = (
+            stored_spec.get("model", {}).get("name") == "phase0/phase0-model"
+            and stored_spec.get("model", {}).get("params", {}).get("parallel_tool_calls") is False
+            and stored_server.get("name") == "phase0-facade"
+            and stored_server.get("enable_tools") == list(PLANNED_TOOLS)
+            and stored_server.get("disable_tools") == []
+            and stored_server.get("preload_tools") == []
+            and stored_server.get("require_approval_for_tools") == ["publish_revision"]
+            and stored_server.get("preload") is True
+            and stored_spec.get("config", {}).get("iteration_limit") == 30
+            and stored_spec.get("config", {}).get("sandbox", {}).get("enabled") is True
+            and stored_spec.get("config", {}).get("context_management", {}).get("large_tool_response", {}).get("enabled") is True
+        )
 
         image_environment = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -335,8 +558,6 @@ def run_live_probe() -> dict[str, Any]:
                 image_result = json.loads(image_process.stdout.strip().splitlines()[-1])
             except (IndexError, json.JSONDecodeError):
                 image_result = {}
-        if image_result.get("image_blocks") != 1 or image_result.get("mime_type") != "image/png":
-            raise RuntimeError("TrueForge image content transport failed")
 
         if not isinstance(session, dict) or not session.get("id"):
             raise RuntimeError("TrueForge session id was unavailable")
@@ -354,68 +575,48 @@ def run_live_probe() -> dict[str, Any]:
                 "stream": False,
             },
         )
-        if turn_status not in {200, 201}:
-            raise RuntimeError("TrueForge turn was rejected")
-        turn = _wait_for_turn(trueforge, session["id"], turn_payload)
+        turn: dict[str, Any] = {}
+        if turn_status in {200, 201}:
+            turn = _wait_for_turn(trueforge, session["id"], turn_payload)
+        turn_state = _turn_status(turn)
         _, events_payload = _request(trueforge.base_url, "GET", f"/api/v1/sessions/{session['id']}/events?limit=100")
-        analysis_evidence = _sandbox_analysis_evidence(events_payload)
-        approval_pause = _contains_type(events_payload, "tool.approval_required")
-        counts = facade.tool_call_counts()
-        exact_spec = (
-            stored_spec.get("model", {}).get("params", {}).get("parallel_tool_calls") is False
-            and stored_spec.get("mcp_servers", [{}])[0].get("enable_tools") == list(PLANNED_TOOLS)
-            and stored_spec.get("mcp_servers", [{}])[0].get("require_approval_for_tools") == ["publish_revision"]
-            and stored_spec.get("config", {}).get("iteration_limit") == 30
-            and stored_spec.get("config", {}).get("sandbox", {}).get("enabled") is True
-            and stored_spec.get("config", {}).get("context_management", {}).get("large_tool_response", {}).get("enabled") is True
+        sandbox_call_ids = _tool_call_ids(events_payload, "exec")
+        sandbox_evidence = _sandbox_analysis_evidence(
+            events_payload, sandbox_call_ids[0] if len(sandbox_call_ids) == 1 else None
         )
-        gates = {
-            "http_auth_origin": {
-                "result": "PASS",
-                "saved_connection": saved_status == 200,
-                "streamable_http_tools": tool_names == sorted(PLANNED_TOOLS) and exact_annotations,
-                "wrong_bearer_rejected": bad_bearer_status != 200 and any(not request["auth_ok"] for request in facade.requests),
-                "wrong_origin_rejected": bad_origin_status != 200 and any(not request["origin_ok"] for request in facade.requests),
-            },
-            "large_tool_response": {
-                "result": "PASS" if model.saw_ltr_reference and analysis_evidence["rows"] and analysis_evidence["analyzed"] else "BLOCKED_HARD_GATE",
-                "rows": 256,
-                "offloaded_reference_seen": model.saw_ltr_reference,
-                "sandbox_analysis_seen": analysis_evidence["analyzed"],
-            },
-            "sandbox": {
-                "result": "PASS" if analysis_evidence["checkout_isolated"] and analysis_evidence["private_runtime_isolated"] and analysis_evidence["network_measured"] else "BLOCKED_HARD_GATE",
-                "checkout_isolated": analysis_evidence["checkout_isolated"],
-                "private_runtime_isolated": analysis_evidence["private_runtime_isolated"],
-                "outbound_network_measured": analysis_evidence["network_measured"],
-            },
-            "agent_spec_approval": {
-                "result": "PASS" if exact_spec and only_publish_destructive and approval_pause and counts["publish_revision"] == 0 else "BLOCKED_HARD_GATE",
-                "serial": exact_spec,
-                "planned_tool_count": len(PLANNED_TOOLS),
-                "dummy_tool_count": len(DUMMY_TOOLS),
-                "publish_approval_pause": approval_pause,
+        publish_call_ids = _tool_call_ids(events_payload, "publish_revision")
+        approval = _approval_evidence(events_payload, publish_call_ids)
+        counts = facade.tool_call_counts()
+        gates, all_pass = evaluate_phase0_gates(
+            {
+                "turn_status": turn_state,
+                "http": http_evidence,
+                "ltr": {"offloaded_reference_seen": model.saw_ltr_reference},
+                "sandbox": sandbox_evidence,
+                "approval": approval,
+                "exact_spec": exact_spec,
+                "only_publish_destructive": only_publish_destructive,
                 "publish_calls": counts["publish_revision"],
-            },
-            "image_transport": {
-                "result": "PASS",
-                "cgl_dimensions": list(png_dimensions(facade.image)),
-                "image_blocks": image_result.get("image_blocks"),
-                "mime_type": image_result.get("mime_type"),
-                "host_path_exposed": False,
-                "model_context_image_data": model.saw_image_data,
-            },
-        }
-        all_pass = all(gate["result"] == "PASS" for gate in gates.values())
+                "image": {
+                    "image_blocks": image_result.get("image_blocks"),
+                    "mime_type": image_result.get("mime_type"),
+                    "width": image_result.get("width"),
+                    "height": image_result.get("height"),
+                    "host_path_exposed": image_result.get("host_path_exposed"),
+                    "model_context_image_data": model.saw_image_data,
+                },
+            }
+        )
         if not all_pass:
-            raise RuntimeError(
-                "one or more TrueForge Phase 0 gates failed "
-                f"(analysis_rows={analysis_evidence['rows']}, analysis={analysis_evidence['analyzed']}, "
-                f"approval={approval_pause})"
-            )
+            raise RuntimeError("one or more TrueForge Phase 0 gates failed")
         return {"overall": "PASS", "gates": gates, "runtime": TRUEFORGE_VERSION}
     finally:
-        trueforge.stop()
-        model.close()
-        facade.close()
+        if trueforge is not None:
+            trueforge.stop()
+        if model is not None:
+            model.close()
+        if facade is not None:
+            facade.close()
+        if checkout_sentinel is not None:
+            checkout_sentinel.unlink(missing_ok=True)
         shutil.rmtree(runtime_directory, ignore_errors=True)

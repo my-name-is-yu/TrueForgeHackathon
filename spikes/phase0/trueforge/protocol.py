@@ -11,7 +11,7 @@ import zlib
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 
@@ -76,8 +76,8 @@ def png_dimensions(data: bytes) -> tuple[int, int]:
     return struct.unpack(">II", data[16:24])
 
 
-def inspection_payload(row_count: int = 256) -> dict[str, Any]:
-    return {
+def inspection_payload(row_count: int = 256, boundary_targets: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "rows": [
             {
                 "index": index,
@@ -90,8 +90,11 @@ def inspection_payload(row_count: int = 256) -> dict[str, Any]:
             }
             for index in range(row_count)
         ],
-        "source": "synthetic-phase0-facade",
     }
+    if boundary_targets is not None:
+        payload["boundary_targets"] = boundary_targets
+    payload["source"] = "synthetic-phase0-facade"
+    return payload
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) -> None:
@@ -103,23 +106,35 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) -
     handler.wfile.write(body)
 
 
+class _DummyFacadeServer(ThreadingHTTPServer):
+    owner: DummyFacade
+
+
 class DummyFacade:
-    def __init__(self, bearer: str, allowed_origin: str, image: bytes | None = None) -> None:
+    def __init__(
+        self,
+        bearer: str,
+        allowed_origin: str,
+        image: bytes | None = None,
+        boundary_targets: dict[str, Any] | None = None,
+    ) -> None:
         self.bearer = bearer
         self.allowed_origin = allowed_origin
         self.image = image or make_png()
+        self.boundary_targets = boundary_targets
         self.requests: list[dict[str, Any]] = []
         self.tool_calls: list[str] = []
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_type())
-        self._server.owner = self  # type: ignore[attr-defined]
+        self._server = _DummyFacadeServer(("127.0.0.1", 0), self._handler_type())
+        self._server.owner = self
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._started = False
 
     def _handler_type(self) -> type[BaseHTTPRequestHandler]:
         owner_type = type(self)
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
-                owner: DummyFacade = self.server.owner  # type: ignore[attr-defined]
+                owner = cast(_DummyFacadeServer, self.server).owner
                 size = int(self.headers.get("Content-Length", "0"))
                 raw = self.rfile.read(size)
                 auth_ok = self.headers.get("Authorization") == f"Bearer {owner.bearer}"
@@ -131,12 +146,14 @@ class DummyFacade:
                     "body_bytes": len(raw),
                 }
                 if not auth_ok or not origin_ok:
+                    request["response_status"] = 401 if not auth_ok else 403
                     owner.requests.append(request)
-                    _json_response(self, 401 if not auth_ok else 403, {"error": "connection rejected"})
+                    _json_response(self, request["response_status"], {"error": "connection rejected"})
                     return
                 try:
                     message = json.loads(raw)
                 except json.JSONDecodeError:
+                    request["response_status"] = 400
                     owner.requests.append(request)
                     _json_response(self, 400, {"error": "invalid request"})
                     return
@@ -147,9 +164,10 @@ class DummyFacade:
                     tool_name = message.get("params", {}).get("name")
                     request["tool_name"] = tool_name
                     owner.tool_calls.append(tool_name)
-                owner.requests.append(request)
 
                 if method == "notifications/initialized":
+                    request["response_status"] = 202
+                    owner.requests.append(request)
                     self.send_response(202)
                     self.end_headers()
                     return
@@ -166,9 +184,19 @@ class DummyFacade:
                 elif method == "tools/call":
                     tool_name = message.get("params", {}).get("name")
                     if tool_name == "inspect_asset":
+                        boundary_targets = (
+                            None
+                            if self.headers.get("X-Phase0-Image-Probe") == "1"
+                            else owner.boundary_targets
+                        )
                         result = {
                             "content": [
-                                {"type": "text", "text": json.dumps(inspection_payload(), separators=(",", ":"))},
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(
+                                        inspection_payload(boundary_targets=boundary_targets), separators=(",", ":")
+                                    ),
+                                },
                                 {
                                     "type": "image",
                                     "data": base64.b64encode(owner.image).decode("ascii"),
@@ -186,6 +214,8 @@ class DummyFacade:
                         result = {"content": [{"type": "text", "text": "unknown synthetic tool"}], "isError": True}
                 else:
                     result = None
+                request["response_status"] = 200
+                owner.requests.append(request)
                 _json_response(self, 200, {"jsonrpc": "2.0", "id": message.get("id"), "result": result})
 
             def log_message(self, _format: str, *_args: Any) -> None:
@@ -200,14 +230,47 @@ class DummyFacade:
 
     def start(self) -> None:
         self._thread.start()
+        self._started = True
 
     def close(self) -> None:
-        self._server.shutdown()
+        if self._started:
+            self._server.shutdown()
         self._server.server_close()
-        self._thread.join(timeout=2)
+        if self._started:
+            self._thread.join(timeout=2)
 
     def tool_call_counts(self) -> Counter[str]:
         return Counter(self.tool_calls)
+
+
+def _contains_image_content(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get("type") in {"image", "image_url"}:
+            return True
+        return any(_contains_image_content(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_image_content(child) for child in value)
+    return False
+
+
+def _contains_analysis(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get("rows") == 256 and value.get("analyzed") is True:
+            return True
+        return any(_contains_analysis(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_analysis(child) for child in value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return False
+        return parsed != value and _contains_analysis(parsed)
+    return False
+
+
+class _ModelServerServer(ThreadingHTTPServer):
+    owner: ModelServer
 
 
 class ModelServer:
@@ -222,25 +285,26 @@ class ModelServer:
         self.saw_image_data = False
         self.saw_sandbox_exec = False
         self.saw_publish_request = False
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_type())
-        self._server.owner = self  # type: ignore[attr-defined]
+        self._server = _ModelServerServer(("127.0.0.1", 0), self._handler_type())
+        self._server.owner = self
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._started = False
 
     def _handler_type(self) -> type[BaseHTTPRequestHandler]:
         owner_type = type(self)
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
-                owner: ModelServer = self.server.owner  # type: ignore[attr-defined]
+                owner = cast(_ModelServerServer, self.server).owner
                 size = int(self.headers.get("Content-Length", "0"))
                 raw = self.rfile.read(size)
                 owner.request_count += 1
-                owner.saw_image_data |= b"data:image" in raw or b'"type":"image_url"' in raw
                 try:
                     body = json.loads(raw)
                 except json.JSONDecodeError:
                     _json_response(self, 400, {"error": {"message": "invalid model request"}})
                     return
+                owner.saw_image_data |= _contains_image_content(body)
                 messages = body.get("messages", [])
                 text = json.dumps(messages, separators=(",", ":"))
                 ltr_match = re.search(r"Result saved to: (.*?)(?:\\n|$)", text)
@@ -248,16 +312,16 @@ class ModelServer:
                     owner.saw_ltr_reference = True
                 if "rows" in text and "256" in text and "analyzed" in text:
                     owner.saw_sandbox_analysis = True
-                if '"checkout_present"' in text and 'false' in text:
+                if '"checkout_isolated"' in text and 'true' in text:
                     owner.saw_checkout_isolation = True
-                if '"private_runtime_present"' in text and 'false' in text:
+                if '"private_runtime_isolated"' in text and 'true' in text:
                     owner.saw_private_runtime_isolation = True
-                if '"network_attempted"' in text and 'true' in text:
+                if '"network_attempted"' in text and 'true' in text and '"network":"blocked"' in text:
                     owner.saw_network_measurement = True
-                if owner.saw_sandbox_exec and owner.request_count >= 3:
-                    owner.saw_sandbox_analysis = True
+                analysis_seen = _contains_analysis(messages)
+                owner.saw_sandbox_analysis |= analysis_seen
 
-                if owner.saw_sandbox_analysis:
+                if analysis_seen:
                     name = "publish_revision"
                     arguments = {"revision": "synthetic-phase0"}
                     call_id = "phase0-publish"
@@ -269,14 +333,27 @@ class ModelServer:
                     code = (
                         "import json,pathlib,socket\n"
                         f"data=json.load(open({sandbox_path!r}))\n"
-                        "checkout_present=any(pathlib.Path(x).exists() for x in ('.git','pyproject.toml','README.md'))\n"
-                        "private_runtime_present=pathlib.Path('private-runtime').exists()\n"
+                        "def boundary_status(target):\n"
+                        "    if target.get('host_exists') is not True:\n"
+                        "        return 'missing'\n"
+                        "    try:\n"
+                        "        pathlib.Path(target['path']).read_bytes()\n"
+                        "    except PermissionError:\n"
+                        "        return 'blocked'\n"
+                        "    except FileNotFoundError:\n"
+                        "        return 'missing'\n"
+                        "    except OSError:\n"
+                        "        return 'error'\n"
+                        "    return 'readable'\n"
+                        "targets=data['boundary_targets']\n"
+                        "checkout_isolated=boundary_status(targets['checkout'])=='blocked'\n"
+                        "private_runtime_isolated=boundary_status(targets['private_runtime'])=='blocked'\n"
                         "network='reachable'\n"
                         "try:\n"
                         "    socket.create_connection(('example.com',80),1).close()\n"
                         "except OSError:\n"
                         "    network='blocked'\n"
-                        "print(json.dumps({'rows':len(data['rows']),'analyzed':True,'checkout_present':checkout_present,'private_runtime_present':private_runtime_present,'network_attempted':True,'network':network},separators=(',',':')))"
+                        "print(json.dumps({'rows':len(data['rows']),'analyzed':True,'checkout_isolated':checkout_isolated,'private_runtime_isolated':private_runtime_isolated,'network_attempted':True,'network':network},separators=(',',':')))"
                     )
                     arguments = {"intent": "Analyze the offloaded synthetic trace and measure sandbox boundaries.", "command": f"python -c {shlex.quote(code)}"}
                     call_id = "phase0-sandbox"
@@ -340,11 +417,14 @@ class ModelServer:
 
     def start(self) -> None:
         self._thread.start()
+        self._started = True
 
     def close(self) -> None:
-        self._server.shutdown()
+        if self._started:
+            self._server.shutdown()
         self._server.server_close()
-        self._thread.join(timeout=2)
+        if self._started:
+            self._thread.join(timeout=2)
 
 
 def extract_sandbox_path(text: str) -> str | None:
