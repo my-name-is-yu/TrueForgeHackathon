@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
+import sys
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
 from spikes.phase0.trueforge.protocol import (
+    BOUNDARY_HELPER_COMMAND,
     DUMMY_TOOLS,
     PLANNED_TOOLS,
     _contains_image_content,
@@ -16,9 +20,13 @@ from spikes.phase0.trueforge.protocol import (
     png_dimensions,
 )
 from spikes.phase0.trueforge.runner import (
+    TrueForgeProcess,
     _approval_evidence,
-    _contains_boundary_data,
+    _boundary_helper_source,
+    _contains_prohibited_boundary_data,
     _sandbox_analysis_evidence,
+    _sanitized_events_payload,
+    _stage_boundary_helper,
     evaluate_phase0_gates,
 )
 
@@ -82,7 +90,8 @@ def _passing_evidence() -> dict:
             "analyzed": True,
             "checkout_isolated": True,
             "private_runtime_isolated": True,
-            "canary_metadata_valid": True,
+            "sentinels_intact": True,
+            "helper_staged": True,
             "private_data_clear": True,
             "network_attempted": True,
             "network": "blocked",
@@ -114,7 +123,8 @@ def _passing_evidence() -> dict:
         ("large_tool_response", lambda evidence: evidence["sandbox"].update(analyzed=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(checkout_isolated=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(private_runtime_isolated=False)),
-        ("sandbox", lambda evidence: evidence["sandbox"].update(canary_metadata_valid=False)),
+        ("sandbox", lambda evidence: evidence["sandbox"].update(sentinels_intact=False)),
+        ("sandbox", lambda evidence: evidence["sandbox"].update(helper_staged=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(private_data_clear=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(network_attempted=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(network="reachable")),
@@ -151,18 +161,24 @@ def _tool_response(call_id: str, analysis: dict) -> dict:
 
 def test_mixed_sandbox_responses_cannot_combine_into_a_pass() -> None:
     matching = {
+        "helper_status": "ok",
         "rows": 256,
         "analyzed": True,
-        "checkout_isolated": False,
-        "private_runtime_isolated": False,
+        "checkout_metadata": "readable",
+        "checkout_content": "readable",
+        "private_runtime_metadata": "readable",
+        "private_runtime_content": "readable",
         "network_attempted": True,
         "network": "reachable",
     }
     unrelated = {
+        "helper_status": "ok",
         "rows": 256,
         "analyzed": True,
-        "checkout_isolated": True,
-        "private_runtime_isolated": True,
+        "checkout_metadata": "blocked",
+        "checkout_content": "blocked",
+        "private_runtime_metadata": "blocked",
+        "private_runtime_content": "blocked",
         "network_attempted": True,
         "network": "blocked",
     }
@@ -198,11 +214,42 @@ def test_approval_from_another_tool_call_cannot_satisfy_publish_gate() -> None:
     assert all_pass is False
 
 
-def test_boundary_canary_path_in_observed_event_blocks_sandbox_gate(tmp_path) -> None:
-    canary_path = tmp_path / "opaque-boundary" / "a"
+def test_protected_path_in_raw_event_blocks_before_sanitization(tmp_path) -> None:
+    protected_path = tmp_path / "private-runtime" / "sentinel"
+    raw = {"data": [{"event": {"type": "sandbox.exec", "path": str(protected_path)}}]}
+    assert _contains_prohibited_boundary_data(raw, [protected_path], []) is True
+    assert _contains_prohibited_boundary_data(_sanitized_events_payload(raw), [protected_path], []) is False
+
     evidence = deepcopy(_passing_evidence())
-    evidence["sandbox"]["private_data_clear"] = not _contains_boundary_data(
-        {"event": {"tool_call": {"path": str(canary_path)}}}, [canary_path], []
+    evidence["sandbox"]["private_data_clear"] = not _contains_prohibited_boundary_data(raw, [protected_path], [])
+
+    gates, all_pass = evaluate_phase0_gates(evidence)
+
+    assert gates["sandbox"]["result"] == "BLOCKED_HARD_GATE"
+    assert all_pass is False
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["checkout_metadata", "checkout_content", "private_runtime_metadata", "private_runtime_content"],
+)
+@pytest.mark.parametrize("status", ["missing", "readable", "error"])
+def test_each_original_sentinel_access_failure_blocks(field: str, status: str) -> None:
+    analysis = {
+        "helper_status": "ok",
+        "rows": 256,
+        "analyzed": True,
+        "checkout_metadata": "blocked",
+        "checkout_content": "blocked",
+        "private_runtime_metadata": "blocked",
+        "private_runtime_content": "blocked",
+        "network_attempted": True,
+        "network": "blocked",
+    }
+    analysis[field] = status
+    evidence = deepcopy(_passing_evidence())
+    evidence["sandbox"].update(
+        _sandbox_analysis_evidence({"data": [_tool_response("sandbox-call", analysis)]}, "sandbox-call")
     )
 
     gates, all_pass = evaluate_phase0_gates(evidence)
@@ -211,42 +258,70 @@ def test_boundary_canary_path_in_observed_event_blocks_sandbox_gate(tmp_path) ->
     assert all_pass is False
 
 
-def test_json_escaped_sentinel_representation_blocks_boundary_gate() -> None:
-    sentinel = b"\x00\xffphase0"
-    evidence = deepcopy(_passing_evidence())
-    evidence["sandbox"]["private_data_clear"] = not _contains_boundary_data(
-        {"event": {"tool_response": repr(sentinel)}}, [], [sentinel]
+def test_boundary_tool_call_uses_only_the_stable_relative_helper() -> None:
+    assert BOUNDARY_HELPER_COMMAND == "python .phase0-boundary-probe.py"
+    assert "/" not in BOUNDARY_HELPER_COMMAND
+
+
+def test_staged_helper_contains_paths_but_not_sentinel_values(tmp_path: Path) -> None:
+    sandbox_parent = tmp_path / "sandboxes" / "session"
+    sandbox_root = sandbox_parent / "sandbox"
+    sandbox_root.mkdir(parents=True)
+    checkout = tmp_path / "checkout-sentinel"
+    private = tmp_path / "private-sentinel"
+    checkout_value = b"checkout-secret"
+    private_value = b"private-secret"
+    checkout.write_bytes(checkout_value)
+    private.write_bytes(private_value)
+
+    helper = _stage_boundary_helper(sandbox_parent, "ltr.json", checkout, private)
+    source = helper.read_bytes()
+
+    assert helper == sandbox_root / ".phase0-boundary-probe.py"
+    assert str(checkout).encode() in source
+    assert str(private).encode() in source
+    assert checkout_value not in source
+    assert private_value not in source
+
+
+def test_helper_failure_is_bounded_without_traceback(tmp_path: Path) -> None:
+    helper = tmp_path / ".phase0-boundary-probe.py"
+    helper.write_text(
+        _boundary_helper_source(
+            "missing-ltr.json",
+            tmp_path / "checkout-sentinel",
+            tmp_path / "private-sentinel",
+        )
     )
 
-    gates, all_pass = evaluate_phase0_gates(evidence)
-
-    assert gates["sandbox"]["result"] == "BLOCKED_HARD_GATE"
-    assert all_pass is False
-
-
-def test_embedded_json_escaped_sentinel_representation_blocks_boundary_gate() -> None:
-    sentinel = b"\x00\xffphase0"
-    evidence = deepcopy(_passing_evidence())
-    evidence["sandbox"]["private_data_clear"] = not _contains_boundary_data(
-        {"event": {"stderr": f"diagnostic: {sentinel!r}"}}, [], [sentinel]
+    result = subprocess.run(
+        [sys.executable, helper.name],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
     )
 
-    gates, all_pass = evaluate_phase0_gates(evidence)
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {"helper_status": "error"}
+    assert result.stderr == ""
 
-    assert gates["sandbox"]["result"] == "BLOCKED_HARD_GATE"
-    assert all_pass is False
 
+def test_partial_start_cleanup_removes_owned_tmpdir_and_home_alias(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    home = runtime_root / "home"
+    home.mkdir()
+    temp = runtime_root / "tmp"
+    temp.mkdir()
+    (temp / "startup-artifact").write_text("transient")
+    home_alias = tmp_path / "home-alias"
+    home_alias.symlink_to(home, target_is_directory=True)
+    trueforge = TrueForgeProcess(0, runtime_root, home_alias)
+    trueforge.temp_directory = temp
+    trueforge.home_alias_created = True
 
-def test_embedded_unicode_escaped_sentinel_blocks_boundary_gate() -> None:
-    sentinel = b"\x00\xffphase0"
-    evidence = deepcopy(_passing_evidence())
-    evidence["sandbox"]["private_data_clear"] = not _contains_boundary_data(
-        {"event": {"stderr": r"diagnostic: \u0000\u00ff\u0070\u0068\u0061\u0073\u0065\u0030"}},
-        [],
-        [sentinel],
-    )
+    trueforge.stop()
 
-    gates, all_pass = evaluate_phase0_gates(evidence)
-
-    assert gates["sandbox"]["result"] == "BLOCKED_HARD_GATE"
-    assert all_pass is False
+    assert not temp.exists()
+    assert not home_alias.exists()

@@ -3,15 +3,13 @@ from __future__ import annotations
 import base64
 import json
 import re
-import shlex
 import socket
 import struct
 import threading
 import zlib
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, cast
 from urllib.parse import urlsplit
 
 
@@ -26,6 +24,7 @@ PLANNED_TOOLS = (
 )
 
 DUMMY_TOOLS = ("inspect_asset", "publish_revision")
+BOUNDARY_HELPER_COMMAND = "python .phase0-boundary-probe.py"
 
 
 def planned_tool_schemas() -> list[dict[str, Any]]:
@@ -273,8 +272,7 @@ class _ModelServerServer(ThreadingHTTPServer):
 
 
 class ModelServer:
-    def __init__(self, checkout_root: Path, image: bytes | None = None) -> None:
-        self.checkout_root = checkout_root
+    def __init__(self, image: bytes | None = None) -> None:
         self.image_data = base64.b64encode(image).decode("ascii") if image is not None else None
         self.request_count = 0
         self.saw_ltr_reference = False
@@ -285,11 +283,16 @@ class ModelServer:
         self.saw_image_data = False
         self.saw_sandbox_exec = False
         self.saw_publish_request = False
+        self.boundary_helper_staged = False
         self.request_bodies: list[Any] = []
+        self._stage_boundary_helper: Callable[[str], None] | None = None
         self._server = _ModelServerServer(("127.0.0.1", 0), self._handler_type())
         self._server.owner = self
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._started = False
+
+    def configure_boundary_helper(self, stage: Callable[[str], None]) -> None:
+        self._stage_boundary_helper = stage
 
     def _handler_type(self) -> type[BaseHTTPRequestHandler]:
         owner_type = type(self)
@@ -332,41 +335,17 @@ class ModelServer:
                     owner.saw_sandbox_exec = True
                     name = "exec"
                     sandbox_path = ltr_match.group(1).strip().rstrip(".")
-                    code = (
-                        "import json,pathlib,socket\n"
-                        f"data=json.load(open({sandbox_path!r}))\n"
-                        "def boundary_status(path):\n"
-                        "    if path is None:\n"
-                        "        return 'missing'\n"
-                        "    try:\n"
-                        "        pathlib.Path(path).stat()\n"
-                        "    except PermissionError:\n"
-                        "        return 'blocked'\n"
-                        "    except FileNotFoundError:\n"
-                        "        return 'missing'\n"
-                        "    except OSError:\n"
-                        "        return 'error'\n"
-                        "    try:\n"
-                        "        pathlib.Path(path).read_bytes()\n"
-                        "    except PermissionError:\n"
-                        "        return 'content_blocked'\n"
-                        "    except FileNotFoundError:\n"
-                        "        return 'missing'\n"
-                        "    except OSError:\n"
-                        "        return 'error'\n"
-                        "    return 'readable'\n"
-                        "boundary_directory=pathlib.Path.cwd().parent/'tf0-b'\n"
-                        "boundary_canaries={'a':boundary_directory/'a' if boundary_directory else None,'b':boundary_directory/'b' if boundary_directory else None}\n"
-                        "checkout_isolated=boundary_status(boundary_canaries.get('a'))=='blocked'\n"
-                        "private_runtime_isolated=boundary_status(boundary_canaries.get('b'))=='blocked'\n"
-                        "network='reachable'\n"
-                        "try:\n"
-                        "    socket.create_connection(('example.com',80),1).close()\n"
-                        "except OSError:\n"
-                        "    network='blocked'\n"
-                        "print(json.dumps({'rows':len(data['rows']),'analyzed':True,'checkout_isolated':checkout_isolated,'private_runtime_isolated':private_runtime_isolated,'network_attempted':True,'network':network},separators=(',',':')))"
-                    )
-                    arguments = {"intent": "Analyze the offloaded synthetic trace and measure sandbox boundaries.", "command": f"python -c {shlex.quote(code)}"}
+                    try:
+                        if owner._stage_boundary_helper is None:
+                            raise RuntimeError("boundary helper staging is not configured")
+                        owner._stage_boundary_helper(sandbox_path)
+                        owner.boundary_helper_staged = True
+                    except (OSError, RuntimeError, ValueError):
+                        owner.boundary_helper_staged = False
+                    arguments = {
+                        "intent": "Analyze the offloaded synthetic trace and measure sandbox boundaries.",
+                        "command": BOUNDARY_HELPER_COMMAND,
+                    }
                     call_id = "phase0-sandbox"
                 else:
                     name = "inspect_asset"

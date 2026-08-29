@@ -6,7 +6,6 @@ import json
 import os
 import shutil
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
@@ -259,7 +258,8 @@ def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str,
         and sandbox.get("successful") is True
         and sandbox.get("checkout_isolated") is True
         and sandbox.get("private_runtime_isolated") is True
-        and sandbox.get("canary_metadata_valid") is True
+        and sandbox.get("sentinels_intact") is True
+        and sandbox.get("helper_staged") is True
         and sandbox.get("private_data_clear") is True
         and sandbox.get("network_attempted") is True
         and sandbox.get("network") == "blocked"
@@ -314,7 +314,8 @@ def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str,
             "result": "PASS" if sandbox_result else "BLOCKED_HARD_GATE",
             "checkout_isolated": sandbox.get("checkout_isolated") is True,
             "private_runtime_isolated": sandbox.get("private_runtime_isolated") is True,
-            "boundary_canary_metadata_valid": sandbox.get("canary_metadata_valid") is True,
+            "boundary_sentinels_intact": sandbox.get("sentinels_intact") is True,
+            "boundary_helper_staged": sandbox.get("helper_staged") is True,
             "protected_data_clear": sandbox.get("private_data_clear") is True,
             "outbound_network_attempted": sandbox.get("network_attempted") is True,
             "outbound_network_blocked": sandbox.get("network") == "blocked",
@@ -410,8 +411,11 @@ def _sandbox_analysis_evidence(payload: dict[str, Any], sandbox_call_id: str | N
                 "exit_code": response.get("exitCode"),
                 "rows": analysis.get("rows"),
                 "analyzed": analysis.get("analyzed"),
-                "checkout_isolated": analysis.get("checkout_isolated"),
-                "private_runtime_isolated": analysis.get("private_runtime_isolated"),
+                "helper_status": analysis.get("helper_status"),
+                "checkout_metadata": analysis.get("checkout_metadata"),
+                "checkout_content": analysis.get("checkout_content"),
+                "private_runtime_metadata": analysis.get("private_runtime_metadata"),
+                "private_runtime_content": analysis.get("private_runtime_content"),
                 "network_attempted": analysis.get("network_attempted"),
                 "network": analysis.get("network"),
             }
@@ -421,11 +425,20 @@ def _sandbox_analysis_evidence(payload: dict[str, Any], sandbox_call_id: str | N
     observation = matches[0]
     return {
         "matching_response_count": 1,
-        "successful": observation["success"] and observation["exit_code"] == 0,
+        "successful": (
+            observation["success"]
+            and observation["exit_code"] == 0
+            and observation["helper_status"] == "ok"
+        ),
         "rows": observation["rows"] == 256,
         "analyzed": observation["analyzed"] is True,
-        "checkout_isolated": observation["checkout_isolated"] is True,
-        "private_runtime_isolated": observation["private_runtime_isolated"] is True,
+        "checkout_isolated": (
+            observation["checkout_metadata"] == "blocked" and observation["checkout_content"] == "blocked"
+        ),
+        "private_runtime_isolated": (
+            observation["private_runtime_metadata"] == "blocked"
+            and observation["private_runtime_content"] == "blocked"
+        ),
         "network_attempted": observation["network_attempted"] is True,
         "network": observation["network"],
     }
@@ -472,72 +485,116 @@ def _make_sentinel(directory: Path, prefix: str) -> tuple[Path, bytes]:
         return Path(handle.name), value
 
 
-def _make_boundary_canary(directory: Path, target: Path, name: str) -> Path:
-    path = directory / name
-    with target.open("rb") as source, path.open("xb") as destination:
-        shutil.copyfileobj(source, destination)
-    path.chmod(stat.S_IMODE(target.stat().st_mode))
-    return path
-
-
 def _trueforge_data_directory(home: Path) -> Path:
     relative = Path("Library", "Application Support") if sys.platform == "darwin" else Path(".local", "share")
     return home / relative / "trueforge"
 
 
-def _boundary_canary_metadata_matches(canaries: list[Path], targets: list[Path], values: list[bytes]) -> bool:
-    if len(canaries) != len(targets) or len(canaries) != len(values):
+def _sentinels_intact(paths: list[Path], values: list[bytes]) -> bool:
+    if len(paths) != len(values):
         return False
-    for canary, target, value in zip(canaries, targets, values, strict=True):
-        try:
-            canary_metadata = canary.lstat()
-            target_metadata = target.stat()
-            canary_value = canary.read_bytes()
-        except OSError:
-            return False
-        if (
-            not stat.S_ISREG(canary_metadata.st_mode)
-            or stat.S_ISLNK(canary_metadata.st_mode)
-            or canary_metadata.st_size != target_metadata.st_size
-            or canary_metadata.st_mode != target_metadata.st_mode
-            or canary_metadata.st_uid != target_metadata.st_uid
-            or canary_value != value
-        ):
-            return False
-    return True
+    try:
+        return all(path.is_file() and path.read_bytes() == value for path, value in zip(paths, values, strict=True))
+    except OSError:
+        return False
 
 
-def _contains_boundary_data(observed: Any, paths: list[Path], values: list[bytes]) -> bool:
-    serialized = json.dumps(observed, sort_keys=True, default=str)
-    needles = [str(path) for path in paths]
+def _contains_prohibited_boundary_data(observed: Any, paths: list[Path], values: list[bytes]) -> bool:
+    text_needles = [str(path) for path in paths]
     for value in values:
-        representation = repr(value)
-        unicode_escape = "".join(f"\\u{byte:04x}" for byte in value)
-        escaped_unicode = json.dumps(unicode_escape)[1:-1]
-        needles.extend(
-            (
-                value.hex(),
-                base64.b64encode(value).decode("ascii"),
-                representation,
-                json.dumps(representation),
-                unicode_escape,
-                escaped_unicode,
-            )
-        )
-    if any(needle in serialized for needle in needles):
-        return True
+        text_needles.extend((value.hex(), base64.b64encode(value).decode("ascii")))
 
-    def contains(value: Any) -> bool:
-        if isinstance(value, dict):
-            return any(contains(key) or contains(child) for key, child in value.items())
-        if isinstance(value, (list, tuple)):
-            return any(contains(child) for child in value)
-        if isinstance(value, str):
-            encoded = json.dumps(value)
-            return any(needle in value or needle in encoded for needle in needles)
+    def contains(item: Any) -> bool:
+        if isinstance(item, dict):
+            return any(contains(key) or contains(value) for key, value in item.items())
+        if isinstance(item, (list, tuple)):
+            return any(contains(value) for value in item)
+        if isinstance(item, bytes):
+            return any(value in item for value in values)
+        if isinstance(item, str):
+            return any(needle in item for needle in text_needles)
         return False
 
     return contains(observed)
+
+
+def _boundary_helper_source(ltr_path: str, checkout_sentinel: Path, private_sentinel: Path) -> str:
+    return f'''from __future__ import annotations
+
+import json
+import socket
+from pathlib import Path
+
+LTR_PATH = Path({ltr_path!r})
+CHECKOUT_SENTINEL = Path({str(checkout_sentinel)!r})
+PRIVATE_SENTINEL = Path({str(private_sentinel)!r})
+
+
+def access_status(path: Path, operation: str) -> str:
+    try:
+        if operation == "metadata":
+            path.stat()
+        else:
+            path.read_bytes()
+    except PermissionError:
+        return "blocked"
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "error"
+    return "readable"
+
+
+def main() -> int:
+    try:
+        data = json.loads(LTR_PATH.read_text())
+        rows = len(data["rows"])
+    except (KeyError, TypeError, OSError, json.JSONDecodeError):
+        print(json.dumps({{"helper_status": "error"}}, separators=(",", ":")))
+        return 1
+
+    network = "reachable"
+    try:
+        socket.create_connection(("example.com", 80), 1).close()
+    except OSError:
+        network = "blocked"
+
+    print(
+        json.dumps(
+            {{
+                "helper_status": "ok",
+                "rows": rows,
+                "analyzed": True,
+                "checkout_metadata": access_status(CHECKOUT_SENTINEL, "metadata"),
+                "checkout_content": access_status(CHECKOUT_SENTINEL, "content"),
+                "private_runtime_metadata": access_status(PRIVATE_SENTINEL, "metadata"),
+                "private_runtime_content": access_status(PRIVATE_SENTINEL, "content"),
+                "network_attempted": True,
+                "network": network,
+            }},
+            separators=(",", ":"),
+        )
+    )
+    return 0
+
+
+raise SystemExit(main())
+'''
+
+
+def _stage_boundary_helper(
+    sandbox_parent: Path,
+    ltr_path: str,
+    checkout_sentinel: Path,
+    private_sentinel: Path,
+) -> Path:
+    roots = [path for path in sandbox_parent.iterdir() if path.is_dir()]
+    if len(roots) != 1:
+        raise RuntimeError("exact TrueForge sandbox root was unavailable")
+    helper = roots[0] / ".phase0-boundary-probe.py"
+    helper.write_text(_boundary_helper_source(ltr_path, checkout_sentinel, private_sentinel))
+    helper.chmod(0o600)
+    return helper
 
 
 def run_live_probe() -> dict[str, Any]:
@@ -553,8 +610,7 @@ def run_live_probe() -> dict[str, Any]:
     checkout_value: bytes | None = None
     private_sentinel: Path | None = None
     private_value: bytes | None = None
-    boundary_directory: Path | None = None
-    boundary_canaries: list[Path] = []
+    boundary_helper: Path | None = None
     home_alias: Path | None = None
     trueforge: TrueForgeProcess | None = None
     facade: DummyFacade | None = None
@@ -570,7 +626,7 @@ def run_live_probe() -> dict[str, Any]:
         trueforge = TrueForgeProcess(_free_port(), runtime_directory, home_alias)
         allowed_origin = f"http://localhost:{trueforge.port}"
         facade = DummyFacade("phase0-bearer", allowed_origin, image=image)
-        model = ModelServer(ROOT, image=image)
+        model = ModelServer(image=image)
         facade.start()
         model.start()
         trueforge.start()
@@ -668,13 +724,23 @@ def run_live_probe() -> dict[str, Any]:
 
         if not isinstance(session, dict) or not session.get("id"):
             raise RuntimeError("TrueForge session id was unavailable")
-        boundary_directory = (
-            _trueforge_data_directory(runtime_directory / "home") / "sandboxes" / session["id"] / "tf0-b"
-        )
-        boundary_directory.parent.mkdir(parents=True, exist_ok=True)
-        boundary_directory.mkdir()
-        boundary_canaries.append(_make_boundary_canary(boundary_directory, checkout_sentinel, "a"))
-        boundary_canaries.append(_make_boundary_canary(boundary_directory, private_sentinel, "b"))
+        if not _sentinels_intact(
+            [checkout_sentinel, private_sentinel],
+            [checkout_value, private_value],
+        ):
+            raise RuntimeError("boundary sentinels were unavailable before the sandbox attempt")
+        sandbox_parent = _trueforge_data_directory(runtime_directory / "home") / "sandboxes" / session["id"]
+
+        def stage_helper(ltr_path: str) -> None:
+            nonlocal boundary_helper
+            boundary_helper = _stage_boundary_helper(
+                sandbox_parent,
+                ltr_path,
+                checkout_sentinel,
+                private_sentinel,
+            )
+
+        model.configure_boundary_helper(stage_helper)
         turn_status, turn_payload = _request(
             trueforge.base_url,
             "POST",
@@ -696,48 +762,22 @@ def run_live_probe() -> dict[str, Any]:
         _, raw_events_payload = _request(
             trueforge.base_url, "GET", f"/api/v1/sessions/{session['id']}/events?limit=100"
         )
+        sentinels_intact = _sentinels_intact(
+            [checkout_sentinel, private_sentinel],
+            [checkout_value, private_value],
+        )
+        private_data_clear = not _contains_prohibited_boundary_data(
+            (facade.results, model.request_bodies, raw_events_payload),
+            [checkout_sentinel, private_sentinel],
+            [checkout_value, private_value],
+        )
         events_payload = _sanitized_events_payload(raw_events_payload)
         sandbox_call_ids = _tool_call_ids(events_payload, "exec")
         sandbox_evidence = _sandbox_analysis_evidence(
             events_payload, sandbox_call_ids[0] if len(sandbox_call_ids) == 1 else None
         )
-        canary_metadata_valid = (
-            checkout_sentinel is not None
-            and private_sentinel is not None
-            and checkout_value is not None
-            and private_value is not None
-            and _boundary_canary_metadata_matches(
-                boundary_canaries,
-                [checkout_sentinel, private_sentinel],
-                [checkout_value, private_value],
-            )
-        )
-        private_data_clear = (
-            boundary_directory is not None
-            and checkout_sentinel is not None
-            and private_sentinel is not None
-            and checkout_value is not None
-            and private_value is not None
-            and home_alias is not None
-            and not _contains_boundary_data(
-                (facade.results, model.request_bodies, events_payload),
-                [
-                    ROOT,
-                    runtime_directory,
-                    runtime_directory / "tmp",
-                    runtime_directory / "home",
-                    runtime_directory / "trueforge.sqlite",
-                    home_alias,
-                    private_runtime,
-                    checkout_sentinel,
-                    private_sentinel,
-                    boundary_directory,
-                    *boundary_canaries,
-                ],
-                [checkout_value, private_value],
-            )
-        )
-        sandbox_evidence["canary_metadata_valid"] = canary_metadata_valid
+        sandbox_evidence["sentinels_intact"] = sentinels_intact
+        sandbox_evidence["helper_staged"] = model.boundary_helper_staged
         sandbox_evidence["private_data_clear"] = private_data_clear
         publish_call_ids = _tool_call_ids(events_payload, "publish_revision")
         approval = _approval_evidence(events_payload, publish_call_ids)
@@ -766,16 +806,14 @@ def run_live_probe() -> dict[str, Any]:
             raise RuntimeError("one or more TrueForge Phase 0 gates failed")
         return {"overall": "PASS", "gates": gates, "runtime": TRUEFORGE_VERSION}
     finally:
+        if boundary_helper is not None:
+            boundary_helper.unlink(missing_ok=True)
         if trueforge is not None:
             trueforge.stop()
         if model is not None:
             model.close()
         if facade is not None:
             facade.close()
-        for canary in boundary_canaries:
-            canary.unlink(missing_ok=True)
-        if boundary_directory is not None:
-            shutil.rmtree(boundary_directory, ignore_errors=True)
         if home_alias is not None:
             home_alias.unlink(missing_ok=True)
         if checkout_sentinel is not None:
