@@ -31,7 +31,7 @@ agent:
     "In Progress": 4
   max_turns: 12
 codex:
-  command: codex app-server
+  command: codex app-server -c 'model="gpt-5.6-luna"' -c 'model_reasoning_effort="xhigh"'
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite

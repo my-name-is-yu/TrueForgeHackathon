@@ -47,6 +47,8 @@ agents, ramps cold starts through one `Todo` issue at a time, uses isolated work
 `yu/` branches, and keeps human review before merge with no automatic merge. Ready work is
 released in dependency-safe waves by adding the `symphony` label only after prerequisite PRs
 are merged to `main`.
+Symphony-launched Codex agents are pinned by this repository to GPT-5.6 Luna with `xhigh`
+reasoning. This does not change the Mac mini's host-wide Codex model or reasoning defaults.
 The HTTP dashboard is disabled because the pinned preview build reports known vulnerabilities
 in several web-server dependencies.
 
