@@ -493,8 +493,10 @@ Acceptance:
 - [ ] Infrastructure interruption replays only the exact RECOVERING attempt
 - [ ] A completed terminal failure prevents another qualification for the case
 - [ ] A passing attempt prepares a qualified core containing exactly `repaired.xml`, `patch-manifest.json`, and `qualification.json`; no ledger, manifest, promotion receipt, or event bytes enter `qualified_core_sha256`
+- [ ] AA-06A exposes one pure digest helper consumed, not reimplemented, by AA-06B: hash each exact file's bytes, sort entries by UTF-8 filename, encode `{"files":[{"path":...,"sha256":...,"size":...}]}` with UTF-8 `json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=False)`, then SHA-256 those canonical index bytes
+- [ ] `qualification.json` contains neither `qualified_core_sha256` nor ticket, ledger, manifest, or PROMOTED data, so the three-file digest cannot refer to itself
 - [ ] `QUALIFICATION_PASSED` stores that already-computed `qualified_core_sha256`, and the complete promotion ticket binds the same digest for AA-06B
-- [ ] Tests fail if the qualified-core member set changes or if computing its digest depends on the ledger event that records it
+- [ ] Cross-contract tests run AA-06A output through the helper AA-06B will consume and fail on member, byte, filename, framing, or order drift, including any dependency on the ledger event that records the digest
 
 Required verification:
 
@@ -625,9 +627,11 @@ Acceptance:
 - [ ] Forged, stale, or incomplete tickets are rejected before export
 - [ ] Publication re-materializes exactly the three qualified-core files and rejects any mismatch with the `qualified_core_sha256` stored in both the ticket and `QUALIFICATION_PASSED`
 - [ ] Export uses temp write, fsync, content verification, and atomic directory rename
-- [ ] Only after verifying the three-file core, publication generates `ledger-through-qualification.jsonl`; it ends at `QUALIFICATION_PASSED` and is excluded from `qualified_core_sha256`
-- [ ] `manifest.json` lists the qualified-core digest plus every exported file hash without feeding either the manifest or ledger back into the qualified-core digest
+- [ ] Only after verifying the three-file core, publication generates the canonically named `ledger-through-qualification.jsonl`; it ends at `QUALIFICATION_PASSED` and is excluded from `qualified_core_sha256`
+- [ ] `manifest.json` contains `qualified_core_sha256` plus exact byte hashes for only the three core files and `ledger-through-qualification.jsonl`; it explicitly excludes `manifest.json` itself and uses the same canonical JSON encoding rule
+- [ ] `manifest_sha256` is SHA-256 of the exact canonical `manifest.json` bytes; no `PROMOTED` event exists before directory rename, and only after successful rename is that digest committed in `PROMOTED`
 - [ ] Tests fail if a ledger, manifest, promotion receipt, or event is added to the qualified-core member set, or if any of the three core files changes after ticket creation
+- [ ] Failure injection proves rename-before-event reconciles to one `PROMOTED` carrying the same on-disk `manifest_sha256`, while replay after the event never rewrites the bundle
 - [ ] Startup reconciliation leaves exactly one valid bundle and a PROMOTED event with its manifest hash
 
 Required verification:
