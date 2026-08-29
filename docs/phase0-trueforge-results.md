@@ -27,7 +27,7 @@ uv run python -m spikes.phase0.trueforge.probe
 git diff --check
 ```
 
-The fresh verification produced 7 upstream tests passed, 21 TrueForge tests
+The fresh verification produced 7 upstream tests passed, 27 TrueForge tests
 passed, and two standalone live probe runs with `PASS` for all five gates.
 Each successful run left zero per-run runtime directories. A bounded synthetic
 startup failure was also exercised and left zero per-run runtime directories.

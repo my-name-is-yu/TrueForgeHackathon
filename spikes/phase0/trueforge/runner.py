@@ -8,6 +8,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -65,6 +66,27 @@ def _events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [entry.get("event", entry) if isinstance(entry, dict) else {} for entry in value]
 
 
+def _sanitize_event(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _sanitize_event(child) for key, child in value.items() if key != "sandbox_id"}
+    if isinstance(value, list):
+        return [_sanitize_event(child) for child in value]
+    return value
+
+
+def _sanitized_events_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized: list[dict[str, Any]] = []
+    for event in _events(payload):
+        if str(event.get("type", "")).startswith("sandbox."):
+            continue
+        sanitized.append(
+            {
+                "event": _sanitize_event(event),
+            }
+        )
+    return {"data": sanitized}
+
+
 def _render_cgl_png() -> bytes:
     async def render() -> bytes:
         async def call(session) -> bytes:
@@ -93,13 +115,13 @@ def _render_cgl_png() -> bytes:
 
 
 class TrueForgeProcess:
-    def __init__(self, port: int, runtime_root: Path, home_directory: Path) -> None:
+    def __init__(self, port: int, runtime_root: Path, home_alias: Path) -> None:
         self.port = port
         self.runtime_root = runtime_root
-        self.home_directory = home_directory
+        self.home_alias = home_alias
         self.process: subprocess.Popen[bytes] | None = None
         self.temp_directory: Path | None = None
-        self.home_created = False
+        self.home_alias_created = False
 
     @property
     def base_url(self) -> str:
@@ -109,15 +131,16 @@ class TrueForgeProcess:
         executable = ROOT / "node_modules/.bin/trueforge"
         if not executable.is_file():
             raise RuntimeError("TrueForge 0.1.4 runtime is not installed")
-        home = self.home_directory
+        home = self.runtime_root / "home"
         temp = self.runtime_root / "tmp"
         home.mkdir()
-        self.home_created = True
+        self.home_alias.symlink_to(home, target_is_directory=True)
+        self.home_alias_created = True
         temp.mkdir()
         self.temp_directory = temp
         environment = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "HOME": str(home),
+            "HOME": str(self.home_alias),
             "TMPDIR": str(temp),
             "STANDALONE": "true",
             "HOST": "127.0.0.1",
@@ -158,9 +181,9 @@ class TrueForgeProcess:
             if self.temp_directory is not None:
                 shutil.rmtree(self.temp_directory, ignore_errors=True)
                 self.temp_directory = None
-            if self.home_created:
-                shutil.rmtree(self.home_directory, ignore_errors=True)
-                self.home_created = False
+            if self.home_alias_created:
+                self.home_alias.unlink(missing_ok=True)
+                self.home_alias_created = False
 
 
 def _save_mcp_connection(trueforge: TrueForgeProcess, facade: DummyFacade, bearer: str, origin: str) -> int:
@@ -455,6 +478,11 @@ def _make_boundary_canary(directory: Path, target: Path, name: str) -> Path:
     return path
 
 
+def _trueforge_data_directory(home: Path) -> Path:
+    relative = Path("Library", "Application Support") if sys.platform == "darwin" else Path(".local", "share")
+    return home / relative / "trueforge"
+
+
 def _boundary_canary_metadata_matches(canaries: list[Path], targets: list[Path]) -> bool:
     if len(canaries) != len(targets):
         return False
@@ -483,12 +511,16 @@ def _contains_boundary_data(observed: Any, paths: list[Path], values: list[bytes
     needles = [str(path) for path in paths]
     for value in values:
         representation = repr(value)
+        unicode_escape = "".join(f"\\u{byte:04x}" for byte in value)
+        escaped_unicode = json.dumps(unicode_escape)[1:-1]
         needles.extend(
             (
                 value.hex(),
                 base64.b64encode(value).decode("ascii"),
                 representation,
                 json.dumps(representation),
+                unicode_escape,
+                escaped_unicode,
             )
         )
     if any(needle in serialized for needle in needles):
@@ -521,9 +553,8 @@ def run_live_probe() -> dict[str, Any]:
     private_sentinel: Path | None = None
     private_value: bytes | None = None
     boundary_directory: Path | None = None
-    boundary_directory_owned = False
     boundary_canaries: list[Path] = []
-    home_directory = Path("/tmp") / "tf0-h"
+    home_alias: Path | None = None
     trueforge: TrueForgeProcess | None = None
     facade: DummyFacade | None = None
     model: ModelServer | None = None
@@ -532,13 +563,10 @@ def run_live_probe() -> dict[str, Any]:
         private_runtime = runtime_directory / "private-runtime"
         private_runtime.mkdir()
         private_sentinel, private_value = _make_sentinel(private_runtime, "sentinel-")
-        boundary_directory = Path("/tmp") / "tf0-b"
-        boundary_directory.mkdir()
-        boundary_directory_owned = True
-        boundary_canaries.append(_make_boundary_canary(boundary_directory, checkout_sentinel, "a"))
-        boundary_canaries.append(_make_boundary_canary(boundary_directory, private_sentinel, "b"))
         image = _render_cgl_png()
-        trueforge = TrueForgeProcess(_free_port(), runtime_directory, home_directory)
+        home_alias = Path(tempfile.mkdtemp(prefix="tf0-home-", dir=tempfile.gettempdir()))
+        home_alias.rmdir()
+        trueforge = TrueForgeProcess(_free_port(), runtime_directory, home_alias)
         allowed_origin = f"http://localhost:{trueforge.port}"
         facade = DummyFacade("phase0-bearer", allowed_origin, image=image)
         model = ModelServer(ROOT)
@@ -639,6 +667,13 @@ def run_live_probe() -> dict[str, Any]:
 
         if not isinstance(session, dict) or not session.get("id"):
             raise RuntimeError("TrueForge session id was unavailable")
+        boundary_directory = (
+            _trueforge_data_directory(runtime_directory / "home") / "sandboxes" / session["id"] / "tf0-b"
+        )
+        boundary_directory.parent.mkdir(parents=True, exist_ok=True)
+        boundary_directory.mkdir()
+        boundary_canaries.append(_make_boundary_canary(boundary_directory, checkout_sentinel, "a"))
+        boundary_canaries.append(_make_boundary_canary(boundary_directory, private_sentinel, "b"))
         turn_status, turn_payload = _request(
             trueforge.base_url,
             "POST",
@@ -657,7 +692,10 @@ def run_live_probe() -> dict[str, Any]:
         if turn_status in {200, 201}:
             turn = _wait_for_turn(trueforge, session["id"], turn_payload)
         turn_state = _turn_status(turn)
-        _, events_payload = _request(trueforge.base_url, "GET", f"/api/v1/sessions/{session['id']}/events?limit=100")
+        _, raw_events_payload = _request(
+            trueforge.base_url, "GET", f"/api/v1/sessions/{session['id']}/events?limit=100"
+        )
+        events_payload = _sanitized_events_payload(raw_events_payload)
         sandbox_call_ids = _tool_call_ids(events_payload, "exec")
         sandbox_evidence = _sandbox_analysis_evidence(
             events_payload, sandbox_call_ids[0] if len(sandbox_call_ids) == 1 else None
@@ -673,12 +711,16 @@ def run_live_probe() -> dict[str, Any]:
             and private_sentinel is not None
             and checkout_value is not None
             and private_value is not None
+            and home_alias is not None
             and not _contains_boundary_data(
                 (facade.results, model.request_bodies, events_payload),
                 [
                     ROOT,
                     runtime_directory,
                     runtime_directory / "tmp",
+                    runtime_directory / "home",
+                    runtime_directory / "trueforge.sqlite",
+                    home_alias,
                     private_runtime,
                     checkout_sentinel,
                     private_sentinel,
@@ -725,8 +767,10 @@ def run_live_probe() -> dict[str, Any]:
             facade.close()
         for canary in boundary_canaries:
             canary.unlink(missing_ok=True)
-        if boundary_directory_owned and boundary_directory is not None:
+        if boundary_directory is not None:
             shutil.rmtree(boundary_directory, ignore_errors=True)
+        if home_alias is not None:
+            home_alias.unlink(missing_ok=True)
         if checkout_sentinel is not None:
             checkout_sentinel.unlink(missing_ok=True)
         shutil.rmtree(runtime_directory, ignore_errors=True)

@@ -346,7 +346,7 @@ class ModelServer:
                         "    except OSError:\n"
                         "        return 'error'\n"
                         "    return 'readable'\n"
-                        "boundary_directory=pathlib.Path('/').joinpath('tmp','tf0-b')\n"
+                        "boundary_directory=pathlib.Path.cwd().parent/'tf0-b'\n"
                         "boundary_canaries={'a':boundary_directory/'a' if boundary_directory else None,'b':boundary_directory/'b' if boundary_directory else None}\n"
                         "checkout_isolated=boundary_status(boundary_canaries.get('a'))=='blocked'\n"
                         "private_runtime_isolated=boundary_status(boundary_canaries.get('b'))=='blocked'\n"
