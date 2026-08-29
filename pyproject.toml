@@ -31,4 +31,5 @@ allow-direct-references = true
 testpaths = ["tests"]
 markers = [
     "phase0_upstream: requires the pinned local MuJoCo MCP stdio server",
+    "phase0_trueforge: requires the pinned local TrueForge 0.1.4 runtime",
 ]

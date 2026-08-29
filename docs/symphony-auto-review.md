@@ -29,7 +29,9 @@ Every dispatched issue has exactly one Linear comment containing
 `<!-- symphony-workpad:v1 -->`. It records acceptance criteria, current phase and next action, PR
 identity, exact head SHA, checks, known follow-up/dependency context, frozen contracts,
 review-source evidence, Sol decisions, counters, and follow-up
-candidates. The helper creates or updates that comment without printing the API key:
+candidates. Symphony agents create or update it through the authenticated `linear_graphql` dynamic
+tool. Symphony intentionally keeps `LINEAR_API_KEY` out of the agent process; the repository helper
+below is only for human-operated diagnostics from an environment that already has that credential:
 
 ```sh
 python3 scripts/symphony_linear.py workpad get YU-123 > /tmp/YU-123-workpad.md
@@ -85,8 +87,9 @@ issue to `Blocked`; the cap never authorizes merge.
 review sources and late comments were processed, accepted findings are zero, required verification
 passed, the tree is clean, and base synchronization is satisfied. The workflow never merges.
 
-Out-of-scope improvements are created in `Backlog`, never `Todo`. The helper derives a stable
-source/title fingerprint and returns an existing candidate instead of creating a duplicate:
+Out-of-scope improvements are created in `Backlog`, never `Todo`. Agents query and mutate them
+through `linear_graphql`. For human-operated diagnostics, the helper derives a stable source/title
+fingerprint and returns an existing candidate instead of creating a duplicate:
 
 ```sh
 python3 scripts/symphony_linear.py backlog YU-123 \

@@ -59,15 +59,16 @@ Operating rules:
 
 1. Work only inside the provided repository clone. Never inspect or modify another checkout.
 2. The Linear issue is the durable control plane. At the start of every turn, read the single
-   Symphony Workpad (`<!-- symphony-workpad:v1 -->`) with
-   `python3 scripts/symphony_linear.py workpad get {{ issue.identifier }}`.
-   Create or update it with the same command's `upsert` subcommand before implementation, every
-   state transition, every push, each review decision, and before stopping. The Workpad, Git, PR,
-   and current Linear state are authoritative; never depend on conversation or session lifetime.
+   Symphony Workpad (`<!-- symphony-workpad:v1 -->`) through the authenticated `linear_graphql`
+   dynamic tool. Create or update that one marked comment through the same tool before
+   implementation, every state transition, every push, each review decision, and before stopping.
+   The Workpad, Git, PR, and current Linear state are authoritative; never depend on conversation
+   or session lifetime.
    Populate design boundaries, known prerequisites/follow-up issues, dependencies, and frozen
-   contracts from the issue/project evidence. Missing context stays explicitly unknown.
-3. If the issue is in `Todo`, move it to `In Progress` with
-   `python3 scripts/symphony_linear.py state {{ issue.identifier }} 'In Progress'` before changing
+   contracts from the issue/project evidence. Missing context stays explicitly unknown. Never read
+   tracker credentials or call `scripts/symphony_linear.py`; Symphony keeps tracker auth behind the
+   dynamic-tool boundary.
+3. If the issue is in `Todo`, move it to `In Progress` through `linear_graphql` before changing
    files. Resume `In Progress`, `Auto Review`, or `Rework` from the Workpad's exact next action.
    If required states or acceptance criteria are absent, record evidence and move to `Blocked`.
 4. Reproduce or inspect current behavior before implementing. Preserve unrelated work, avoid
@@ -120,7 +121,7 @@ Operating rules:
      source comment represented by a rejected finding with its evidence-based rationale. If a
      required reply cannot be published, block rather than silently losing the decision record.
      Record conflicts and human decisions.
-     For each `backlog` finding, create or deduplicate the named candidate with the helper in step
+     For each `backlog` finding, create or deduplicate the named candidate as described in step
      12. Its body must preserve Sol's acceptance-necessity, dependency/contract alignment, YAGNI
      risk, and evidence. Record its URL/fingerprint before proceeding; never mix it into current-PR
      rework.
@@ -137,9 +138,9 @@ Operating rules:
    already have a created-or-deduplicated candidate recorded in the Workpad. Re-read the PR once after the gate.
    Record every proof in the Workpad, then move to `Merge Ready`. Only a human may merge or mark Done.
 12. Automatically create a separate Backlog candidate when work reveals a concrete, evidenced,
-   out-of-scope improvement. Write a narrow title/body and run
-   `python3 scripts/symphony_linear.py backlog {{ issue.identifier }} --title TITLE --body-file FILE`.
-   The helper deduplicates by source/title fingerprint and creates only `Backlog`, never `Todo`.
+   out-of-scope improvement. Through `linear_graphql`, query existing candidates first, then create
+   one only when no issue has the same source identifier and normalized title. Create only in
+   `Backlog`, never `Todo`.
    Record the returned issue or duplicate in the Workpad. Do not create candidates from reviewer
    wording alone, do not recursively expand candidates, and create at most three per source issue.
 13. On credentials, permissions, uncertainty, P0/P1 conflict, invalid Sol output, test failure that
