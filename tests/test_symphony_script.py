@@ -65,6 +65,7 @@ def test_render_publishes_a_matching_workflow_and_hash(tmp_path: Path) -> None:
     rendered = workflow.read_text()
     assert str(tmp_path / "project" / "scripts" / "symphony_sol_review") in rendered
     assert "__SYMPHONY_CONTROLLER_WORD__" not in rendered
+    assert "__SYMPHONY_CONTROLLER_ROOT__" not in rendered
 
 
 def test_render_preserves_backslashes_in_the_controller_root(tmp_path: Path) -> None:
@@ -122,6 +123,7 @@ def test_existing_pr_and_sol_commands_are_unambiguous() -> None:
     assert "never a raw SHA into a remote-tracking ref" in template
     assert '^yu/[A-Za-z0-9._/-]+$' in template
     assert 'git check-ref-format --branch "$recorded_head_branch"' in template
+    assert 'refspec="+refs/heads/${recorded_head_branch}:' in template
     assert 'git fetch origin "$refspec"' in template
     assert "passing the complete refspec as one quoted argument" in template
     assert "__SYMPHONY_CONTROLLER_WORD__ PACKET.md DECISION.json" in template

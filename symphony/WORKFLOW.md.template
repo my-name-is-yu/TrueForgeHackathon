@@ -58,9 +58,8 @@ record that clearly in Linear instead of inventing product requirements.
 Operating rules:
 
 1. Work only inside the provided repository clone. Never inspect or modify another checkout. The
-   sole exception is executing the trusted controller wrapper at
-   `__SYMPHONY_CONTROLLER_ROOT__/scripts/symphony_sol_review`; do not inspect or modify other files
-   in that controller root.
+   sole exception is executing only the shell-quoted absolute controller executable rendered in
+   the review protocol below; do not inspect or modify other files in that controller root.
 2. The Linear issue is the durable control plane. At the start of every turn, read the single
    Symphony Workpad (`<!-- symphony-workpad:v1 -->`) through the authenticated `linear_graphql`
    dynamic tool. Create or update that one marked comment through the same tool before
@@ -82,7 +81,7 @@ Operating rules:
      `git check-ref-format --branch "$recorded_head_branch"` to succeed; otherwise move to `Blocked`.
      Never paste an unvalidated Workpad value into shell source. Fetch the named remote branch,
      never a raw SHA into a remote-tracking ref: construct
-     `refspec="refs/heads/${recorded_head_branch}:refs/remotes/origin/${recorded_head_branch}"` and run
+     `refspec="+refs/heads/${recorded_head_branch}:refs/remotes/origin/${recorded_head_branch}"` and run
      `git fetch origin "$refspec"`, passing the complete refspec as one quoted argument,
      then create/switch the local branch from that exact remote-tracking ref. Verify the resulting
      local HEAD equals the recorded SHA before changing the index or worktree. Then use the Codex
