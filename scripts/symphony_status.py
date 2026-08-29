@@ -63,24 +63,43 @@ def service_status() -> dict[str, Any]:
     return parse_launchctl(result.stdout)
 
 
-def agent_processes() -> list[dict[str, Any]]:
+def agent_processes(service_pid: int | None) -> list[dict[str, Any]]:
+    if service_pid is None:
+        return []
     result = run(["ps", "-axo", "pid=,ppid=,etime=,command="])
     if result.returncode != 0:
         return []
-    candidates: list[dict[str, Any]] = []
+    processes: list[dict[str, Any]] = []
     for line in result.stdout.splitlines():
         match = re.match(r"\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$", line)
-        if not match or "codex app-server" not in match.group(4):
+        if not match:
             continue
-        candidates.append(
+        processes.append(
             {
                 "pid": int(match.group(1)),
                 "ppid": int(match.group(2)),
                 "elapsed": match.group(3),
+                "command": match.group(4),
             }
         )
+    descendants = {service_pid}
+    while True:
+        discovered = {process["pid"] for process in processes if process["ppid"] in descendants}
+        expanded = descendants | discovered
+        if expanded == descendants:
+            break
+        descendants = expanded
+    candidates = [
+        process
+        for process in processes
+        if process["pid"] in descendants and "codex app-server" in process["command"]
+    ]
     pids = {process["pid"] for process in candidates}
-    return [process for process in candidates if process["ppid"] not in pids]
+    return [
+        {key: process[key] for key in ("pid", "ppid", "elapsed")}
+        for process in candidates
+        if process["ppid"] not in pids
+    ]
 
 
 def iso_mtime(path: Path) -> str | None:
@@ -132,9 +151,31 @@ def repository_slug(project_root: Path) -> str | None:
     return match.group(1) if match else None
 
 
-def pull_request(repo: str | None, branch: str | None) -> dict[str, Any] | None:
-    if not repo or not branch or branch in {"main", "master", "HEAD"}:
-        return None
+def summarize_checks(checks: list[dict[str, Any]]) -> dict[str, int]:
+    successful = 0
+    pending = 0
+    failing = 0
+    for check in checks:
+        result = check.get("conclusion") or check.get("state")
+        if result in {"SUCCESS", "NEUTRAL", "SKIPPED"}:
+            successful += 1
+        elif result in {"PENDING", "EXPECTED"} or result is None:
+            pending += 1
+        else:
+            failing += 1
+    return {
+        "total": len(checks),
+        "successful": successful,
+        "failing": failing,
+        "pending": pending,
+    }
+
+
+def pull_request(repo: str | None, branch: str | None) -> tuple[str, dict[str, Any] | None]:
+    if not repo or not branch:
+        return "unavailable", None
+    if branch in {"main", "master", "HEAD"}:
+        return "not_applicable", None
     result = run(
         [
             "gh",
@@ -153,24 +194,17 @@ def pull_request(repo: str | None, branch: str | None) -> dict[str, Any] | None:
         ]
     )
     if result.returncode != 0:
-        return None
+        return "error", None
     try:
         matches = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return None
+        return "error", None
     if not matches:
-        return None
+        return "ok", None
     pr = matches[0]
     checks = pr.pop("statusCheckRollup", [])
-    pr["checks"] = {
-        "total": len(checks),
-        "failing": sum(
-            check.get("conclusion") in {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
-            for check in checks
-        ),
-        "pending": sum(not check.get("conclusion") for check in checks),
-    }
-    return pr
+    pr["checks"] = summarize_checks(checks)
+    return "ok", pr
 
 
 def linear_issue(identifier: str, api_key: str | None) -> dict[str, Any] | None:
@@ -207,8 +241,8 @@ def github_available(enabled: bool) -> bool:
 
 def workspace_status(
     workspace: Path,
-    repo: str | None,
-    include_github: bool,
+    github_enabled: bool,
+    github_is_available: bool,
     linear_api_key: str | None,
 ) -> dict[str, Any]:
     branch_result = run(["git", "branch", "--show-current"], cwd=workspace)
@@ -217,14 +251,23 @@ def workspace_status(
     head = head_result.stdout.strip() if head_result.returncode == 0 else None
     dirty_result = run(["git", "status", "--porcelain"], cwd=workspace)
     dirty = bool(dirty_result.stdout.strip()) if dirty_result.returncode == 0 else None
+    repo = repository_slug(workspace)
+    if not github_enabled:
+        pr_lookup, pr = "disabled", None
+    elif not github_is_available:
+        pr_lookup, pr = "unavailable", None
+    else:
+        pr_lookup, pr = pull_request(repo, branch)
     return {
         "issue": workspace.name,
+        "repository": repo,
         "branch": branch,
         "dirty": dirty,
         "head": head,
         "last_file_update_at": latest_workspace_update(workspace),
         "linear": linear_issue(workspace.name, linear_api_key),
-        "pull_request": pull_request(repo, branch) if include_github else None,
+        "pull_request_lookup": pr_lookup,
+        "pull_request": pr,
     }
 
 
@@ -234,21 +277,34 @@ def collect(project_root: Path, include_github: bool) -> dict[str, Any]:
         os.environ.get("SYMPHONY_WORKSPACE_ROOT", str(symphony_home / "workspaces"))
     )
     service = service_status()
-    agents = agent_processes()
-    repo = repository_slug(project_root)
+    agents = agent_processes(service["pid"])
+    controller_repo = repository_slug(project_root)
     github_is_available = github_available(include_github)
     linear_api_key = os.environ.get("LINEAR_API_KEY")
     workspaces = []
     if workspace_root.is_dir():
         workspaces = [
-            workspace_status(path, repo, github_is_available, linear_api_key)
+            workspace_status(path, include_github, github_is_available, linear_api_key)
             for path in sorted(workspace_root.iterdir())
             if path.is_dir()
         ]
     stdout_log = symphony_home / "launchd.stdout.log"
     stderr_log = symphony_home / "launchd.stderr.log"
-    structured_log = symphony_home / "logs" / "log" / "symphony.log.1"
-    activity_times = [mtime(structured_log)]
+    structured_log_dir = symphony_home / "logs" / "log"
+    structured_logs = [structured_log_dir / "symphony.log"]
+    if structured_log_dir.is_dir():
+        structured_logs.extend(
+            path
+            for path in structured_log_dir.glob("symphony.log.*")
+            if path.suffix[1:].isdigit()
+        )
+    structured_mtimes = [(path, mtime(path)) for path in structured_logs]
+    latest_structured = max(
+        ((path, value) for path, value in structured_mtimes if value is not None),
+        key=lambda item: item[1],
+        default=(None, None),
+    )
+    activity_times = [latest_structured[1]]
     for workspace in workspaces:
         updated_at = workspace["last_file_update_at"]
         if updated_at:
@@ -269,7 +325,12 @@ def collect(project_root: Path, include_github: bool) -> dict[str, Any]:
         "logs": {
             "stdout_updated_at": iso_mtime(stdout_log),
             "stderr_updated_at": iso_mtime(stderr_log),
-            "structured_updated_at": iso_mtime(structured_log),
+            "structured_file": latest_structured[0].name if latest_structured[0] else None,
+            "structured_updated_at": (
+                datetime.fromtimestamp(latest_structured[1], timezone.utc).isoformat()
+                if latest_structured[1] is not None
+                else None
+            ),
         },
         "activity": {
             "latest_at": (
@@ -283,7 +344,7 @@ def collect(project_root: Path, include_github: bool) -> dict[str, Any]:
         "github": {
             "enabled": include_github,
             "available": github_is_available,
-            "repository": repo,
+            "controller_repository": controller_repo,
         },
         "linear": {"available": bool(linear_api_key)},
     }
@@ -297,12 +358,16 @@ def render_text(status: dict[str, Any]) -> str:
     ]
     for workspace in status["workspaces"]:
         pr = workspace["pull_request"]
-        pr_text = "no PR"
-        if pr:
+        lookup = workspace["pull_request_lookup"]
+        if lookup == "ok" and pr is None:
+            pr_text = "no PR"
+        elif lookup != "ok":
+            pr_text = f"PR unchecked ({lookup})"
+        else:
             checks = pr["checks"]
             pr_text = (
                 f"PR #{pr['number']} {pr['state']} review={pr.get('reviewDecision') or '-'} "
-                f"checks={checks['total'] - checks['failing'] - checks['pending']}/{checks['total']}"
+                f"checks={checks['successful']}/{checks['total']}"
             )
         lines.append(
             f"- {workspace['issue']}: branch={workspace['branch'] or '-'} "
