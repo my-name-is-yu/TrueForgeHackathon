@@ -59,3 +59,12 @@ def test_render_publishes_a_matching_workflow_and_hash(tmp_path: Path) -> None:
     workflow = runtime / "WORKFLOW.md"
     declared = (runtime / "WORKFLOW.sha256").read_text().strip()
     assert hashlib.sha256(workflow.read_bytes()).hexdigest() == declared
+
+
+def test_agent_linear_operations_stay_behind_the_authenticated_tool_boundary() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    assert "linear_graphql" in template
+    assert "scripts/symphony_linear.py" in template
+    assert "Never read\n   tracker credentials or call `scripts/symphony_linear.py`" in template
+    assert "python3 scripts/symphony_linear.py" not in template
