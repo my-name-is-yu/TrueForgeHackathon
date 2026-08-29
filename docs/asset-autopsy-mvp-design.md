@@ -963,12 +963,13 @@ QUALIFICATION_PASSED stores this qualified_core_sha256. It does not hash a ledge
 After approval:
 
 1. Materialize the qualified core under exports/.tmp-<ticket>.
-2. Generate ledger-through-qualification.jsonl, ending at QUALIFICATION_PASSED.
+2. Generate evidence-ledger.jsonl, ending at QUALIFICATION_PASSED.
 3. Generate manifest.json listing the core hash and every exported file hash.
 4. Verify and fsync files and directory.
 5. Atomically rename the directory to the fixed case export path on the same filesystem.
-6. Commit PROMOTED with manifest_sha256 to SQLite.
-7. On startup, reconcile an export whose valid manifest exists but whose event was interrupted.
+6. Fsync the destination parent directory so the renamed entry is durable.
+7. Commit PROMOTED with manifest_sha256 to SQLite.
+8. On startup, reconcile an export whose valid manifest exists but whose event was interrupted.
 
 The exported ledger intentionally ends at qualification; the later PROMOTED receipt remains in SQLite and the TrueForge session trace. This avoids a bundle/ledger hash cycle. It is a locally reconcilable publication protocol, not a claim of general exactly-once effects.
 

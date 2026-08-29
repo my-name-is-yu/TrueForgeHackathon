@@ -626,13 +626,13 @@ Acceptance:
 - [ ] Ticket equality binds exact revision, core, diff, results, and export name
 - [ ] Forged, stale, or incomplete tickets are rejected before export
 - [ ] Publication re-materializes exactly the three qualified-core files and rejects any mismatch with the `qualified_core_sha256` stored in both the ticket and `QUALIFICATION_PASSED`
-- [ ] Export uses temp write, fsync, content verification, and atomic directory rename
-- [ ] Only after verifying the three-file core, publication generates the canonically named `ledger-through-qualification.jsonl`; it ends at `QUALIFICATION_PASSED` and is excluded from `qualified_core_sha256`
-- [ ] `manifest.json` contains `qualified_core_sha256` plus exact byte hashes for only the three core files and `ledger-through-qualification.jsonl`; it explicitly excludes `manifest.json` itself and uses the same canonical JSON encoding rule
-- [ ] `manifest_sha256` is SHA-256 of the exact canonical `manifest.json` bytes; no `PROMOTED` event exists before directory rename, and only after successful rename is that digest committed in `PROMOTED`
+- [ ] Export uses temp write, file and temporary-directory fsync, content verification, atomic directory rename, and destination-parent-directory fsync in that order
+- [ ] Only after verifying the three-file core, publication generates `evidence-ledger.jsonl`; it ends at `QUALIFICATION_PASSED` and is excluded from `qualified_core_sha256`
+- [ ] `manifest.json` contains `qualified_core_sha256` plus exact byte hashes for only the three core files and `evidence-ledger.jsonl`; it explicitly excludes `manifest.json` itself and uses the same canonical JSON encoding rule
+- [ ] `manifest_sha256` is SHA-256 of the exact canonical `manifest.json` bytes; no `PROMOTED` event exists before rename and destination-parent fsync both succeed, and only then is that digest committed in `PROMOTED`
 - [ ] Tests fail if a ledger, manifest, promotion receipt, or event is added to the qualified-core member set, or if any of the three core files changes after ticket creation
-- [ ] Failure injection proves rename-before-event reconciles to one `PROMOTED` carrying the same on-disk `manifest_sha256`, while replay after the event never rewrites the bundle
-- [ ] Startup reconciliation leaves exactly one valid bundle and a PROMOTED event with its manifest hash
+- [ ] Failure injection proves: crash after rename but before parent fsync cannot leave `PROMOTED`; a surviving valid bundle is parent-fsynced then reconciled, a missing bundle remains unpromoted and retryable; crash after parent fsync but before event reconciles to one `PROMOTED`; replay after the event never rewrites the bundle
+- [ ] A durable valid final bundle reconciles to exactly one `PROMOTED` event with its manifest hash; if no final bundle survived, reconciliation creates no `PROMOTED` event and leaves publication retryable
 
 Required verification:
 
