@@ -84,13 +84,29 @@ AA-B00 (`YU-5`) is already Done and is the sole predecessor of AA-00A. It is not
 | 0B | AA-00B | 1 | AA-00A merged and all four upstream gates passed |
 | 1A | AA-02, AA-03, AA-04 | 3 | AA-00B merged and all five TrueForge gates passed |
 | 1B | AA-01 | 1 | AA-02 merged; AA-00B already transitively satisfied |
-| 2A | AA-05, AA-06A, AA-07, AA-08 | 4 | AA-01, AA-02, AA-03, and AA-04 all merged |
+| 2A | AA-05, AA-06A, AA-07, AA-08 | 4 | AA-01, AA-02, AA-03, and AA-04 all merged; host-capacity gate before activating a fourth leaf |
 | 2B | AA-06B | 1 | AA-06A merged |
 | 3A | AA-09A | 1 | AA-05, AA-06B, AA-07, and AA-08 all merged |
 | 3B | AA-09B | 1 | AA-09A merged |
-| 4 | AA-10A, AA-10B, AA-10C, AA-11 | 4 | AA-09B merged; AA-11 also requires a human-fixed project license |
+| 4 | AA-10A, AA-10B, AA-10C, AA-11 | 4 | AA-09B merged; host-capacity gate before activating a fourth leaf; AA-11 also requires a human-fixed project license |
 
 AA-06B may become ready while the other Wave 2A leaves are still in review, but AA-09A waits for all four integration inputs. `YU-29` starts only after AA-10A, AA-10B, AA-10C, and AA-11 are merged and the AA-10 rollup is verified. It reuses AA-09B evidence only when the final-code Git SHA and production-tree plus all commitment digests still match; any production change requires a fresh post-hardening run.
+
+### Host-capacity gate for width four
+
+`max_concurrent_agents: 4` is a scheduling ceiling, not permission to activate four leaves blindly. Before Wave 2A or Wave 4, the human dispatcher records a fresh capacity checkpoint in Linear:
+
+- total RAM and current macOS memory-pressure state;
+- whether swapouts continuously rise during the three-agent ramp;
+- free disk versus four measured shallow-clone plus frozen-environment footprints, with at least 20 percent headroom;
+- zero unexpected `codex app-server` exits or repeated Symphony retries during the ramp;
+- no dependency-install lock stall;
+- no external or manually launched live CGL, real TrueForge, private qualification/publication, or full-E2E workload while the four-wide wave is active;
+- enough human/Qodo review capacity to merge the current wave before activating the next one.
+
+If RAM is unverified or at most 8 GB, effective concurrency is capped at two. On a verified host above 8 GB, begin with at most three; activate the fourth leaf only after the first three have completed clone/environment startup and every checkpoint remains green. Warning or critical memory pressure, rising swapouts, insufficient disk, app-server exits, retry loops, or install-lock stalls forbid the fourth activation and require removing `symphony` from any queued leaf. Even on a larger host, four remains the hackathon ceiling.
+
+The live-workload restriction does not prohibit synthetic unit, contract, or failure-injection tests inside a leaf. In Wave 2A, AA-06A uses synthetic non-demo qualification fixtures and no leaf launches the real private runtime. In Wave 4, AA-10C is the sole renderer/runtime lane; AA-10A, AA-10B, and AA-11 must not launch CGL or a real TrueForge/private qualification/publication/full-E2E run. If evidence makes a second lane require one of those live resources, that lane reports a blocker and defers the command to a serial follow-on leaf instead of overlapping it.
 
 ## 6. Exact blocker graph
 
