@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -16,6 +17,26 @@ from typing import Any
 
 
 SERVICE_LABEL = "com.trueforge.symphony"
+
+
+def sha256(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def first_line(path: Path) -> str | None:
+    try:
+        with path.open(encoding="utf-8") as handle:
+            value = handle.readline().strip()
+    except OSError:
+        return None
+    return value or None
 
 
 def run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -239,6 +260,12 @@ def collect(project_root: Path) -> dict[str, Any]:
         if updated_at:
             activity_times.append(datetime.fromisoformat(updated_at).timestamp())
     latest_activity = max((value for value in activity_times if value is not None), default=None)
+    workflow_template = project_root / "symphony" / "WORKFLOW.md.template"
+    workflow_runtime = symphony_home / "runtime" / "WORKFLOW.md"
+    workflow_declared_sha = symphony_home / "runtime" / "WORKFLOW.sha256"
+    template_hash = sha256(workflow_template)
+    runtime_hash = sha256(workflow_runtime)
+    declared_hash = first_line(workflow_declared_sha)
     activity_age_seconds = (
         max(0, int(datetime.now(timezone.utc).timestamp() - latest_activity))
         if latest_activity is not None
@@ -279,6 +306,13 @@ def collect(project_root: Path) -> dict[str, Any]:
             "age_seconds": activity_age_seconds,
         },
         "linear": {"status": linear_status},
+        "workflow": {
+            "template_sha256": template_hash,
+            "runtime_sha256": runtime_hash,
+            "runtime_present": runtime_hash is not None,
+            "declared_runtime_sha256": declared_hash,
+            "runtime_verified": runtime_hash is not None and runtime_hash == declared_hash,
+        },
     }
 
 
@@ -287,6 +321,9 @@ def render_text(status: dict[str, Any]) -> str:
     lines = [
         f"Symphony: {status['health']} (state={service['state']}, pid={service['pid']}, runs={service['runs']}, last_exit={service['last_exit_code']})",
         f"Agents: {len(status['agents'])} (activity_age={status['activity']['age_seconds']}s)",
+        f"Workflow: template={status['workflow']['template_sha256'] or '-'} "
+        f"runtime={status['workflow']['runtime_sha256'] or '-'} "
+        f"verified={status['workflow']['runtime_verified']}",
     ]
     for workspace in status["workspaces"]:
         linear = workspace["linear"]
