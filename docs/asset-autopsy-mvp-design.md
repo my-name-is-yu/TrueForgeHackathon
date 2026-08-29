@@ -280,7 +280,7 @@ Server-side preconditions:
 
 - A revision needs a public baseline before it can be probed.
 - A probe writes its hypothesis event before the engine is called.
-- A revision needs completed probe evidence from the same base revision.
+- A revision cites exactly one completed probe run from the same base revision.
 - The patch target must appear in the cited hypothesis or competing explanation.
 - One revision changes exactly one XML attribute.
 - MVP history is linear: only the current head revision can be patched.
@@ -481,7 +481,7 @@ Input shape:
   "base_revision_id":"r000",
   "expected_base_sha256":"...",
   "basis_hypothesis_id":"hyp_...",
-  "basis_probe_run_ids":["run_probe_001"],
+  "basis_probe_run_id":"run_probe_001",
   "patch":{
     "target":{"kind":"joint","name":"<observed joint>"},
     "attribute":"<one allowed attribute>",

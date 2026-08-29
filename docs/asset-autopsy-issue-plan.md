@@ -255,6 +255,7 @@ Acceptance:
 - Large XML, traces, and images remain outside SQLite.
 - Objects use temporary write, fsync, hash verification, and atomic rename.
 - Revision plus ledger event commits atomically.
+- Every revision persists exactly one hypothesis event and one probe run citation.
 - Event-chain mutation is detected.
 - Linear head, qualification attempt, and promotion state can be restored.
 - RUNNING and RECOVERING qualification states persist exact attempt identity.
@@ -282,6 +283,7 @@ Acceptance:
 - Exactly seven tool input/output models are frozen.
 - Unknown fields and non-finite inputs are rejected.
 - Patch is one object, never an array.
+- create_revision accepts exactly one basis_probe_run_id, never an array.
 - Only joint axis, damping, armature, and frictionloss are editable.
 - Base hash and expected-old-value guards are enforced.
 - Axis normalization and family-level safety ranges are enforced.
