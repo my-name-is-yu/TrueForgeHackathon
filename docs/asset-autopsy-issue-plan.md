@@ -492,7 +492,9 @@ Acceptance:
 - [ ] Public output contains only aggregate status and failed clause IDs; partial and private child output is never published
 - [ ] Infrastructure interruption replays only the exact RECOVERING attempt
 - [ ] A completed terminal failure prevents another qualification for the case
-- [ ] A passing attempt produces the qualified-core identity and complete stored promotion ticket consumed by AA-06B
+- [ ] A passing attempt prepares a qualified core containing exactly `repaired.xml`, `patch-manifest.json`, and `qualification.json`; no ledger, manifest, promotion receipt, or event bytes enter `qualified_core_sha256`
+- [ ] `QUALIFICATION_PASSED` stores that already-computed `qualified_core_sha256`, and the complete promotion ticket binds the same digest for AA-06B
+- [ ] Tests fail if the qualified-core member set changes or if computing its digest depends on the ledger event that records it
 
 Required verification:
 
@@ -621,8 +623,11 @@ Acceptance:
 
 - [ ] Ticket equality binds exact revision, core, diff, results, and export name
 - [ ] Forged, stale, or incomplete tickets are rejected before export
+- [ ] Publication re-materializes exactly the three qualified-core files and rejects any mismatch with the `qualified_core_sha256` stored in both the ticket and `QUALIFICATION_PASSED`
 - [ ] Export uses temp write, fsync, content verification, and atomic directory rename
-- [ ] Exported ledger ends at QUALIFICATION_PASSED
+- [ ] Only after verifying the three-file core, publication generates `ledger-through-qualification.jsonl`; it ends at `QUALIFICATION_PASSED` and is excluded from `qualified_core_sha256`
+- [ ] `manifest.json` lists the qualified-core digest plus every exported file hash without feeding either the manifest or ledger back into the qualified-core digest
+- [ ] Tests fail if a ledger, manifest, promotion receipt, or event is added to the qualified-core member set, or if any of the three core files changes after ticket creation
 - [ ] Startup reconciliation leaves exactly one valid bundle and a PROMOTED event with its manifest hash
 
 Required verification:
