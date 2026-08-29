@@ -93,11 +93,13 @@ def _render_cgl_png() -> bytes:
 
 
 class TrueForgeProcess:
-    def __init__(self, port: int, runtime_root: Path) -> None:
+    def __init__(self, port: int, runtime_root: Path, home_directory: Path) -> None:
         self.port = port
         self.runtime_root = runtime_root
+        self.home_directory = home_directory
         self.process: subprocess.Popen[bytes] | None = None
         self.temp_directory: Path | None = None
+        self.home_created = False
 
     @property
     def base_url(self) -> str:
@@ -107,9 +109,10 @@ class TrueForgeProcess:
         executable = ROOT / "node_modules/.bin/trueforge"
         if not executable.is_file():
             raise RuntimeError("TrueForge 0.1.4 runtime is not installed")
-        home = self.runtime_root / "home"
+        home = self.home_directory
         temp = self.runtime_root / "tmp"
         home.mkdir()
+        self.home_created = True
         temp.mkdir()
         self.temp_directory = temp
         environment = {
@@ -155,6 +158,9 @@ class TrueForgeProcess:
             if self.temp_directory is not None:
                 shutil.rmtree(self.temp_directory, ignore_errors=True)
                 self.temp_directory = None
+            if self.home_created:
+                shutil.rmtree(self.home_directory, ignore_errors=True)
+                self.home_created = False
 
 
 def _save_mcp_connection(trueforge: TrueForgeProcess, facade: DummyFacade, bearer: str, origin: str) -> int:
@@ -485,7 +491,20 @@ def _contains_boundary_data(observed: Any, paths: list[Path], values: list[bytes
                 json.dumps(representation),
             )
         )
-    return any(needle in serialized for needle in needles)
+    if any(needle in serialized for needle in needles):
+        return True
+
+    def contains(value: Any) -> bool:
+        if isinstance(value, dict):
+            return any(contains(key) or contains(child) for key, child in value.items())
+        if isinstance(value, (list, tuple)):
+            return any(contains(child) for child in value)
+        if isinstance(value, str):
+            encoded = json.dumps(value)
+            return any(needle in value or needle in encoded for needle in needles)
+        return False
+
+    return contains(observed)
 
 
 def run_live_probe() -> dict[str, Any]:
@@ -504,6 +523,7 @@ def run_live_probe() -> dict[str, Any]:
     boundary_directory: Path | None = None
     boundary_directory_owned = False
     boundary_canaries: list[Path] = []
+    home_directory = Path("/tmp") / "tf0-h"
     trueforge: TrueForgeProcess | None = None
     facade: DummyFacade | None = None
     model: ModelServer | None = None
@@ -518,7 +538,7 @@ def run_live_probe() -> dict[str, Any]:
         boundary_canaries.append(_make_boundary_canary(boundary_directory, checkout_sentinel, "a"))
         boundary_canaries.append(_make_boundary_canary(boundary_directory, private_sentinel, "b"))
         image = _render_cgl_png()
-        trueforge = TrueForgeProcess(_free_port(), runtime_directory)
+        trueforge = TrueForgeProcess(_free_port(), runtime_directory, home_directory)
         allowed_origin = f"http://localhost:{trueforge.port}"
         facade = DummyFacade("phase0-bearer", allowed_origin, image=image)
         model = ModelServer(ROOT)
@@ -655,7 +675,16 @@ def run_live_probe() -> dict[str, Any]:
             and private_value is not None
             and not _contains_boundary_data(
                 (facade.results, model.request_bodies, events_payload),
-                [ROOT, private_runtime, checkout_sentinel, private_sentinel, boundary_directory, *boundary_canaries],
+                [
+                    ROOT,
+                    runtime_directory,
+                    runtime_directory / "tmp",
+                    private_runtime,
+                    checkout_sentinel,
+                    private_sentinel,
+                    boundary_directory,
+                    *boundary_canaries,
+                ],
                 [checkout_value, private_value],
             )
         )

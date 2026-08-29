@@ -208,3 +208,16 @@ def test_json_escaped_sentinel_representation_blocks_boundary_gate() -> None:
 
     assert gates["sandbox"]["result"] == "BLOCKED_HARD_GATE"
     assert all_pass is False
+
+
+def test_embedded_json_escaped_sentinel_representation_blocks_boundary_gate() -> None:
+    sentinel = b"\x00\xffphase0"
+    evidence = deepcopy(_passing_evidence())
+    evidence["sandbox"]["private_data_clear"] = not _contains_boundary_data(
+        {"event": {"stderr": f"diagnostic: {sentinel!r}"}}, [], [sentinel]
+    )
+
+    gates, all_pass = evaluate_phase0_gates(evidence)
+
+    assert gates["sandbox"]["result"] == "BLOCKED_HARD_GATE"
+    assert all_pass is False
