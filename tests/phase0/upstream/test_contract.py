@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import re
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,20 +31,27 @@ from spikes.phase0.upstream.stdio import with_stdio_session
 
 ROOT = Path(__file__).resolve().parents[3]
 UPSTREAM_COMMIT = "ce9bed80ec3698d7b778230abc21f2228a3ce94b"
+RENDER_SUMMARY = re.compile(
+    r"t=-?\d+\.\d{4}s \| \d+ contacts \| "
+    r"E=\[-?\d+\.\d{3}, -?\d+\.\d{3}\]"
+)
 
 
-def _single_png_data(result) -> str | None:
+def _render_png_data(result) -> str | None:
     blocks = getattr(result, "content", None)
-    if not isinstance(blocks, list) or len(blocks) != 1:
+    if not isinstance(blocks, list) or len(blocks) != 2:
         return None
-    block = blocks[0]
+    image, summary = blocks
     if (
-        getattr(block, "type", None) != "image"
-        or getattr(block, "mimeType", None) != "image/png"
-        or not isinstance(getattr(block, "data", None), str)
+        getattr(image, "type", None) != "image"
+        or getattr(image, "mimeType", None) != "image/png"
+        or not isinstance(getattr(image, "data", None), str)
+        or getattr(summary, "type", None) != "text"
+        or not isinstance(getattr(summary, "text", None), str)
+        or RENDER_SUMMARY.fullmatch(summary.text) is None
     ):
         return None
-    return block.data
+    return image.data
 
 
 def test_dependency_lock_is_exact_and_frozen() -> None:
@@ -96,7 +104,7 @@ def test_cgl_renders_160_by_120_primitive_scene() -> None:
                 )
                 if result.isError:
                     return False
-                png_data = _single_png_data(result)
+                png_data = _render_png_data(result)
                 if png_data is None:
                     return False
                 image = Image.open(io.BytesIO(base64.b64decode(png_data)))
@@ -178,11 +186,22 @@ def test_adapter_rejects_schema_drift() -> None:
 
 
 def test_render_gate_rejects_additional_response_content() -> None:
-    result = SimpleNamespace(
+    unexpected_summary = SimpleNamespace(
         content=[
             SimpleNamespace(type="image", mimeType="image/png", data="data"),
             SimpleNamespace(type="text", text="private traceback"),
         ]
     )
+    additional_block = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="image", mimeType="image/png", data="data"),
+            SimpleNamespace(
+                type="text",
+                text="t=0.0000s | 0 contacts | E=[0.000, 0.000]",
+            ),
+            SimpleNamespace(type="text", text="private traceback"),
+        ]
+    )
 
-    assert _single_png_data(result) is None
+    assert _render_png_data(unexpected_summary) is None
+    assert _render_png_data(additional_block) is None
