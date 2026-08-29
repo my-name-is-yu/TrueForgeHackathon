@@ -1,0 +1,34 @@
+[project]
+name = "asset-autopsy"
+version = "0.0.0"
+description = "Phase 0 integration probes for Asset Autopsy"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mcp==1.26.0",
+    "mujoco==3.5.0",
+    "mujoco-mcp-server @ git+https://github.com/Rongxuan-Zhou/mujoco-mcp-server.git@ce9bed80ec3698d7b778230abc21f2228a3ce94b",
+]
+
+[dependency-groups]
+test = [
+    "pytest==8.4.1",
+]
+
+[tool.uv]
+default-groups = ["test"]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/asset_autopsy"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "phase0_upstream: requires the pinned local MuJoCo MCP stdio server",
+]
