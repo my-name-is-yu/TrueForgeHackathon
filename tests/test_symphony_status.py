@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import http.client
 import io
 import json
 import os
@@ -141,6 +142,16 @@ def test_linear_issue_reports_api_errors(monkeypatch) -> None:
     def fail_request(_request, timeout):
         assert timeout == 10
         raise symphony_status.urllib.error.URLError("offline")
+
+    monkeypatch.setattr(symphony_status.urllib.request, "urlopen", fail_request)
+
+    assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
+
+
+def test_linear_issue_reports_truncated_responses(monkeypatch) -> None:
+    def fail_request(_request, timeout):
+        assert timeout == 10
+        raise http.client.IncompleteRead(b'{"data":')
 
     monkeypatch.setattr(symphony_status.urllib.request, "urlopen", fail_request)
 
