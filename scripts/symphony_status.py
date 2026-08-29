@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -142,71 +141,6 @@ def classify_health(
     return "working"
 
 
-def repository_slug(project_root: Path) -> str | None:
-    result = run(["git", "remote", "get-url", "origin"], cwd=project_root)
-    if result.returncode != 0:
-        return None
-    remote = result.stdout.strip()
-    match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote)
-    return match.group(1) if match else None
-
-
-def summarize_checks(checks: list[dict[str, Any]]) -> dict[str, int]:
-    successful = 0
-    pending = 0
-    failing = 0
-    for check in checks:
-        result = check.get("conclusion") or check.get("state")
-        if result in {"SUCCESS", "NEUTRAL", "SKIPPED"}:
-            successful += 1
-        elif result in {"PENDING", "EXPECTED"} or result is None:
-            pending += 1
-        else:
-            failing += 1
-    return {
-        "total": len(checks),
-        "successful": successful,
-        "failing": failing,
-        "pending": pending,
-    }
-
-
-def pull_request(repo: str | None, branch: str | None) -> tuple[str, dict[str, Any] | None]:
-    if not repo or not branch:
-        return "unavailable", None
-    if branch in {"main", "master", "HEAD"}:
-        return "not_applicable", None
-    result = run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--head",
-            branch,
-            "--state",
-            "all",
-            "--limit",
-            "1",
-            "--json",
-            "number,url,state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup",
-        ]
-    )
-    if result.returncode != 0:
-        return "error", None
-    try:
-        matches = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return "error", None
-    if not matches:
-        return "ok", None
-    pr = matches[0]
-    checks = pr.pop("statusCheckRollup", [])
-    pr["checks"] = summarize_checks(checks)
-    return "ok", pr
-
-
 def linear_issue(identifier: str, api_key: str | None) -> dict[str, Any] | None:
     if not api_key:
         return None
@@ -233,58 +167,35 @@ def linear_issue(identifier: str, api_key: str | None) -> dict[str, Any] | None:
     return issue
 
 
-def github_available(enabled: bool) -> bool:
-    if not enabled or shutil.which("gh") is None:
-        return False
-    return run(["gh", "auth", "status"]).returncode == 0
-
-
-def workspace_status(
-    workspace: Path,
-    github_enabled: bool,
-    github_is_available: bool,
-    linear_api_key: str | None,
-) -> dict[str, Any]:
+def workspace_status(workspace: Path, linear_api_key: str | None) -> dict[str, Any]:
     branch_result = run(["git", "branch", "--show-current"], cwd=workspace)
     branch = branch_result.stdout.strip() or None if branch_result.returncode == 0 else None
     head_result = run(["git", "rev-parse", "HEAD"], cwd=workspace)
     head = head_result.stdout.strip() if head_result.returncode == 0 else None
     dirty_result = run(["git", "status", "--porcelain"], cwd=workspace)
     dirty = bool(dirty_result.stdout.strip()) if dirty_result.returncode == 0 else None
-    repo = repository_slug(workspace)
-    if not github_enabled:
-        pr_lookup, pr = "disabled", None
-    elif not github_is_available:
-        pr_lookup, pr = "unavailable", None
-    else:
-        pr_lookup, pr = pull_request(repo, branch)
     return {
         "issue": workspace.name,
-        "repository": repo,
         "branch": branch,
         "dirty": dirty,
         "head": head,
         "last_file_update_at": latest_workspace_update(workspace),
         "linear": linear_issue(workspace.name, linear_api_key),
-        "pull_request_lookup": pr_lookup,
-        "pull_request": pr,
     }
 
 
-def collect(project_root: Path, include_github: bool) -> dict[str, Any]:
+def collect(project_root: Path) -> dict[str, Any]:
     symphony_home = project_root / ".symphony"
     workspace_root = Path(
         os.environ.get("SYMPHONY_WORKSPACE_ROOT", str(symphony_home / "workspaces"))
     )
     service = service_status()
     agents = agent_processes(service["pid"])
-    controller_repo = repository_slug(project_root)
-    github_is_available = github_available(include_github)
     linear_api_key = os.environ.get("LINEAR_API_KEY")
     workspaces = []
     if workspace_root.is_dir():
         workspaces = [
-            workspace_status(path, include_github, github_is_available, linear_api_key)
+            workspace_status(path, linear_api_key)
             for path in sorted(workspace_root.iterdir())
             if path.is_dir()
         ]
@@ -341,11 +252,6 @@ def collect(project_root: Path, include_github: bool) -> dict[str, Any]:
             "age_seconds": activity_age_seconds,
             "stall_candidate_after_seconds": STALL_CANDIDATE_SECONDS,
         },
-        "github": {
-            "enabled": include_github,
-            "available": github_is_available,
-            "controller_repository": controller_repo,
-        },
         "linear": {"available": bool(linear_api_key)},
     }
 
@@ -357,22 +263,10 @@ def render_text(status: dict[str, Any]) -> str:
         f"Agents: {len(status['agents'])} (activity_age={status['activity']['age_seconds']}s)",
     ]
     for workspace in status["workspaces"]:
-        pr = workspace["pull_request"]
-        lookup = workspace["pull_request_lookup"]
-        if lookup == "ok" and pr is None:
-            pr_text = "no PR"
-        elif lookup != "ok":
-            pr_text = f"PR unchecked ({lookup})"
-        else:
-            checks = pr["checks"]
-            pr_text = (
-                f"PR #{pr['number']} {pr['state']} review={pr.get('reviewDecision') or '-'} "
-                f"checks={checks['successful']}/{checks['total']}"
-            )
         lines.append(
             f"- {workspace['issue']}: branch={workspace['branch'] or '-'} "
             f"dirty={workspace['dirty']} "
-            f"linear={workspace['linear']['state']['name'] if workspace['linear'] else '-'} {pr_text}"
+            f"linear={workspace['linear']['state']['name'] if workspace['linear'] else '-'}"
         )
     return "\n".join(lines)
 
@@ -380,11 +274,10 @@ def render_text(status: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only Symphony runtime status")
     parser.add_argument("--json", action="store_true", dest="as_json")
-    parser.add_argument("--no-github", action="store_true")
     parser.add_argument("--project-root", type=Path)
     arguments = parser.parse_args()
     project_root = arguments.project_root or Path(__file__).resolve().parent.parent
-    status = collect(project_root, include_github=not arguments.no_github)
+    status = collect(project_root)
     if arguments.as_json:
         print(json.dumps(status, ensure_ascii=False, sort_keys=True))
     else:

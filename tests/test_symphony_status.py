@@ -47,19 +47,11 @@ def test_collect_without_runtime_is_valid_idle_snapshot(tmp_path: Path, monkeypa
         },
     )
     monkeypatch.setattr(symphony_status, "agent_processes", lambda _pid: [])
-    monkeypatch.setattr(symphony_status, "repository_slug", lambda _: "owner/repo")
-    monkeypatch.setattr(symphony_status, "github_available", lambda _: False)
-
-    status = symphony_status.collect(tmp_path, include_github=False)
+    status = symphony_status.collect(tmp_path)
 
     assert status["health"] == "idle"
     assert status["agents"] == []
     assert status["workspaces"] == []
-    assert status["github"] == {
-        "enabled": False,
-        "available": False,
-        "controller_repository": "owner/repo",
-    }
     assert status["linear"] == {"available": False}
     json.dumps(status)
 
@@ -92,41 +84,6 @@ def test_agent_processes_only_returns_symphony_descendants(monkeypatch) -> None:
     ]
 
 
-def test_pull_request_summarizes_checks(monkeypatch) -> None:
-    payload = [
-        {
-            "number": 12,
-            "url": "https://github.com/owner/repo/pull/12",
-            "state": "OPEN",
-            "isDraft": False,
-            "reviewDecision": "REVIEW_REQUIRED",
-            "mergeStateStatus": "UNSTABLE",
-            "statusCheckRollup": [
-                {"conclusion": "SUCCESS"},
-                {"conclusion": "FAILURE"},
-                {"conclusion": ""},
-                {"state": "SUCCESS"},
-                {"state": "FAILURE"},
-                {"conclusion": "STALE"},
-            ],
-        }
-    ]
-    monkeypatch.setattr(
-        symphony_status,
-        "run",
-        lambda *_args, **_kwargs: type(
-            "Result", (), {"returncode": 0, "stdout": json.dumps(payload)}
-        )(),
-    )
-
-    lookup, pr = symphony_status.pull_request("owner/repo", "yu/change")
-
-    assert lookup == "ok"
-    assert pr is not None
-    assert pr["number"] == 12
-    assert pr["checks"] == {"total": 6, "successful": 2, "failing": 3, "pending": 1}
-
-
 def test_collect_uses_newest_active_or_rotated_structured_log(tmp_path: Path, monkeypatch) -> None:
     log_dir = tmp_path / ".symphony" / "logs" / "log"
     log_dir.mkdir(parents=True)
@@ -142,36 +99,9 @@ def test_collect_uses_newest_active_or_rotated_structured_log(tmp_path: Path, mo
         lambda: {"state": "running", "pid": 42, "runs": 1, "last_exit_code": None},
     )
     monkeypatch.setattr(symphony_status, "agent_processes", lambda _pid: [])
-    monkeypatch.setattr(symphony_status, "repository_slug", lambda _: "owner/repo")
-    monkeypatch.setattr(symphony_status, "github_available", lambda _: False)
-
-    status = symphony_status.collect(tmp_path, include_github=False)
+    status = symphony_status.collect(tmp_path)
 
     assert status["logs"]["structured_file"] == "symphony.log.1"
-
-
-def test_render_distinguishes_unchecked_github_from_no_pr() -> None:
-    status = {
-        "health": "working",
-        "service": {"state": "running", "pid": 1, "runs": 1, "last_exit_code": None},
-        "agents": [{"pid": 2}],
-        "activity": {"age_seconds": 1},
-        "workspaces": [
-            {
-                "issue": "YU-21",
-                "branch": "yu/change",
-                "dirty": False,
-                "linear": None,
-                "pull_request_lookup": "unavailable",
-                "pull_request": None,
-            }
-        ],
-    }
-
-    rendered = symphony_status.render_text(status)
-
-    assert "PR unchecked (unavailable)" in rendered
-    assert "no PR" not in rendered
 
 
 def test_linear_issue_returns_state_without_exposing_token(monkeypatch) -> None:

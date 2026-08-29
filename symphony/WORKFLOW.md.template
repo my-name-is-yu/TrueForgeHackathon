@@ -58,7 +58,7 @@ Operating rules:
 3. Reproduce or inspect the current state before implementing. Keep the change limited to the issue.
 4. Preserve unrelated work. Never use destructive Git commands.
 5. Run the most relevant available checks and report exactly what was and was not verified.
-6. Create a branch prefixed with `yu/`, make focused commits, push it, and open a pull request against `main`.
+6. Create a branch prefixed with `yu/`, make focused commits, and push it with local Git. Use the Codex GitHub connector for remote pull-request, review, and check operations; if the connector is unavailable, report a blocker instead of substituting GitHub CLI.
 7. Add the pull request URL and verification evidence to the Linear issue.
 8. Move the issue to `In Review` only after the pull request is ready for review.
 9. Never merge the pull request or mark the issue `Done`; those are human decisions.
