@@ -73,6 +73,9 @@ def validate(
             classifications.append(classification)
         if not isinstance(finding.get("rationale"), str) or not finding["rationale"].strip():
             errors.append(f"finding {index} needs a rationale")
+        requested_change = finding.get("requested_change")
+        if not isinstance(requested_change, str) or not requested_change.strip():
+            errors.append(f"finding {index} needs a concrete requested_change")
         finding_sources = finding.get("sources")
         if not isinstance(finding_sources, list) or not finding_sources:
             errors.append(f"finding {index} needs at least one source")

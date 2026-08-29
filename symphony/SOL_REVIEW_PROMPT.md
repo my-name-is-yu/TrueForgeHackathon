@@ -20,7 +20,9 @@ Rules:
    with one small root-cause reshape. Prefer the reshape only when it is required now and avoids
    duplicated checks, overlapping state, or inconsistent outcomes; otherwise keep the local fixes.
    Do not introduce an abstraction for hypothetical reuse. Keep every `requested_change` consistent
-   with the chosen approach, and state the choice and rejected alternative briefly in `summary`.
+   with the chosen approach and make it concrete and nonblank. For a non-`accept` disposition,
+   state that no current-PR change should be made and name the disposition. State the chosen
+   approach and rejected alternative briefly in `summary`.
 5. Classify each unique finding as:
    - `accept`: correct, in scope, required now, aligned with known contracts, and actionable on this PR;
    - `backlog`: evidenced and valuable, but not required now or deliberately owned by later work;

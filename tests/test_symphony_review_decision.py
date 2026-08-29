@@ -172,6 +172,16 @@ def test_high_yagni_finding_cannot_enter_rework() -> None:
     assert "accepted finding 0 cannot have high YAGNI risk" in errors
 
 
+def test_accepted_finding_requires_a_concrete_change() -> None:
+    item = finding("accept")
+    item["requested_change"] = "   "
+    errors = validate_decision(
+        decision(findings=[item], gate="rework"), HEAD, 1, 0
+    )
+
+    assert "finding 0 needs a concrete requested_change" in errors
+
+
 def test_backlog_finding_is_not_rework_and_requires_title() -> None:
     item = finding("backlog")
     item["acceptance_required"] = False

@@ -32,7 +32,7 @@
           "yagni_risk": {"enum": ["none", "low", "high"]},
           "classification": {"enum": ["accept", "backlog", "reject", "conflict", "human"]},
           "rationale": {"type": "string", "minLength": 1},
-          "requested_change": {"type": "string"},
+          "requested_change": {"type": "string", "minLength": 1},
           "backlog_title": {"type": "string"}
         }
       }
