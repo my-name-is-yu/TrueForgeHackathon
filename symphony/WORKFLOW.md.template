@@ -66,3 +66,4 @@ Operating rules:
 8. Move the issue to `In Review` only after the pull request is ready for review.
 9. Never merge the pull request or mark the issue `Done`; those are human decisions.
 10. If blocked by missing requirements, credentials, or permissions, leave the issue in `In Progress` and add a concise blocker comment.
+11. For code-changing issues, after implementation and initial checks, run `$no-comments` on the complete current diff, apply verified in-scope fixes, then rerun the relevant checks. Skip this for documentation-only changes.
