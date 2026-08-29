@@ -167,6 +167,9 @@ def linear_issue(identifier: str, api_key: str | None) -> tuple[str, dict[str, A
         return "not_found", None
     if not isinstance(issue, dict):
         return "error", None
+    state = issue.get("state")
+    if not isinstance(state, dict) or not isinstance(state.get("name"), str):
+        return "error", None
     return "ok", issue
 
 

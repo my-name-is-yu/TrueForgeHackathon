@@ -155,7 +155,15 @@ def test_linear_issue_reports_unexpected_response_shapes(monkeypatch) -> None:
         def __exit__(self, *_args):
             self.close()
 
-    responses = iter([[], {"data": None}])
+    responses = iter(
+        [
+            [],
+            {"data": None},
+            {"data": {"issue": {}}},
+            {"data": {"issue": {"state": None}}},
+            {"data": {"issue": {"state": "Todo"}}},
+        ]
+    )
 
     def open_request(_request, timeout):
         assert timeout == 10
@@ -163,6 +171,9 @@ def test_linear_issue_reports_unexpected_response_shapes(monkeypatch) -> None:
 
     monkeypatch.setattr(symphony_status.urllib.request, "urlopen", open_request)
 
+    assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
+    assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
+    assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
     assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
     assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
 
