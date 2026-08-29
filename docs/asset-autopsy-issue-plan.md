@@ -130,7 +130,8 @@ The graph is acyclic. AA-07 and AA-08 deliberately have three direct blockers ea
 ## 7. Ownership and integration rules
 
 - One issue owns one branch and one PR, always based on current `main`. Stacked PRs are not part of this workflow.
-- `pyproject.toml`, `uv.lock`, and `tests/conftest.py` belong to AA-00A. Later dependency changes are blockers, not opportunistic edits.
+- Dependency ownership is a serial Phase 0 handoff: AA-00A creates the initial `pyproject.toml` and `uv.lock`; after AA-00A merges, AA-00B exclusively owns those two files while closing the real TrueForge seam. AA-00B must preserve AA-00A's direct upstream pins and rerun the upstream 4/4 suite under the final lockfile. The dependency files freeze only after that regression and AA-00B's 5/5 gate pass and merge. Every later dependency change is a blocker, not an opportunistic edit.
+- `tests/conftest.py` belongs only to AA-00A. AA-00B keeps its helpers inside `tests/phase0/trueforge/**`.
 - AA-00A and AA-00B have disjoint spike, test, and evidence directories.
 - AA-09A owns direct-stack provisioning tests; AA-09B owns real TrueForge denial and approval runs.
 - AA-10A, AA-10B, and AA-10C have disjoint production-fix allowlists so all three may run in parallel. A validated root cause outside a lane's allowlist creates a dedicated follow-on fix leaf with exact ownership and new blocker links; the discovering lane remains incomplete until that fix merges and its regression passes.
@@ -159,6 +160,7 @@ Owned surfaces:
 
 Protected surfaces:
 
+- Any post-merge dependency closure belongs to AA-00B during Wave 0B
 - TrueForge connection, sandbox, Large Tool Response, and approval probes owned by AA-00B
 - Production domain behavior
 - Hidden qualification and production fixture values
@@ -194,29 +196,34 @@ Primary uncertainty: Can the real TrueForge runtime close the authenticated HTTP
 
 Owned surfaces:
 
+- pyproject.toml
+- uv.lock
 - spikes/phase0/trueforge/**
 - tests/phase0/trueforge/**
 - docs/phase0-trueforge-results.md
 
 Protected surfaces:
 
-- pyproject.toml, uv.lock, and upstream MCP/CGL seam owned by AA-00A
+- tests/conftest.py and the upstream MCP/CGL seam owned by AA-00A
 - Production seven-tool facade and causal behavior
 - Hidden qualification and production fixture values
 
 Acceptance:
 
+- [ ] Any package or pin required by the live TrueForge probes is committed here, AA-00A's direct upstream pins remain exact and unchanged, and `uv sync --frozen` succeeds from the final Phase 0 lockfile
+- [ ] The AA-00A upstream suite still passes 4/4 under that final lockfile
 - [ ] Saved localhost Streamable HTTP connection enforces bearer and allowed Origin behavior
 - [ ] Exactly 256 result rows reach TrueForge Large Tool Response and are analyzed from sandbox Python
 - [ ] Sandbox access to the checkout, private runtime, and outbound network is measured and recorded
 - [ ] The resolved AgentSpec is serial, exposes the exact seven planned tool schemas, and makes only the dummy publish probe destructive and approval-gated
 - [ ] A 160 by 120 CGL image content block passes through the facade into TrueForge without exposing a host path or flooding the model context
 - [ ] docs/phase0-trueforge-results.md records PASS or BLOCKED_HARD_GATE for the four TrueForge gates plus the image transport gate
-- [ ] Only 5/5 PASS may merge, complete the issue, or unblock AA-02 through AA-04; BLOCKED_HARD_GATE keeps the issue incomplete with symphony removed
+- [ ] Only the upstream 4/4 regression plus TrueForge 5/5 PASS may merge, complete the issue, or unblock AA-02 through AA-04; BLOCKED_HARD_GATE keeps the issue incomplete with symphony removed
 
 Required verification:
 
 - uv sync --frozen
+- uv run pytest tests/phase0/upstream -q
 - uv run pytest tests/phase0/trueforge -q
 - Run each live TrueForge Phase 0 probe and record sanitized evidence
 - git diff --check
