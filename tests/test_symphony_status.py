@@ -55,7 +55,30 @@ def test_collect_without_runtime_is_valid_idle_snapshot(tmp_path: Path, monkeypa
     assert status["agents"] == []
     assert status["workspaces"] == []
     assert status["linear"] == {"status": "disabled"}
+    assert status["workflow"]["runtime_verified"] is False
     json.dumps(status)
+
+
+def test_collect_verifies_atomically_rendered_workflow_hash(tmp_path: Path, monkeypatch) -> None:
+    runtime = tmp_path / ".symphony" / "runtime"
+    runtime.mkdir(parents=True)
+    workflow = runtime / "WORKFLOW.md"
+    workflow.write_text("rendered workflow")
+    declared = symphony_status.sha256(workflow)
+    assert declared
+    (runtime / "WORKFLOW.sha256").write_text(declared + "\n")
+    monkeypatch.setattr(
+        symphony_status,
+        "service_status",
+        lambda: {"state": "running", "pid": 42, "runs": 1, "last_exit_code": None},
+    )
+    monkeypatch.setattr(symphony_status, "agent_processes", lambda _pid: [])
+
+    status = symphony_status.collect(tmp_path)
+
+    assert status["workflow"]["runtime_sha256"] == declared
+    assert status["workflow"]["declared_runtime_sha256"] == declared
+    assert status["workflow"]["runtime_verified"] is True
 
 
 def test_classify_health_reports_runtime_state_without_inferring_progress() -> None:

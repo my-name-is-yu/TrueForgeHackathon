@@ -11,6 +11,7 @@ CASTORE_PATCH="$PROJECT_ROOT/symphony/patches/add-castore.patch"
 RUNTIME_DIR="$SYMPHONY_HOME/runtime"
 TEMPLATE="$PROJECT_ROOT/symphony/WORKFLOW.md.template"
 RUNTIME_WORKFLOW="$RUNTIME_DIR/WORKFLOW.md"
+RUNTIME_WORKFLOW_SHA="$RUNTIME_DIR/WORKFLOW.sha256"
 ENV_FILE="$PROJECT_ROOT/.env"
 
 load_env_file() {
@@ -160,19 +161,72 @@ validate_environment() {
   }
 }
 
+workflow_has_tracker_entry() {
+  section=$1
+  entry=$2
+  file=$3
+  awk -v section="$section" -v entry="$entry" '
+    NR == 1 && $0 == "---" { frontmatter = 1; next }
+    frontmatter && $0 == "---" { exit found ? 0 : 1 }
+    frontmatter && $0 == "tracker:" { tracker = 1; next }
+    tracker && $0 ~ /^[^ ]/ { tracker = 0; list = 0 }
+    tracker && $0 == "  " section ":" { list = 1; next }
+    list && $0 ~ /^  [^ ]/ { list = 0 }
+    list && $0 == "    - " entry { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$file"
+}
+
 render_workflow() {
+  mode=${1:-apply}
   validate_environment
   mkdir -p "$RUNTIME_DIR"
 
   escaped_slug=$(printf '%s' "$LINEAR_PROJECT_SLUG" | sed 's/[&|]/\\&/g')
-  sed "s|__LINEAR_PROJECT_SLUG__|$escaped_slug|g" "$TEMPLATE" > "$RUNTIME_WORKFLOW"
+  temporary_workflow=$(mktemp "$RUNTIME_DIR/.WORKFLOW.md.XXXXXX")
+  temporary_sha=$(mktemp "$RUNTIME_DIR/.WORKFLOW.sha256.XXXXXX")
+  trap 'rm -f "$temporary_workflow" "$temporary_sha"' EXIT HUP INT TERM
+  sed "s|__LINEAR_PROJECT_SLUG__|$escaped_slug|g" "$TEMPLATE" > "$temporary_workflow"
 
-  if grep -q '__LINEAR_PROJECT_SLUG__' "$RUNTIME_WORKFLOW"; then
+  if grep -q '__LINEAR_PROJECT_SLUG__' "$temporary_workflow"; then
     echo "Failed to render the Linear project slug." >&2
     exit 1
   fi
 
-  echo "Rendered $RUNTIME_WORKFLOW"
+  for required in 'Auto Review' 'Rework'; do
+    if ! workflow_has_tracker_entry active_states "$required" "$temporary_workflow"; then
+      echo "Rendered workflow is missing tracker.active_states entry: $required" >&2
+      exit 1
+    fi
+  done
+  for required in 'Merge Ready' 'Blocked'; do
+    if ! workflow_has_tracker_entry terminal_states "$required" "$temporary_workflow"; then
+      echo "Rendered workflow is missing tracker.terminal_states entry: $required" >&2
+      exit 1
+    fi
+  done
+  if ! grep -Fq 'symphony-workpad:v1' "$temporary_workflow"; then
+    echo "Rendered workflow is missing required protocol marker: symphony-workpad:v1" >&2
+    exit 1
+  fi
+
+  shasum -a 256 "$temporary_workflow" | awk '{print $1}' > "$temporary_sha"
+  if [ "$mode" = check ]; then
+    rendered_sha=$(sed -n '1p' "$temporary_sha")
+    rm -f "$temporary_workflow" "$temporary_sha"
+    trap - EXIT HUP INT TERM
+    echo "Validated workflow template (sha256=$rendered_sha; runtime unchanged)"
+    return 0
+  fi
+  if [ "$mode" != apply ]; then
+    echo "Unknown render mode: $mode" >&2
+    exit 1
+  fi
+  mv "$temporary_workflow" "$RUNTIME_WORKFLOW"
+  mv "$temporary_sha" "$RUNTIME_WORKFLOW_SHA"
+  trap - EXIT HUP INT TERM
+
+  echo "Rendered $RUNTIME_WORKFLOW (sha256=$(sed -n '1p' "$RUNTIME_WORKFLOW_SHA"))"
 }
 
 check_setup() {
@@ -181,14 +235,13 @@ check_setup() {
     echo "Symphony is not built. Run: zsh scripts/symphony install" >&2
     exit 1
   }
-  render_workflow
-
   built_commit=$(git -C "$SOURCE_DIR" rev-parse HEAD)
   if [ "$built_commit" != "$SYMPHONY_COMMIT" ]; then
     echo "Symphony source is at $built_commit, expected $SYMPHONY_COMMIT." >&2
     echo "Run: zsh scripts/symphony install" >&2
     exit 1
   fi
+  render_workflow check
 
   echo ""
   echo "Setup checks passed."
@@ -221,6 +274,7 @@ case "$command" in
     ;;
   start)
     check_setup
+    render_workflow
     cd "$ELIXIR_DIR"
     exec mise exec -- "$SYMPHONY_BIN" \
       --i-understand-that-this-will-be-running-without-the-usual-guardrails \
