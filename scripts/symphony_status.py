@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+SERVICE_LABEL = "com.trueforge.symphony"
+STALL_CANDIDATE_SECONDS = 300
+
+
+def run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as error:
+        return subprocess.CompletedProcess(command, 127, "", str(error))
+
+
+def parse_launchctl(output: str) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "label": SERVICE_LABEL,
+        "state": "stopped",
+        "pid": None,
+        "runs": None,
+        "last_exit_code": None,
+    }
+    patterns = {
+        "state": r"^\s*state = (\S+)",
+        "pid": r"^\s*pid = (\d+)",
+        "runs": r"^\s*runs = (\d+)",
+        "last_exit_code": r"^\s*last exit code = (-?\d+)",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, output, re.MULTILINE)
+        if match:
+            value: Any = match.group(1)
+            if key != "state":
+                value = int(value)
+            fields[key] = value
+    return fields
+
+
+def service_status() -> dict[str, Any]:
+    result = run(["launchctl", "print", f"gui/{os.getuid()}/{SERVICE_LABEL}"])
+    if result.returncode != 0:
+        return parse_launchctl("")
+    return parse_launchctl(result.stdout)
+
+
+def agent_processes() -> list[dict[str, Any]]:
+    result = run(["ps", "-axo", "pid=,ppid=,etime=,command="])
+    if result.returncode != 0:
+        return []
+    candidates: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        match = re.match(r"\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$", line)
+        if not match or "codex app-server" not in match.group(4):
+            continue
+        candidates.append(
+            {
+                "pid": int(match.group(1)),
+                "ppid": int(match.group(2)),
+                "elapsed": match.group(3),
+            }
+        )
+    pids = {process["pid"] for process in candidates}
+    return [process for process in candidates if process["ppid"] not in pids]
+
+
+def iso_mtime(path: Path) -> str | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        return None
+
+
+def mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def latest_workspace_update(workspace: Path) -> str | None:
+    latest = 0.0
+    for root, directories, filenames in os.walk(workspace):
+        directories[:] = [name for name in directories if name != ".git"]
+        for filename in filenames:
+            try:
+                latest = max(latest, (Path(root) / filename).stat().st_mtime)
+            except OSError:
+                continue
+    if not latest:
+        return None
+    return datetime.fromtimestamp(latest, timezone.utc).isoformat()
+
+
+def classify_health(
+    service: dict[str, Any], agents: list[dict[str, Any]], activity_age_seconds: int | None
+) -> str:
+    if service["state"] != "running":
+        return "stopped"
+    if not agents:
+        return "idle"
+    if activity_age_seconds is not None and activity_age_seconds > STALL_CANDIDATE_SECONDS:
+        return "stalled_candidate"
+    return "working"
+
+
+def repository_slug(project_root: Path) -> str | None:
+    result = run(["git", "remote", "get-url", "origin"], cwd=project_root)
+    if result.returncode != 0:
+        return None
+    remote = result.stdout.strip()
+    match = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", remote)
+    return match.group(1) if match else None
+
+
+def pull_request(repo: str | None, branch: str | None) -> dict[str, Any] | None:
+    if not repo or not branch or branch in {"main", "master", "HEAD"}:
+        return None
+    result = run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--limit",
+            "1",
+            "--json",
+            "number,url,state,isDraft,reviewDecision,mergeStateStatus,statusCheckRollup",
+        ]
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        matches = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not matches:
+        return None
+    pr = matches[0]
+    checks = pr.pop("statusCheckRollup", [])
+    pr["checks"] = {
+        "total": len(checks),
+        "failing": sum(
+            check.get("conclusion") in {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
+            for check in checks
+        ),
+        "pending": sum(not check.get("conclusion") for check in checks),
+    }
+    return pr
+
+
+def linear_issue(identifier: str, api_key: str | None) -> dict[str, Any] | None:
+    if not api_key:
+        return None
+    payload = json.dumps(
+        {
+            "query": "query SymphonyStatusIssue($id: String!) { issue(id: $id) { identifier url state { name type } } }",
+            "variables": {"id": identifier},
+        }
+    ).encode()
+    request = urllib.request.Request(
+        "https://api.linear.app/graphql",
+        data=payload,
+        headers={"Authorization": api_key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return None
+    issue = body.get("data", {}).get("issue")
+    if not isinstance(issue, dict):
+        return None
+    return issue
+
+
+def github_available(enabled: bool) -> bool:
+    if not enabled or shutil.which("gh") is None:
+        return False
+    return run(["gh", "auth", "status"]).returncode == 0
+
+
+def workspace_status(
+    workspace: Path,
+    repo: str | None,
+    include_github: bool,
+    linear_api_key: str | None,
+) -> dict[str, Any]:
+    branch_result = run(["git", "branch", "--show-current"], cwd=workspace)
+    branch = branch_result.stdout.strip() or None if branch_result.returncode == 0 else None
+    head_result = run(["git", "rev-parse", "HEAD"], cwd=workspace)
+    head = head_result.stdout.strip() if head_result.returncode == 0 else None
+    dirty_result = run(["git", "status", "--porcelain"], cwd=workspace)
+    dirty = bool(dirty_result.stdout.strip()) if dirty_result.returncode == 0 else None
+    return {
+        "issue": workspace.name,
+        "branch": branch,
+        "dirty": dirty,
+        "head": head,
+        "last_file_update_at": latest_workspace_update(workspace),
+        "linear": linear_issue(workspace.name, linear_api_key),
+        "pull_request": pull_request(repo, branch) if include_github else None,
+    }
+
+
+def collect(project_root: Path, include_github: bool) -> dict[str, Any]:
+    symphony_home = project_root / ".symphony"
+    workspace_root = Path(
+        os.environ.get("SYMPHONY_WORKSPACE_ROOT", str(symphony_home / "workspaces"))
+    )
+    service = service_status()
+    agents = agent_processes()
+    repo = repository_slug(project_root)
+    github_is_available = github_available(include_github)
+    linear_api_key = os.environ.get("LINEAR_API_KEY")
+    workspaces = []
+    if workspace_root.is_dir():
+        workspaces = [
+            workspace_status(path, repo, github_is_available, linear_api_key)
+            for path in sorted(workspace_root.iterdir())
+            if path.is_dir()
+        ]
+    stdout_log = symphony_home / "launchd.stdout.log"
+    stderr_log = symphony_home / "launchd.stderr.log"
+    structured_log = symphony_home / "logs" / "log" / "symphony.log.1"
+    activity_times = [mtime(structured_log)]
+    for workspace in workspaces:
+        updated_at = workspace["last_file_update_at"]
+        if updated_at:
+            activity_times.append(datetime.fromisoformat(updated_at).timestamp())
+    latest_activity = max((value for value in activity_times if value is not None), default=None)
+    activity_age_seconds = (
+        max(0, int(datetime.now(timezone.utc).timestamp() - latest_activity))
+        if latest_activity is not None
+        else None
+    )
+    health = classify_health(service, agents, activity_age_seconds)
+    return {
+        "health": health,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "service": service,
+        "agents": agents,
+        "workspaces": workspaces,
+        "logs": {
+            "stdout_updated_at": iso_mtime(stdout_log),
+            "stderr_updated_at": iso_mtime(stderr_log),
+            "structured_updated_at": iso_mtime(structured_log),
+        },
+        "activity": {
+            "latest_at": (
+                datetime.fromtimestamp(latest_activity, timezone.utc).isoformat()
+                if latest_activity is not None
+                else None
+            ),
+            "age_seconds": activity_age_seconds,
+            "stall_candidate_after_seconds": STALL_CANDIDATE_SECONDS,
+        },
+        "github": {
+            "enabled": include_github,
+            "available": github_is_available,
+            "repository": repo,
+        },
+        "linear": {"available": bool(linear_api_key)},
+    }
+
+
+def render_text(status: dict[str, Any]) -> str:
+    service = status["service"]
+    lines = [
+        f"Symphony: {status['health']} (state={service['state']}, pid={service['pid']}, runs={service['runs']}, last_exit={service['last_exit_code']})",
+        f"Agents: {len(status['agents'])} (activity_age={status['activity']['age_seconds']}s)",
+    ]
+    for workspace in status["workspaces"]:
+        pr = workspace["pull_request"]
+        pr_text = "no PR"
+        if pr:
+            checks = pr["checks"]
+            pr_text = (
+                f"PR #{pr['number']} {pr['state']} review={pr.get('reviewDecision') or '-'} "
+                f"checks={checks['total'] - checks['failing'] - checks['pending']}/{checks['total']}"
+            )
+        lines.append(
+            f"- {workspace['issue']}: branch={workspace['branch'] or '-'} "
+            f"dirty={workspace['dirty']} "
+            f"linear={workspace['linear']['state']['name'] if workspace['linear'] else '-'} {pr_text}"
+        )
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Read-only Symphony runtime status")
+    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument("--no-github", action="store_true")
+    parser.add_argument("--project-root", type=Path)
+    arguments = parser.parse_args()
+    project_root = arguments.project_root or Path(__file__).resolve().parent.parent
+    status = collect(project_root, include_github=not arguments.no_github)
+    if arguments.as_json:
+        print(json.dumps(status, ensure_ascii=False, sort_keys=True))
+    else:
+        print(render_text(status))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

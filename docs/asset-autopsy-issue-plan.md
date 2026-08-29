@@ -25,19 +25,17 @@ Each executable leaf has one primary uncertainty, exclusive owned surfaces, prot
 Current state is intentionally inert:
 
 - every unfinished AA issue is Backlog;
-- no AA issue has the `symphony` label;
 - the active Symphony dispatch count is zero;
 - this plan does not start, restart, or reconfigure the Mac mini service.
 
-The `symphony` label is the dispatch switch. Linear blocker relations document and expose readiness, but do not by themselves prevent dispatch. Activate an executable leaf only with this sequence:
+The transition from Backlog to Todo is the sole dispatch switch. Linear blocker relations document and expose readiness, but do not by themselves prevent dispatch. Activate an executable leaf only with this sequence:
 
 1. Verify every listed prerequisite PR is merged into `main`; In Review or a green unmerged PR is insufficient.
 2. Verify the issue body, owned surfaces, acceptance, and dependency links still match this plan.
 3. Move only that ready leaf from Backlog to Todo.
-4. Add the `symphony` label last.
-5. If the agent reports a blocker, remove `symphony` before changing scope or dependencies.
+4. If the agent reports a blocker, move it back to Backlog before changing scope or dependencies.
 
-Never add `symphony` to an umbrella parent, `YU-19`, or `YU-29`.
+Never move an umbrella parent, `YU-19`, or `YU-29` to Todo.
 
 ## 3. Non-dispatch umbrellas
 
@@ -187,7 +185,7 @@ The graph is acyclic. AA-07 and AA-08 deliberately have three direct blockers ea
 - AA-11 consumes the AA-12C interface and owns only release prose, notices, runbook, and demo-report presentation.
 - AA-10A, AA-10B, and AA-10C have disjoint production-fix allowlists so all three may run in parallel. A validated root cause outside a lane's allowlist creates a dedicated follow-on fix leaf with exact ownership and new blocker links; the discovering lane remains incomplete until that fix merges and its regression passes.
 - An agent may commit, push, and open its PR. It must not merge, mark Done, weaken acceptance, change a protected surface, or invent a product fallback.
-- A valid implementation blocker stays visible in Linear with exact evidence and without the `symphony` label.
+- A valid implementation blocker stays visible in Linear with exact evidence in Backlog.
 
 ## 8. Leaf contracts
 
@@ -1272,7 +1270,7 @@ After every implementation and release-preparation PR is merged, a human selects
 ## Dispatch safety
 
 - Keep this issue Backlog until all preconditions pass.
-- Never add the symphony label.
+- Never move this issue to Todo.
 - Do not assign this issue to Symphony; browser approval, recording, upload, merge, and submission remain human actions.
 
 ## Acceptance

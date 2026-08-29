@@ -40,13 +40,13 @@ Configured Linear resources:
 - Project slug: `trueforgehackathon-e396beca278f`
 - Active states: `Todo`, `In Progress`
 - Review state: `In Review`
-- Required issue label: `symphony`
+- Dispatch gate: move a ready issue from `Backlog` to `Todo`
 
 Symphony runs continuously on the Mac mini. The workflow allows up to four concurrent
 agents, ramps cold starts through one `Todo` issue at a time, uses isolated workspaces and
 `yu/` branches, and keeps human review before merge with no automatic merge. Ready work is
-released in dependency-safe waves by adding the `symphony` label only after prerequisite PRs
-are merged to `main`.
+released in dependency-safe waves by moving an issue to `Todo` only after prerequisite PRs are
+merged to `main`. Labels are informational and do not control dispatch.
 Symphony-launched Codex agents are pinned by this repository to GPT-5.6 Luna with `xhigh`
 reasoning. This does not change the Mac mini's host-wide Codex model or reasoning defaults.
 They run without approval prompts or a Codex filesystem sandbox because the Mac mini is a
@@ -63,8 +63,14 @@ cp .env.example .env
 brew install mise
 zsh scripts/symphony install
 zsh scripts/symphony check
+zsh scripts/symphony status
+zsh scripts/symphony status --json
 zsh scripts/symphony start
 ```
+
+The read-only status command combines LaunchAgent health, Codex activity, workspaces, Linear
+issue state, and, when GitHub CLI authentication is available, pull request review and check
+state. Use `--no-github` to skip GitHub lookups.
 
 Local credentials, the pinned Symphony source/build, logs, generated workflow files, and
 per-issue workspaces live under `.env` and `.symphony/`. The source build applies only
