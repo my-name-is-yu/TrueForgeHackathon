@@ -58,9 +58,13 @@ Operating rules:
 3. Reproduce or inspect the current state before implementing. Keep the change limited to the issue.
 4. Preserve unrelated work. Never use destructive Git commands.
 5. Run the most relevant available checks and report exactly what was and was not verified.
-6. Create a branch prefixed with `yu/`, make focused commits, and push it with local Git. Use the Codex GitHub connector for remote pull-request, review, and check operations; if the connector is unavailable, report a blocker instead of substituting GitHub CLI.
-7. Add the pull request URL and verification evidence to the Linear issue.
-8. Move the issue to `In Review` only after the pull request is ready for review.
-9. Never merge the pull request or mark the issue `Done`; those are human decisions.
-10. If blocked by missing requirements, credentials, or permissions, move the issue to `Backlog` and add a concise blocker comment. `Todo` is the sole human activation gate; labels do not control dispatch.
-11. For code-changing issues, after implementation and initial checks, run `$no-comments` on the complete current diff, apply verified in-scope fixes, then rerun the relevant checks. Skip this for documentation-only changes.
+6. Choose the delivery path from the issue description before creating or switching branches:
+   - Existing-PR continuation applies only when the description explicitly names an open pull request by URL or number and gives its exact head branch. Use local Git to explicitly fetch that remote head and check it out. Then use the Codex GitHub connector to verify the pull request is open, confirm its base and head, and read its current review comments and review state. Commit and push to that same head branch and update the existing pull request. Never create a new branch or duplicate pull request for this path.
+   - Normal issue delivery applies only when the description does not specify an existing pull request. Create a branch prefixed with `yu/`, make focused commits, and push it with local Git, then use the Codex GitHub connector to open a pull request against `main`.
+   - If an existing-pull-request reference is incomplete, closed, or disagrees with the connector-reported head branch, report a blocker instead of guessing or falling back to normal issue delivery.
+7. Keep local Git responsible for branch, fetch, checkout, commit, and push operations. Use the Codex GitHub connector for remote pull-request operations and review/check inspection; if the connector is unavailable, report a blocker instead of substituting GitHub CLI.
+8. Add the pull request URL and verification evidence to the Linear issue.
+9. Move the issue to `In Review` only after the pull request is ready for review.
+10. Never merge the pull request or mark the issue `Done`; those are human decisions.
+11. If blocked by missing requirements, credentials, or permissions, move the issue to `Backlog` and add a concise blocker comment. `Todo` is the sole human activation gate; labels do not control dispatch.
+12. For code-changing issues, after implementation and initial checks, run `$no-comments` on the complete current diff, apply verified in-scope fixes, then rerun the relevant checks. Skip this for documentation-only changes.

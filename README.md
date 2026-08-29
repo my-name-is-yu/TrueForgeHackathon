@@ -74,6 +74,12 @@ GitHub connector so the Mac mini does not need GitHub CLI authentication for sta
 The command reports one read-only snapshot; the recurring monitor determines stalled work only
 after comparing each active workspace across three consecutive observations.
 
+Review-remediation issues may continue an existing open pull request only when the Linear issue
+description includes both that pull request's URL or number and its exact head branch. Symphony
+then fetches and checks out that branch with local Git and uses the Codex GitHub connector to
+inspect and update the same pull request; incomplete or conflicting references become blockers
+instead of creating a duplicate branch or pull request.
+
 Local credentials, the pinned Symphony source/build, logs, generated workflow files, and
 per-issue workspaces live under `.env` and `.symphony/`. The source build applies only
 [`symphony/patches/add-castore.patch`](symphony/patches/add-castore.patch) to the pinned
