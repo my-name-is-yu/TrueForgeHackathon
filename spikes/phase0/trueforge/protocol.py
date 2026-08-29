@@ -265,9 +265,9 @@ class _ModelServerServer(ThreadingHTTPServer):
 
 
 class ModelServer:
-    def __init__(self, checkout_root: Path, boundary_canaries: tuple[Path, Path]) -> None:
+    def __init__(self, checkout_root: Path, boundary_directory_name: str) -> None:
         self.checkout_root = checkout_root
-        self.boundary_canaries = boundary_canaries
+        self.boundary_directory_name = boundary_directory_name
         self.request_count = 0
         self.saw_ltr_reference = False
         self.saw_sandbox_analysis = False
@@ -328,6 +328,8 @@ class ModelServer:
                         "import json,pathlib,socket\n"
                         f"data=json.load(open({sandbox_path!r}))\n"
                         "def boundary_status(path):\n"
+                        "    if path is None:\n"
+                        "        return 'missing'\n"
                         "    try:\n"
                         "        pathlib.Path(path).read_bytes()\n"
                         "    except PermissionError:\n"
@@ -337,9 +339,10 @@ class ModelServer:
                         "    except OSError:\n"
                         "        return 'error'\n"
                         "    return 'readable'\n"
-                        f"boundary_canaries={{'checkout':{str(owner.boundary_canaries[0])!r},'private_runtime':{str(owner.boundary_canaries[1])!r}}}\n"
-                        "checkout_isolated=boundary_status(boundary_canaries['checkout'])=='blocked'\n"
-                        "private_runtime_isolated=boundary_status(boundary_canaries['private_runtime'])=='blocked'\n"
+                        f"boundary_directory=pathlib.Path('/tmp')/bytes.fromhex({owner.boundary_directory_name.encode().hex()!r}).decode()\n"
+                        "boundary_canaries={'a':boundary_directory/'a','b':boundary_directory/'b'}\n"
+                        "checkout_isolated=boundary_status(boundary_canaries.get('a'))=='blocked'\n"
+                        "private_runtime_isolated=boundary_status(boundary_canaries.get('b'))=='blocked'\n"
                         "network='reachable'\n"
                         "try:\n"
                         "    socket.create_connection(('example.com',80),1).close()\n"

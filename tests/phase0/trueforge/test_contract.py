@@ -6,7 +6,12 @@ from copy import deepcopy
 import pytest
 
 from spikes.phase0.trueforge.protocol import DUMMY_TOOLS, PLANNED_TOOLS, inspection_payload, make_png, planned_tool_schemas, png_dimensions
-from spikes.phase0.trueforge.runner import _approval_evidence, _sandbox_analysis_evidence, evaluate_phase0_gates
+from spikes.phase0.trueforge.runner import (
+    _approval_evidence,
+    _contains_boundary_data,
+    _sandbox_analysis_evidence,
+    evaluate_phase0_gates,
+)
 
 
 def test_resolved_tool_boundary_is_exact() -> None:
@@ -63,6 +68,7 @@ def _passing_evidence() -> dict:
             "analyzed": True,
             "checkout_isolated": True,
             "private_runtime_isolated": True,
+            "canary_metadata_valid": True,
             "private_data_clear": True,
             "network_attempted": True,
             "network": "blocked",
@@ -94,6 +100,7 @@ def _passing_evidence() -> dict:
         ("large_tool_response", lambda evidence: evidence["sandbox"].update(analyzed=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(checkout_isolated=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(private_runtime_isolated=False)),
+        ("sandbox", lambda evidence: evidence["sandbox"].update(canary_metadata_valid=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(private_data_clear=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(network_attempted=False)),
         ("sandbox", lambda evidence: evidence["sandbox"].update(network="reachable")),
@@ -174,4 +181,17 @@ def test_approval_from_another_tool_call_cannot_satisfy_publish_gate() -> None:
     gates, all_pass = evaluate_phase0_gates(evidence)
 
     assert gates["agent_spec_approval"]["result"] == "BLOCKED_HARD_GATE"
+    assert all_pass is False
+
+
+def test_boundary_canary_path_in_observed_event_blocks_sandbox_gate(tmp_path) -> None:
+    canary_path = tmp_path / "opaque-boundary" / "a"
+    evidence = deepcopy(_passing_evidence())
+    evidence["sandbox"]["private_data_clear"] = not _contains_boundary_data(
+        {"event": {"tool_call": {"path": str(canary_path)}}}, [canary_path], []
+    )
+
+    gates, all_pass = evaluate_phase0_gates(evidence)
+
+    assert gates["sandbox"]["result"] == "BLOCKED_HARD_GATE"
     assert all_pass is False

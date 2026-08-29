@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import time
@@ -229,6 +230,7 @@ def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str,
         and sandbox.get("successful") is True
         and sandbox.get("checkout_isolated") is True
         and sandbox.get("private_runtime_isolated") is True
+        and sandbox.get("canary_metadata_valid") is True
         and sandbox.get("private_data_clear") is True
         and sandbox.get("network_attempted") is True
         and sandbox.get("network") == "blocked"
@@ -283,6 +285,7 @@ def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str,
             "result": "PASS" if sandbox_result else "BLOCKED_HARD_GATE",
             "checkout_isolated": sandbox.get("checkout_isolated") is True,
             "private_runtime_isolated": sandbox.get("private_runtime_isolated") is True,
+            "boundary_canary_metadata_valid": sandbox.get("canary_metadata_valid") is True,
             "protected_data_clear": sandbox.get("private_data_clear") is True,
             "outbound_network_attempted": sandbox.get("network_attempted") is True,
             "outbound_network_blocked": sandbox.get("network") == "blocked",
@@ -446,6 +449,29 @@ def _make_boundary_canary(directory: Path, target: Path, name: str) -> Path:
     return path
 
 
+def _boundary_canary_metadata_matches(canaries: list[Path], targets: list[Path]) -> bool:
+    if len(canaries) != len(targets):
+        return False
+    for canary, target in zip(canaries, targets, strict=True):
+        try:
+            canary_metadata = canary.lstat()
+            target_metadata = target.stat()
+        except OSError:
+            return False
+        if (
+            not stat.S_ISREG(canary_metadata.st_mode)
+            or stat.S_ISLNK(canary_metadata.st_mode)
+            or canary_metadata.st_dev != target_metadata.st_dev
+            or canary_metadata.st_ino != target_metadata.st_ino
+            or canary_metadata.st_mode != target_metadata.st_mode
+            or canary_metadata.st_uid != target_metadata.st_uid
+            or canary_metadata.st_gid != target_metadata.st_gid
+            or canary_metadata.st_nlink < 2
+        ):
+            return False
+    return True
+
+
 def _contains_boundary_data(observed: Any, paths: list[Path], values: list[bytes]) -> bool:
     serialized = json.dumps(observed, sort_keys=True, default=str)
     needles = [str(path) for path in paths]
@@ -484,7 +510,7 @@ def run_live_probe() -> dict[str, Any]:
         trueforge = TrueForgeProcess(_free_port(), runtime_directory)
         allowed_origin = f"http://localhost:{trueforge.port}"
         facade = DummyFacade("phase0-bearer", allowed_origin, image=image)
-        model = ModelServer(ROOT, (boundary_canaries[0], boundary_canaries[1]))
+        model = ModelServer(ROOT, boundary_directory.name)
         facade.start()
         model.start()
         trueforge.start()
@@ -605,17 +631,24 @@ def run_live_probe() -> dict[str, Any]:
         sandbox_evidence = _sandbox_analysis_evidence(
             events_payload, sandbox_call_ids[0] if len(sandbox_call_ids) == 1 else None
         )
-        private_data_clear = (
+        canary_metadata_valid = (
             checkout_sentinel is not None
+            and private_sentinel is not None
+            and _boundary_canary_metadata_matches(boundary_canaries, [checkout_sentinel, private_sentinel])
+        )
+        private_data_clear = (
+            boundary_directory is not None
+            and checkout_sentinel is not None
             and private_sentinel is not None
             and checkout_value is not None
             and private_value is not None
             and not _contains_boundary_data(
                 (facade.results, model.request_bodies, events_payload),
-                [ROOT, private_runtime, checkout_sentinel, private_sentinel],
+                [ROOT, private_runtime, checkout_sentinel, private_sentinel, boundary_directory, *boundary_canaries],
                 [checkout_value, private_value],
             )
         )
+        sandbox_evidence["canary_metadata_valid"] = canary_metadata_valid
         sandbox_evidence["private_data_clear"] = private_data_clear
         publish_call_ids = _tool_call_ids(events_payload, "publish_revision")
         approval = _approval_evidence(events_payload, publish_call_ids)
