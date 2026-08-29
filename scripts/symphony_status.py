@@ -156,7 +156,13 @@ def linear_issue(identifier: str, api_key: str | None) -> tuple[str, dict[str, A
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             body = json.load(response)
-    except (OSError, urllib.error.URLError, http.client.IncompleteRead, json.JSONDecodeError):
+    except (
+        OSError,
+        urllib.error.URLError,
+        http.client.IncompleteRead,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
         return "error", None
     if not isinstance(body, dict) or body.get("errors"):
         return "error", None

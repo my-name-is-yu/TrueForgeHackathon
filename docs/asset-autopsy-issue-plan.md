@@ -221,7 +221,7 @@ Acceptance:
 - [ ] CGL renders the 160 by 120 primitive scene
 - [ ] A success-wrapped upstream error is detected and returned as a bounded sanitized typed error
 - [ ] docs/phase0-upstream-results.md records PASS or BLOCKED_HARD_GATE for exactly these four checks
-- [ ] Only 4/4 PASS may merge, complete the issue, or unblock AA-00B; BLOCKED_HARD_GATE keeps the issue incomplete with symphony removed
+- [ ] Only 4/4 PASS may merge, complete the issue, or unblock AA-00B; BLOCKED_HARD_GATE keeps the issue incomplete and moves it back to `Backlog`
 
 Required verification:
 
@@ -267,7 +267,7 @@ Acceptance:
 - [ ] The resolved AgentSpec is serial, exposes the exact seven planned tool schemas, and makes only the dummy publish probe destructive and approval-gated
 - [ ] A 160 by 120 CGL image content block passes through the facade into TrueForge without exposing a host path or flooding the model context
 - [ ] docs/phase0-trueforge-results.md records PASS or BLOCKED_HARD_GATE for the four TrueForge gates plus the image transport gate
-- [ ] Only the upstream 4/4 regression plus TrueForge 5/5 PASS may merge, complete the issue, or unblock AA-02 through AA-04; BLOCKED_HARD_GATE keeps the issue incomplete with symphony removed
+- [ ] Only the upstream 4/4 regression plus TrueForge 5/5 PASS may merge, complete the issue, or unblock AA-02 through AA-04; BLOCKED_HARD_GATE keeps the issue incomplete and moves it back to `Backlog`
 
 Required verification:
 

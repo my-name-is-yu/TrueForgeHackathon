@@ -158,6 +158,23 @@ def test_linear_issue_reports_truncated_responses(monkeypatch) -> None:
     assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
 
 
+def test_linear_issue_reports_truncated_multibyte_json(monkeypatch) -> None:
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def open_request(_request, timeout):
+        assert timeout == 10
+        return Response(b'{"data":"\xe3')
+
+    monkeypatch.setattr(symphony_status.urllib.request, "urlopen", open_request)
+
+    assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
+
+
 def test_linear_issue_reports_unexpected_response_shapes(monkeypatch) -> None:
     class Response(io.BytesIO):
         def __enter__(self):
