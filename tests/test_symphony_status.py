@@ -147,6 +147,26 @@ def test_linear_issue_reports_api_errors(monkeypatch) -> None:
     assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
 
 
+def test_linear_issue_reports_unexpected_response_shapes(monkeypatch) -> None:
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    responses = iter([[], {"data": None}])
+
+    def open_request(_request, timeout):
+        assert timeout == 10
+        return Response(json.dumps(next(responses)).encode())
+
+    monkeypatch.setattr(symphony_status.urllib.request, "urlopen", open_request)
+
+    assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
+    assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
+
+
 def test_collect_reports_failed_linear_lookup_as_unavailable(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / ".symphony" / "workspaces" / "YU-21").mkdir(parents=True)
     monkeypatch.setenv("LINEAR_API_KEY", "secret-token")

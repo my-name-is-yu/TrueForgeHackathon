@@ -157,9 +157,12 @@ def linear_issue(identifier: str, api_key: str | None) -> tuple[str, dict[str, A
             body = json.load(response)
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         return "error", None
-    if body.get("errors"):
+    if not isinstance(body, dict) or body.get("errors"):
         return "error", None
-    issue = body.get("data", {}).get("issue")
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return "error", None
+    issue = data.get("issue")
     if issue is None:
         return "not_found", None
     if not isinstance(issue, dict):
