@@ -31,6 +31,7 @@ def test_large_tool_fixture_is_exactly_256_rows() -> None:
     serialized = json.dumps(payload, separators=(",", ":"))
     assert len(serialized) > 20_000
     assert "traceback" not in serialized
+    assert "boundary_targets" not in serialized
 
 
 def test_image_fixture_is_160_by_120_png() -> None:

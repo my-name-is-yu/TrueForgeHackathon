@@ -24,6 +24,8 @@ from .protocol import DUMMY_TOOLS, PLANNED_TOOLS, DummyFacade, ModelServer, plan
 ROOT = Path(__file__).resolve().parents[3]
 TRUEFORGE_VERSION = "0.1.4"
 SUCCESSFUL_TURN_STATUSES = {"done"}
+CHECKOUT_BOUNDARY_CANARY = Path("/tmp/tf0-checkout-boundary")
+PRIVATE_RUNTIME_BOUNDARY_CANARY = Path("/tmp/tf0-private-runtime-boundary")
 
 
 def _free_port() -> int:
@@ -437,6 +439,13 @@ def _make_sentinel(directory: Path, prefix: str) -> Path:
         return Path(handle.name)
 
 
+def _make_boundary_canary(path: Path, target: Path) -> Path:
+    if path.exists() or path.is_symlink():
+        raise RuntimeError("fixed boundary canary is already present")
+    path.symlink_to(target)
+    return path
+
+
 def run_live_probe() -> dict[str, Any]:
     package = json.loads((ROOT / "package.json").read_text())
     package_lock = json.loads((ROOT / "package-lock.json").read_text())
@@ -447,6 +456,7 @@ def run_live_probe() -> dict[str, Any]:
 
     runtime_directory = Path(tempfile.mkdtemp(prefix="tf0-", dir="/tmp"))
     checkout_sentinel: Path | None = None
+    boundary_canaries: list[Path] = []
     trueforge: TrueForgeProcess | None = None
     facade: DummyFacade | None = None
     model: ModelServer | None = None
@@ -455,14 +465,12 @@ def run_live_probe() -> dict[str, Any]:
         private_runtime = runtime_directory / "private-runtime"
         private_runtime.mkdir()
         private_sentinel = _make_sentinel(private_runtime, "sentinel-")
+        boundary_canaries.append(_make_boundary_canary(CHECKOUT_BOUNDARY_CANARY, checkout_sentinel))
+        boundary_canaries.append(_make_boundary_canary(PRIVATE_RUNTIME_BOUNDARY_CANARY, private_sentinel))
         image = _render_cgl_png()
         trueforge = TrueForgeProcess(_free_port(), runtime_directory)
         allowed_origin = f"http://localhost:{trueforge.port}"
-        boundary_targets = {
-            "checkout": {"path": str(checkout_sentinel), "host_exists": checkout_sentinel.is_file()},
-            "private_runtime": {"path": str(private_sentinel), "host_exists": private_sentinel.is_file()},
-        }
-        facade = DummyFacade("phase0-bearer", allowed_origin, image=image, boundary_targets=boundary_targets)
+        facade = DummyFacade("phase0-bearer", allowed_origin, image=image)
         model = ModelServer(ROOT)
         facade.start()
         model.start()
@@ -617,6 +625,8 @@ def run_live_probe() -> dict[str, Any]:
             model.close()
         if facade is not None:
             facade.close()
+        for canary in boundary_canaries:
+            canary.unlink(missing_ok=True)
         if checkout_sentinel is not None:
             checkout_sentinel.unlink(missing_ok=True)
         shutil.rmtree(runtime_directory, ignore_errors=True)

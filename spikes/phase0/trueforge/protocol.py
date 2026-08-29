@@ -76,7 +76,7 @@ def png_dimensions(data: bytes) -> tuple[int, int]:
     return struct.unpack(">II", data[16:24])
 
 
-def inspection_payload(row_count: int = 256, boundary_targets: dict[str, Any] | None = None) -> dict[str, Any]:
+def inspection_payload(row_count: int = 256) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "rows": [
             {
@@ -91,8 +91,6 @@ def inspection_payload(row_count: int = 256, boundary_targets: dict[str, Any] | 
             for index in range(row_count)
         ],
     }
-    if boundary_targets is not None:
-        payload["boundary_targets"] = boundary_targets
     payload["source"] = "synthetic-phase0-facade"
     return payload
 
@@ -116,12 +114,10 @@ class DummyFacade:
         bearer: str,
         allowed_origin: str,
         image: bytes | None = None,
-        boundary_targets: dict[str, Any] | None = None,
     ) -> None:
         self.bearer = bearer
         self.allowed_origin = allowed_origin
         self.image = image or make_png()
-        self.boundary_targets = boundary_targets
         self.requests: list[dict[str, Any]] = []
         self.tool_calls: list[str] = []
         self._server = _DummyFacadeServer(("127.0.0.1", 0), self._handler_type())
@@ -184,18 +180,11 @@ class DummyFacade:
                 elif method == "tools/call":
                     tool_name = message.get("params", {}).get("name")
                     if tool_name == "inspect_asset":
-                        boundary_targets = (
-                            None
-                            if self.headers.get("X-Phase0-Image-Probe") == "1"
-                            else owner.boundary_targets
-                        )
                         result = {
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": json.dumps(
-                                        inspection_payload(boundary_targets=boundary_targets), separators=(",", ":")
-                                    ),
+                                    "text": json.dumps(inspection_payload(), separators=(",", ":")),
                                 },
                                 {
                                     "type": "image",
@@ -333,11 +322,9 @@ class ModelServer:
                     code = (
                         "import json,pathlib,socket\n"
                         f"data=json.load(open({sandbox_path!r}))\n"
-                        "def boundary_status(target):\n"
-                        "    if target.get('host_exists') is not True:\n"
-                        "        return 'missing'\n"
+                        "def boundary_status(path):\n"
                         "    try:\n"
-                        "        pathlib.Path(target['path']).read_bytes()\n"
+                        "        pathlib.Path(path).read_bytes()\n"
                         "    except PermissionError:\n"
                         "        return 'blocked'\n"
                         "    except FileNotFoundError:\n"
@@ -345,9 +332,9 @@ class ModelServer:
                         "    except OSError:\n"
                         "        return 'error'\n"
                         "    return 'readable'\n"
-                        "targets=data['boundary_targets']\n"
-                        "checkout_isolated=boundary_status(targets['checkout'])=='blocked'\n"
-                        "private_runtime_isolated=boundary_status(targets['private_runtime'])=='blocked'\n"
+                        "boundary_canaries={'checkout':'/tmp/tf0-checkout-boundary','private_runtime':'/tmp/tf0-private-runtime-boundary'}\n"
+                        "checkout_isolated=boundary_status(boundary_canaries['checkout'])=='blocked'\n"
+                        "private_runtime_isolated=boundary_status(boundary_canaries['private_runtime'])=='blocked'\n"
                         "network='reachable'\n"
                         "try:\n"
                         "    socket.create_connection(('example.com',80),1).close()\n"
