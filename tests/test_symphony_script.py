@@ -74,7 +74,19 @@ def test_render_preserves_backslashes_in_the_controller_root(tmp_path: Path) -> 
     assert result.returncode == 0
     workflow = tmp_path / "project\\root" / ".symphony" / "runtime" / "WORKFLOW.md"
     rendered = workflow.read_text()
-    assert str(tmp_path / "project\\root" / "scripts" / "symphony_sol_review") in rendered
+    command = f'"{tmp_path / "project\\root" / "scripts" / "symphony_sol_review"}"'
+    assert command in rendered
+
+
+def test_render_quotes_a_controller_root_with_spaces(tmp_path: Path) -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    result = render_fixture(tmp_path, template, project_name="project root")
+
+    assert result.returncode == 0
+    workflow = tmp_path / "project root" / ".symphony" / "runtime" / "WORKFLOW.md"
+    command = f'"{tmp_path / "project root" / "scripts" / "symphony_sol_review"}"'
+    assert command in workflow.read_text()
 
 
 def test_agent_linear_operations_stay_behind_the_authenticated_tool_boundary() -> None:
@@ -91,6 +103,8 @@ def test_existing_pr_and_sol_commands_are_unambiguous() -> None:
 
     assert "never a raw SHA into a remote-tracking ref" in template
     assert "refs/heads/<recorded-head-branch>:refs/remotes/origin/<recorded-head-branch>" in template
-    assert "__SYMPHONY_CONTROLLER_ROOT__/scripts/symphony_sol_review" in template
+    assert '"__SYMPHONY_CONTROLLER_ROOT__/scripts/symphony_sol_review"' in template
     assert "Start exactly one wrapper process for a packet" in template
     assert "poll that same session until it exits" in template
+    assert "terminate the original session and its child processes" in template
+    assert "wait until all of them have exited" in template
