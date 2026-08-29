@@ -49,6 +49,9 @@ released in dependency-safe waves by adding the `symphony` label only after prer
 are merged to `main`.
 Symphony-launched Codex agents are pinned by this repository to GPT-5.6 Luna with `xhigh`
 reasoning. This does not change the Mac mini's host-wide Codex model or reasoning defaults.
+They run without approval prompts or a Codex filesystem sandbox because the Mac mini is a
+dedicated isolated execution host. This full-host access applies only to agents launched by this
+workflow; human review before merge remains mandatory.
 The HTTP dashboard is disabled because the pinned preview build reports known vulnerabilities
 in several web-server dependencies.
 
