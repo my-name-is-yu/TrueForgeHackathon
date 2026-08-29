@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -61,7 +62,10 @@ def _is_error_result(result: Any) -> bool:
     )
 
 
-def normalize_json_result(result: Any) -> dict[str, Any]:
+def normalize_json_result(
+    result: Any,
+    validate: Callable[[dict[str, Any]], bool],
+) -> dict[str, Any]:
     texts = _text_blocks(result)
     try:
         payload = json.loads(texts[0])
@@ -87,5 +91,12 @@ def normalize_json_result(result: Any) -> dict[str, Any]:
             SAFE_MESSAGE,
             True,
             SAFE_NEXT_ACTION,
+        )
+    if not validate(payload):
+        raise UpstreamToolError(
+            BAD_RESPONSE,
+            "Upstream response JSON did not match the expected schema.",
+            False,
+            SAFE_SLOT_ACTION,
         )
     return payload

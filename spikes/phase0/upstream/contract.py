@@ -13,6 +13,44 @@ REQUIRED_TOOL_NAMES = (
     "render_snapshot",
 )
 
+SIM_LOAD_SCALAR_TYPES = {
+    "name": str,
+    "mujoco_version": str,
+    "nq": int,
+    "nv": int,
+    "nu": int,
+    "nbody": int,
+    "ngeom": int,
+    "njnt": int,
+    "nsite": int,
+    "nsensor": int,
+    "ncam": int,
+    "timestep": float,
+    "has_renderer": bool,
+}
+SIM_LOAD_LIST_FIELDS = {
+    "bodies",
+    "joints",
+    "actuators",
+    "sensors",
+    "cameras",
+}
+
+
+def matches_sim_load_result(payload: dict[str, Any]) -> bool:
+    if set(payload) != set(SIM_LOAD_SCALAR_TYPES) | SIM_LOAD_LIST_FIELDS:
+        return False
+    if any(
+        type(payload[name]) is not expected
+        for name, expected in SIM_LOAD_SCALAR_TYPES.items()
+    ):
+        return False
+    return all(
+        type(payload[name]) is list
+        and all(type(item) is str for item in payload[name])
+        for name in SIM_LOAD_LIST_FIELDS
+    )
+
 
 def _nullable(type_name: str, title: str) -> dict[str, Any]:
     return {

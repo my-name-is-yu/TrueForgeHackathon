@@ -23,12 +23,27 @@ from spikes.phase0.upstream.contract import (
     PRIMITIVE_XML,
     REQUIRED_TOOL_NAMES,
     REQUIRED_TOOL_SCHEMAS,
+    matches_sim_load_result,
 )
 from spikes.phase0.upstream.stdio import with_stdio_session
 
 
 ROOT = Path(__file__).resolve().parents[3]
 UPSTREAM_COMMIT = "ce9bed80ec3698d7b778230abc21f2228a3ce94b"
+
+
+def _single_png_data(result) -> str | None:
+    blocks = getattr(result, "content", None)
+    if not isinstance(blocks, list) or len(blocks) != 1:
+        return None
+    block = blocks[0]
+    if (
+        getattr(block, "type", None) != "image"
+        or getattr(block, "mimeType", None) != "image/png"
+        or not isinstance(getattr(block, "data", None), str)
+    ):
+        return None
+    return block.data
 
 
 def test_dependency_lock_is_exact_and_frozen() -> None:
@@ -71,7 +86,7 @@ def test_cgl_renders_160_by_120_primitive_scene() -> None:
                     "sim_load",
                     arguments={"name": "phase0", "xml_string": PRIMITIVE_XML},
                 )
-                summary = normalize_json_result(loaded)
+                summary = normalize_json_result(loaded, matches_sim_load_result)
                 if summary.get("has_renderer") is not True:
                     return False
 
@@ -81,15 +96,10 @@ def test_cgl_renders_160_by_120_primitive_scene() -> None:
                 )
                 if result.isError:
                     return False
-                images = [
-                    block
-                    for block in result.content
-                    if getattr(block, "type", None) == "image"
-                    and getattr(block, "mimeType", None) == "image/png"
-                ]
-                if len(images) != 1:
+                png_data = _single_png_data(result)
+                if png_data is None:
                     return False
-                image = Image.open(io.BytesIO(base64.b64decode(images[0].data)))
+                image = Image.open(io.BytesIO(base64.b64decode(png_data)))
                 return image.size == (160, 120)
             except Exception:
                 return False
@@ -116,7 +126,7 @@ def test_success_wrapped_upstream_error_is_bounded_and_sanitized() -> None:
     result = asyncio.run(call_invalid_model())
     assert result.isError is False
     with pytest.raises(UpstreamToolError) as caught:
-        normalize_json_result(result)
+        normalize_json_result(result, matches_sim_load_result)
 
     error = caught.value
     envelope = error.envelope()
@@ -145,7 +155,7 @@ def test_adapter_rejects_additional_response_content() -> None:
     )
 
     with pytest.raises(UpstreamToolError) as caught:
-        normalize_json_result(result)
+        normalize_json_result(result, matches_sim_load_result)
 
     assert caught.value.envelope() == {
         "code": BAD_RESPONSE,
@@ -153,3 +163,26 @@ def test_adapter_rejects_additional_response_content() -> None:
         "retryable": False,
         "next_action": "Do not reuse the affected simulation slot.",
     }
+
+
+def test_adapter_rejects_schema_drift() -> None:
+    result = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text='{"has_renderer": true}')],
+        isError=False,
+    )
+
+    with pytest.raises(UpstreamToolError) as caught:
+        normalize_json_result(result, matches_sim_load_result)
+
+    assert caught.value.code == BAD_RESPONSE
+
+
+def test_render_gate_rejects_additional_response_content() -> None:
+    result = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="image", mimeType="image/png", data="data"),
+            SimpleNamespace(type="text", text="private traceback"),
+        ]
+    )
+
+    assert _single_png_data(result) is None
