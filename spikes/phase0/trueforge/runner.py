@@ -502,6 +502,7 @@ def run_live_probe() -> dict[str, Any]:
     private_sentinel: Path | None = None
     private_value: bytes | None = None
     boundary_directory: Path | None = None
+    boundary_directory_owned = False
     boundary_canaries: list[Path] = []
     trueforge: TrueForgeProcess | None = None
     facade: DummyFacade | None = None
@@ -511,14 +512,16 @@ def run_live_probe() -> dict[str, Any]:
         private_runtime = runtime_directory / "private-runtime"
         private_runtime.mkdir()
         private_sentinel, private_value = _make_sentinel(private_runtime, "sentinel-")
-        boundary_directory = Path(tempfile.mkdtemp(prefix="tf0-boundary-", dir="/tmp"))
+        boundary_directory = Path("/tmp") / "tf0-b"
+        boundary_directory.mkdir()
+        boundary_directory_owned = True
         boundary_canaries.append(_make_boundary_canary(boundary_directory, checkout_sentinel, "a"))
         boundary_canaries.append(_make_boundary_canary(boundary_directory, private_sentinel, "b"))
         image = _render_cgl_png()
         trueforge = TrueForgeProcess(_free_port(), runtime_directory)
         allowed_origin = f"http://localhost:{trueforge.port}"
         facade = DummyFacade("phase0-bearer", allowed_origin, image=image)
-        model = ModelServer(ROOT, boundary_directory.name)
+        model = ModelServer(ROOT)
         facade.start()
         model.start()
         trueforge.start()
@@ -693,7 +696,7 @@ def run_live_probe() -> dict[str, Any]:
             facade.close()
         for canary in boundary_canaries:
             canary.unlink(missing_ok=True)
-        if boundary_directory is not None:
+        if boundary_directory_owned and boundary_directory is not None:
             shutil.rmtree(boundary_directory, ignore_errors=True)
         if checkout_sentinel is not None:
             checkout_sentinel.unlink(missing_ok=True)
