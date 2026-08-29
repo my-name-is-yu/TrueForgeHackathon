@@ -79,7 +79,10 @@ def validate(
         finding_sources = finding.get("sources")
         if not isinstance(finding_sources, list) or not finding_sources:
             errors.append(f"finding {index} needs at least one source")
-        elif any(source not in {"codex", "qodo"} for source in finding_sources):
+        elif any(
+            not isinstance(source, str) or source not in {"codex", "qodo"}
+            for source in finding_sources
+        ):
             errors.append(f"finding {index} has an invalid source")
         elif len(finding_sources) != len(set(finding_sources)):
             errors.append(f"finding {index} has duplicate sources")
