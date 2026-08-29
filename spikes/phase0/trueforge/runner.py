@@ -476,7 +476,15 @@ def _contains_boundary_data(observed: Any, paths: list[Path], values: list[bytes
     serialized = json.dumps(observed, sort_keys=True, default=str)
     needles = [str(path) for path in paths]
     for value in values:
-        needles.extend((value.hex(), base64.b64encode(value).decode("ascii"), repr(value)))
+        representation = repr(value)
+        needles.extend(
+            (
+                value.hex(),
+                base64.b64encode(value).decode("ascii"),
+                representation,
+                json.dumps(representation),
+            )
+        )
     return any(needle in serialized for needle in needles)
 
 
