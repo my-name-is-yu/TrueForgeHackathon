@@ -39,6 +39,46 @@ def test_find_workpad_refuses_ambiguous_comments() -> None:
         symphony_linear.find_workpad(issue([marked, {**marked, "id": "two"}]))
 
 
+def test_issue_context_collects_workpad_from_later_comment_page(monkeypatch) -> None:
+    pages = iter(
+        [
+            {
+                "issue": {
+                    **issue(),
+                    "comments": {
+                        "nodes": [{"id": "ordinary", "body": "ordinary"}],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "page-2"},
+                    },
+                }
+            },
+            {
+                "issue": {
+                    **issue(),
+                    "comments": {
+                        "nodes": [{"id": "workpad", "body": symphony_linear.WORKPAD_MARKER}],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    },
+                }
+            },
+        ]
+    )
+    calls = []
+
+    def fake_graphql(_query, variables):
+        calls.append(variables)
+        return next(pages)
+
+    monkeypatch.setattr(symphony_linear, "graphql", fake_graphql)
+
+    context = symphony_linear.issue_context("YU-123")
+
+    assert symphony_linear.find_workpad(context)["id"] == "workpad"
+    assert calls == [
+        {"id": "YU-123", "after": None},
+        {"id": "YU-123", "after": "page-2"},
+    ]
+
+
 def test_read_safe_body_rejects_likely_secret(tmp_path: Path) -> None:
     body = tmp_path / "body.md"
     body.write_text("token: lin_api_abcdefghijklmnopqrstuvwxyz")
@@ -80,26 +120,57 @@ def test_backlog_returns_existing_fingerprint_without_create(tmp_path: Path, mon
     queries = []
     monkeypatch.setattr(symphony_linear, "issue_context", lambda _identifier: issue())
 
-    def fake_graphql(query, variables):
-        queries.append(query)
-        return {
-            "issues": {
-                "nodes": [
-                    {
-                        "id": "duplicate",
-                        "identifier": "YU-999",
-                        "title": "Follow up",
-                        "description": f"<!-- symphony-backlog:{fingerprint} -->",
-                        "url": "https://linear.example/YU-999",
-                    }
-                ]
+    def fake_project_issues(project_id):
+        queries.append(project_id)
+        return [
+            {
+                "id": "duplicate",
+                "identifier": "YU-999",
+                "title": "Follow up",
+                "description": f"<!-- symphony-backlog:{fingerprint} -->",
+                "url": "https://linear.example/YU-999",
             }
-        }
+        ]
 
-    monkeypatch.setattr(symphony_linear, "graphql", fake_graphql)
+    monkeypatch.setattr(symphony_linear, "project_issues", fake_project_issues)
 
     assert symphony_linear.create_backlog_candidate("YU-123", "Follow up", body) == 0
     assert len(queries) == 1
+
+
+def test_project_issue_scan_paginates_before_deduplication(monkeypatch) -> None:
+    pages = iter(
+        [
+            {
+                "issues": {
+                    "nodes": [{"identifier": "YU-1"}],
+                    "pageInfo": {"hasNextPage": True, "endCursor": "page-2"},
+                }
+            },
+            {
+                "issues": {
+                    "nodes": [{"identifier": "YU-2"}],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            },
+        ]
+    )
+    calls = []
+
+    def fake_graphql(_query, variables):
+        calls.append(variables)
+        return next(pages)
+
+    monkeypatch.setattr(symphony_linear, "graphql", fake_graphql)
+
+    assert [item["identifier"] for item in symphony_linear.project_issues("project-id")] == [
+        "YU-1",
+        "YU-2",
+    ]
+    assert calls == [
+        {"projectId": "project-id", "after": None},
+        {"projectId": "project-id", "after": "page-2"},
+    ]
 
 
 def test_set_state_refuses_missing_exact_state(monkeypatch) -> None:
@@ -132,15 +203,11 @@ def test_backlog_enforces_three_candidate_limit(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(symphony_linear, "issue_context", lambda _identifier: issue())
     monkeypatch.setattr(
         symphony_linear,
-        "graphql",
-        lambda *_args: {
-            "issues": {
-                "nodes": [
-                    {"description": marker, "identifier": f"YU-{index}", "url": "url"}
-                    for index in range(3)
-                ]
-            }
-        },
+        "project_issues",
+        lambda _project_id: [
+            {"description": marker, "identifier": f"YU-{index}", "url": "url"}
+            for index in range(3)
+        ],
     )
 
     with pytest.raises(symphony_linear.LinearError, match="maximum of three"):

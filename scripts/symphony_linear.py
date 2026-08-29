@@ -64,23 +64,78 @@ def graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
 
 
 def issue_context(identifier: str) -> dict[str, Any]:
-    data = graphql(
-        """
-        query SymphonyIssue($id: String!) {
-          issue(id: $id) {
-            id identifier url description
-            team { id }
-            project { id }
-            comments(first: 100) { nodes { id body } }
-          }
-        }
-        """,
-        {"id": identifier},
-    )
-    issue = data.get("issue")
-    if not isinstance(issue, dict):
-        raise LinearError(f"Linear issue not found: {identifier}")
-    return issue
+    comments: list[dict[str, Any]] = []
+    after: str | None = None
+    seen_cursors: set[str] = set()
+    context: dict[str, Any] | None = None
+    while True:
+        data = graphql(
+            """
+            query SymphonyIssue($id: String!, $after: String) {
+              issue(id: $id) {
+                id identifier url description
+                team { id }
+                project { id }
+                comments(first: 100, after: $after) {
+                  nodes { id body }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+            """,
+            {"id": identifier, "after": after},
+        )
+        issue = data.get("issue")
+        if not isinstance(issue, dict):
+            raise LinearError(f"Linear issue not found: {identifier}")
+        if context is None:
+            context = issue.copy()
+        connection = issue.get("comments", {})
+        comments.extend(connection.get("nodes", []))
+        after = next_cursor(connection, seen_cursors, "issue comments")
+        if after is None:
+            break
+    assert context is not None
+    context["comments"] = {"nodes": comments}
+    return context
+
+
+def next_cursor(
+    connection: dict[str, Any], seen_cursors: set[str], connection_name: str
+) -> str | None:
+    page_info = connection.get("pageInfo")
+    if not isinstance(page_info, dict) or page_info.get("hasNextPage") is not True:
+        return None
+    cursor = page_info.get("endCursor")
+    if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+        raise LinearError(f"{connection_name} pagination did not advance")
+    seen_cursors.add(cursor)
+    return cursor
+
+
+def project_issues(project_id: str) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    after: str | None = None
+    seen_cursors: set[str] = set()
+    while True:
+        data = graphql(
+            """
+            query ProjectBacklogCandidates($projectId: ID!, $after: String) {
+              issues(first: 250, after: $after, filter: {project: {id: {eq: $projectId}}}) {
+                nodes { id identifier title description url }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+            """,
+            {"projectId": project_id, "after": after},
+        )
+        connection = data.get("issues")
+        if not isinstance(connection, dict):
+            raise LinearError("Linear returned an invalid project issue connection")
+        issues.extend(connection.get("nodes", []))
+        after = next_cursor(connection, seen_cursors, "project issues")
+        if after is None:
+            return issues
 
 
 def find_workpad(issue: dict[str, Any]) -> dict[str, Any] | None:
@@ -242,19 +297,10 @@ def create_backlog_candidate(source_identifier: str, title: str, body_path: Path
         raise LinearError("source issue is not assigned to a project")
     fingerprint = backlog_fingerprint(source_identifier, title)
     marker = f"{BACKLOG_MARKER_PREFIX}{fingerprint} -->"
-    data = graphql(
-        """
-        query ProjectBacklogCandidates($projectId: ID!) {
-          issues(first: 250, filter: {project: {id: {eq: $projectId}}}) {
-            nodes { id identifier title description url }
-          }
-        }
-        """,
-        {"projectId": project["id"]},
-    )
+    existing_issues = project_issues(project["id"])
     duplicates = [
         issue
-        for issue in data.get("issues", {}).get("nodes", [])
+        for issue in existing_issues
         if marker in (issue.get("description") or "")
     ]
     if duplicates:
@@ -271,7 +317,7 @@ def create_backlog_candidate(source_identifier: str, title: str, body_path: Path
     source_marker = f"<!-- symphony-backlog-source:{source_identifier} -->"
     source_candidates = [
         issue
-        for issue in data.get("issues", {}).get("nodes", [])
+        for issue in existing_issues
         if source_marker in (issue.get("description") or "")
     ]
     if len(source_candidates) >= 3:
