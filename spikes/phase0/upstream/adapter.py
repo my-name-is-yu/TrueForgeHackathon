@@ -40,20 +40,18 @@ def _text_blocks(result: Any) -> list[str]:
             False,
             SAFE_SLOT_ACTION,
         )
-    texts = [
-        block.text
-        for block in blocks
-        if getattr(block, "type", None) == "text"
-        and isinstance(getattr(block, "text", None), str)
-    ]
-    if not texts:
+    if (
+        len(blocks) != 1
+        or getattr(blocks[0], "type", None) != "text"
+        or not isinstance(getattr(blocks[0], "text", None), str)
+    ):
         raise UpstreamToolError(
             BAD_RESPONSE,
-            "Upstream response contained no JSON text.",
+            "Upstream response content was unexpected.",
             False,
             SAFE_SLOT_ACTION,
         )
-    return texts
+    return [blocks[0].text]
 
 
 def _is_error_result(result: Any) -> bool:

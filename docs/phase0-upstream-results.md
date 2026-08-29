@@ -15,7 +15,7 @@ handoff requires all four checks to be `PASS`.
 ## Verification record
 
 - `uv sync --frozen`: PASS.
-- `uv run pytest tests/phase0/upstream -q`: `4 passed`.
+- `uv run pytest tests/phase0/upstream -q`: `5 passed`.
 - `git diff --check`: PASS.
 - Private-data scan over the owned implementation and evidence files: PASS; no credentials, nonce, hidden target, golden XML, host path, or raw private trace was committed.
 

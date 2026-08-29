@@ -6,11 +6,13 @@ import io
 import json
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
 from spikes.phase0.upstream.adapter import (
+    BAD_RESPONSE,
     SAFE_MESSAGE,
     SAFE_NEXT_ACTION,
     UpstreamToolError,
@@ -45,6 +47,7 @@ def test_dependency_lock_is_exact_and_frozen() -> None:
     assert f"#{UPSTREAM_COMMIT}" in lock_text
 
 
+@pytest.mark.phase0_upstream
 def test_stdio_initializes_and_matches_required_schemas() -> None:
     async def check() -> None:
         async def collect(session) -> None:
@@ -59,6 +62,7 @@ def test_stdio_initializes_and_matches_required_schemas() -> None:
     asyncio.run(check())
 
 
+@pytest.mark.phase0_upstream
 def test_cgl_renders_160_by_120_primitive_scene() -> None:
     async def render() -> bool:
         async def call(session) -> bool:
@@ -98,6 +102,7 @@ def test_cgl_renders_160_by_120_primitive_scene() -> None:
     assert asyncio.run(render()) is True
 
 
+@pytest.mark.phase0_upstream
 def test_success_wrapped_upstream_error_is_bounded_and_sanitized() -> None:
     async def call_invalid_model():
         async def call(session):
@@ -128,3 +133,23 @@ def test_success_wrapped_upstream_error_is_bounded_and_sanitized() -> None:
     assert "invalid_input" not in serialized
     assert len(error.message) <= 96
     assert len(error.next_action) <= 96
+
+
+def test_adapter_rejects_additional_response_content() -> None:
+    result = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="text", text='{"ok": true}'),
+            SimpleNamespace(type="text", text='{"error": "private traceback"}'),
+        ],
+        isError=False,
+    )
+
+    with pytest.raises(UpstreamToolError) as caught:
+        normalize_json_result(result)
+
+    assert caught.value.envelope() == {
+        "code": BAD_RESPONSE,
+        "message": "Upstream response content was unexpected.",
+        "retryable": False,
+        "next_action": "Do not reuse the affected simulation slot.",
+    }
