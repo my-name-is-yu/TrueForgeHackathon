@@ -10,8 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 
 
-def render_fixture(tmp_path: Path, template: str) -> subprocess.CompletedProcess[str]:
-    project = tmp_path / "project"
+def render_fixture(
+    tmp_path: Path, template: str, project_name: str = "project"
+) -> subprocess.CompletedProcess[str]:
+    project = tmp_path / project_name
     scripts = project / "scripts"
     symphony = project / "symphony"
     bin_dir = tmp_path / "bin"
@@ -62,6 +64,17 @@ def test_render_publishes_a_matching_workflow_and_hash(tmp_path: Path) -> None:
     rendered = workflow.read_text()
     assert str(tmp_path / "project" / "scripts" / "symphony_sol_review") in rendered
     assert "__SYMPHONY_CONTROLLER_ROOT__" not in rendered
+
+
+def test_render_preserves_backslashes_in_the_controller_root(tmp_path: Path) -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    result = render_fixture(tmp_path, template, project_name="project\\root")
+
+    assert result.returncode == 0
+    workflow = tmp_path / "project\\root" / ".symphony" / "runtime" / "WORKFLOW.md"
+    rendered = workflow.read_text()
+    assert str(tmp_path / "project\\root" / "scripts" / "symphony_sol_review") in rendered
 
 
 def test_agent_linear_operations_stay_behind_the_authenticated_tool_boundary() -> None:

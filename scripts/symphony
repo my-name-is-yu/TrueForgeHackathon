@@ -183,7 +183,7 @@ render_workflow() {
   mkdir -p "$RUNTIME_DIR"
 
   escaped_slug=$(printf '%s' "$LINEAR_PROJECT_SLUG" | sed 's/[&|]/\\&/g')
-  escaped_controller_root=$(printf '%s' "$PROJECT_ROOT" | sed 's/[&|]/\\&/g')
+  escaped_controller_root=$(printf '%s' "$PROJECT_ROOT" | sed 's/[\\&|]/\\&/g')
   temporary_workflow=$(mktemp "$RUNTIME_DIR/.WORKFLOW.md.XXXXXX")
   temporary_sha=$(mktemp "$RUNTIME_DIR/.WORKFLOW.sha256.XXXXXX")
   trap 'rm -f "$temporary_workflow" "$temporary_sha"' EXIT HUP INT TERM
