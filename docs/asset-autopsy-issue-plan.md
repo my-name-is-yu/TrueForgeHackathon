@@ -25,19 +25,17 @@ Each executable leaf has one primary uncertainty, exclusive owned surfaces, prot
 Current state is intentionally inert:
 
 - every unfinished AA issue is Backlog;
-- no AA issue has the `symphony` label;
 - the active Symphony dispatch count is zero;
 - this plan does not start, restart, or reconfigure the Mac mini service.
 
-The `symphony` label is the dispatch switch. Linear blocker relations document and expose readiness, but do not by themselves prevent dispatch. Activate an executable leaf only with this sequence:
+The transition from Backlog to Todo is the sole dispatch switch. Linear blocker relations document and expose readiness, but do not by themselves prevent dispatch. Activate an executable leaf only with this sequence:
 
 1. Verify every listed prerequisite PR is merged into `main`; In Review or a green unmerged PR is insufficient.
 2. Verify the issue body, owned surfaces, acceptance, and dependency links still match this plan.
 3. Move only that ready leaf from Backlog to Todo.
-4. Add the `symphony` label last.
-5. If the agent reports a blocker, remove `symphony` before changing scope or dependencies.
+4. If the agent reports a blocker, move it back to Backlog before changing scope or dependencies.
 
-Never add `symphony` to an umbrella parent, `YU-19`, or `YU-29`.
+Never move an umbrella parent, `YU-19`, or `YU-29` to Todo.
 
 ## 3. Non-dispatch umbrellas
 
@@ -113,7 +111,7 @@ AA-06B may become ready while the other Wave 2A leaves are still in review, but 
 - no external or manually launched live CGL, real TrueForge, private qualification/publication, or full-E2E workload while the four-wide wave is active;
 - enough human/Qodo review capacity to merge the current wave before activating the next one.
 
-If RAM is unverified or at most 8 GB, effective concurrency is capped at two. On a verified host above 8 GB, begin with at most three; activate the fourth leaf only after the first three have completed clone/environment startup and every checkpoint remains green. Warning or critical memory pressure, rising swapouts, insufficient disk, app-server exits, retry loops, or install-lock stalls forbid the fourth activation and require removing `symphony` from any queued leaf. Even on a larger host, four remains the hackathon ceiling.
+If RAM is unverified or at most 8 GB, effective concurrency is capped at two. On a verified host above 8 GB, begin with at most three; activate the fourth leaf only after the first three have completed clone/environment startup and every checkpoint remains green. Warning or critical memory pressure, rising swapouts, insufficient disk, app-server exits, retry loops, or install-lock stalls forbid the fourth activation and require moving any queued leaf back to Backlog. Even on a larger host, four remains the hackathon ceiling.
 
 The live-workload restriction does not prohibit synthetic unit, contract, or failure-injection tests inside a leaf. In Wave 2A, AA-06A uses synthetic non-demo qualification fixtures and no leaf launches the real private runtime. In Wave 4A, AA-10C is the sole renderer/runtime lane; AA-10A, AA-10B, AA-12A, and AA-12B must not launch CGL or a real TrueForge/private qualification/publication/full-E2E run. If evidence makes a second lane require one of those live resources, that lane reports a blocker and defers the command to a serial follow-on leaf instead of overlapping it.
 
@@ -187,7 +185,7 @@ The graph is acyclic. AA-07 and AA-08 deliberately have three direct blockers ea
 - AA-11 consumes the AA-12C interface and owns only release prose, notices, runbook, and demo-report presentation.
 - AA-10A, AA-10B, and AA-10C have disjoint production-fix allowlists so all three may run in parallel. A validated root cause outside a lane's allowlist creates a dedicated follow-on fix leaf with exact ownership and new blocker links; the discovering lane remains incomplete until that fix merges and its regression passes.
 - An agent may commit, push, and open its PR. It must not merge, mark Done, weaken acceptance, change a protected surface, or invent a product fallback.
-- A valid implementation blocker stays visible in Linear with exact evidence and without the `symphony` label.
+- A valid implementation blocker stays visible in Linear with exact evidence in Backlog.
 
 ## 8. Leaf contracts
 
@@ -223,7 +221,7 @@ Acceptance:
 - [ ] CGL renders the 160 by 120 primitive scene
 - [ ] A success-wrapped upstream error is detected and returned as a bounded sanitized typed error
 - [ ] docs/phase0-upstream-results.md records PASS or BLOCKED_HARD_GATE for exactly these four checks
-- [ ] Only 4/4 PASS may merge, complete the issue, or unblock AA-00B; BLOCKED_HARD_GATE keeps the issue incomplete with symphony removed
+- [ ] Only 4/4 PASS may merge, complete the issue, or unblock AA-00B; BLOCKED_HARD_GATE keeps the issue incomplete and moves it back to `Backlog`
 
 Required verification:
 
@@ -269,7 +267,7 @@ Acceptance:
 - [ ] The resolved AgentSpec is serial, exposes the exact seven planned tool schemas, and makes only the dummy publish probe destructive and approval-gated
 - [ ] A 160 by 120 CGL image content block passes through the facade into TrueForge without exposing a host path or flooding the model context
 - [ ] docs/phase0-trueforge-results.md records PASS or BLOCKED_HARD_GATE for the four TrueForge gates plus the image transport gate
-- [ ] Only the upstream 4/4 regression plus TrueForge 5/5 PASS may merge, complete the issue, or unblock AA-02 through AA-04; BLOCKED_HARD_GATE keeps the issue incomplete with symphony removed
+- [ ] Only the upstream 4/4 regression plus TrueForge 5/5 PASS may merge, complete the issue, or unblock AA-02 through AA-04; BLOCKED_HARD_GATE keeps the issue incomplete and moves it back to `Backlog`
 
 Required verification:
 
@@ -1272,7 +1270,7 @@ After every implementation and release-preparation PR is merged, a human selects
 ## Dispatch safety
 
 - Keep this issue Backlog until all preconditions pass.
-- Never add the symphony label.
+- Never move this issue to Todo.
 - Do not assign this issue to Symphony; browser approval, recording, upload, merge, and submission remain human actions.
 
 ## Acceptance
