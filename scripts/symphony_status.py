@@ -141,9 +141,9 @@ def classify_health(
     return "working"
 
 
-def linear_issue(identifier: str, api_key: str | None) -> dict[str, Any] | None:
+def linear_issue(identifier: str, api_key: str | None) -> tuple[str, dict[str, Any] | None]:
     if not api_key:
-        return None
+        return "disabled", None
     payload = json.dumps(
         {
             "query": "query SymphonyStatusIssue($id: String!) { issue(id: $id) { identifier url state { name type } } }",
@@ -160,11 +160,15 @@ def linear_issue(identifier: str, api_key: str | None) -> dict[str, Any] | None:
         with urllib.request.urlopen(request, timeout=10) as response:
             body = json.load(response)
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
-        return None
+        return "error", None
+    if body.get("errors"):
+        return "error", None
     issue = body.get("data", {}).get("issue")
+    if issue is None:
+        return "not_found", None
     if not isinstance(issue, dict):
-        return None
-    return issue
+        return "error", None
+    return "ok", issue
 
 
 def workspace_status(workspace: Path, linear_api_key: str | None) -> dict[str, Any]:
@@ -174,13 +178,15 @@ def workspace_status(workspace: Path, linear_api_key: str | None) -> dict[str, A
     head = head_result.stdout.strip() if head_result.returncode == 0 else None
     dirty_result = run(["git", "status", "--porcelain"], cwd=workspace)
     dirty = bool(dirty_result.stdout.strip()) if dirty_result.returncode == 0 else None
+    linear_lookup, linear = linear_issue(workspace.name, linear_api_key)
     return {
         "issue": workspace.name,
         "branch": branch,
         "dirty": dirty,
         "head": head,
         "last_file_update_at": latest_workspace_update(workspace),
-        "linear": linear_issue(workspace.name, linear_api_key),
+        "linear_lookup": linear_lookup,
+        "linear": linear,
     }
 
 
@@ -227,6 +233,15 @@ def collect(project_root: Path) -> dict[str, Any]:
         else None
     )
     health = classify_health(service, agents, activity_age_seconds)
+    linear_lookups = [workspace["linear_lookup"] for workspace in workspaces]
+    if not linear_api_key:
+        linear_status = "disabled"
+    elif not linear_lookups:
+        linear_status = "unchecked"
+    elif "error" in linear_lookups:
+        linear_status = "unavailable"
+    else:
+        linear_status = "available"
     return {
         "health": health,
         "observed_at": datetime.now(timezone.utc).isoformat(),
@@ -252,7 +267,7 @@ def collect(project_root: Path) -> dict[str, Any]:
             "age_seconds": activity_age_seconds,
             "stall_candidate_after_seconds": STALL_CANDIDATE_SECONDS,
         },
-        "linear": {"available": bool(linear_api_key)},
+        "linear": {"status": linear_status},
     }
 
 
@@ -263,10 +278,12 @@ def render_text(status: dict[str, Any]) -> str:
         f"Agents: {len(status['agents'])} (activity_age={status['activity']['age_seconds']}s)",
     ]
     for workspace in status["workspaces"]:
+        linear = workspace["linear"]
+        linear_text = linear["state"]["name"] if linear else workspace["linear_lookup"]
         lines.append(
             f"- {workspace['issue']}: branch={workspace['branch'] or '-'} "
             f"dirty={workspace['dirty']} "
-            f"linear={workspace['linear']['state']['name'] if workspace['linear'] else '-'}"
+            f"linear={linear_text}"
         )
     return "\n".join(lines)
 

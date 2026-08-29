@@ -52,7 +52,7 @@ def test_collect_without_runtime_is_valid_idle_snapshot(tmp_path: Path, monkeypa
     assert status["health"] == "idle"
     assert status["agents"] == []
     assert status["workspaces"] == []
-    assert status["linear"] == {"available": False}
+    assert status["linear"] == {"status": "disabled"}
     json.dumps(status)
 
 
@@ -130,7 +130,36 @@ def test_linear_issue_returns_state_without_exposing_token(monkeypatch) -> None:
 
     monkeypatch.setattr(symphony_status.urllib.request, "urlopen", open_request)
 
-    issue = symphony_status.linear_issue("YU-21", "secret-token")
+    lookup, issue = symphony_status.linear_issue("YU-21", "secret-token")
 
+    assert lookup == "ok"
     assert issue == response["data"]["issue"]
     assert captured == {"authorization": "secret-token", "timeout": 10}
+
+
+def test_linear_issue_reports_api_errors(monkeypatch) -> None:
+    def fail_request(_request, timeout):
+        assert timeout == 10
+        raise symphony_status.urllib.error.URLError("offline")
+
+    monkeypatch.setattr(symphony_status.urllib.request, "urlopen", fail_request)
+
+    assert symphony_status.linear_issue("YU-21", "secret-token") == ("error", None)
+
+
+def test_collect_reports_failed_linear_lookup_as_unavailable(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / ".symphony" / "workspaces" / "YU-21").mkdir(parents=True)
+    monkeypatch.setenv("LINEAR_API_KEY", "secret-token")
+    monkeypatch.setattr(
+        symphony_status,
+        "service_status",
+        lambda: {"state": "running", "pid": 42, "runs": 1, "last_exit_code": None},
+    )
+    monkeypatch.setattr(symphony_status, "agent_processes", lambda _pid: [])
+    monkeypatch.setattr(symphony_status, "linear_issue", lambda *_args: ("error", None))
+
+    status = symphony_status.collect(tmp_path)
+
+    assert status["linear"] == {"status": "unavailable"}
+    assert status["workspaces"][0]["linear_lookup"] == "error"
+    assert "linear=error" in symphony_status.render_text(status)
