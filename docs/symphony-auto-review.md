@@ -54,6 +54,11 @@ Luna writes a review packet and invokes:
 scripts/symphony_sol_review /tmp/review-packet.md /tmp/decision.json
 ```
 
+The packet starts with a fixed seven-line trusted header containing version, head, counters, and
+the independently observed Codex/Qodo completion statuses. Review text begins only after an explicit
+header terminator. The wrapper parses control metadata only from those fixed lines and rejects any
+Sol output whose source statuses differ from the trusted header.
+
 The wrapper strips common Linear/GitHub credentials, refuses likely secrets in the packet, and runs
 an ephemeral, read-only GPT-5.6 Sol/xhigh adjudication with only the packet as its task input. It
 requires schema-valid JSON. A second deterministic validator enforces the safety invariants:
@@ -69,8 +74,10 @@ would create unnecessary abstraction, freeze future choices, or duplicate later 
 or explicitly later-owned work cannot enter rework: it is rejected or becomes a deduplicated
 Backlog candidate. A requirement needed for the current issue cannot be deferred this way.
 
-There are at most two rework rounds and three reviewed heads total. A new push changes the head and
-forces both reviews and all gates to be evaluated again.
+There are at most nine automatic rework rounds and ten distinct reviewed heads for the same PR.
+This is a review-loop head cap, not a Qodo quota. A new push changes the head and forces both
+reviews and all gates to be evaluated again. Accepted findings that remain at the cap move the
+issue to `Blocked`; the cap never authorizes merge.
 
 ## Merge-ready and Backlog safety
 

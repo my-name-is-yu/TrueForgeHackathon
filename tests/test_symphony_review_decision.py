@@ -14,6 +14,24 @@ SPEC.loader.exec_module(decision_module)
 HEAD = "a" * 40
 
 
+def validate_decision(
+    value,
+    expected_head=HEAD,
+    expected_review_head=1,
+    expected_rework_round=0,
+    expected_codex_status="complete",
+    expected_qodo_status="complete",
+):
+    return decision_module.validate(
+        value,
+        expected_head,
+        expected_review_head,
+        expected_rework_round,
+        expected_codex_status,
+        expected_qodo_status,
+    )
+
+
 def decision(**overrides):
     value = {
         "head_sha": HEAD,
@@ -46,39 +64,57 @@ def finding(classification: str, fingerprint: str = "finding-1"):
 
 
 def test_completed_sources_without_action_can_be_merge_ready() -> None:
-    assert decision_module.validate(decision(), HEAD, 1, 0) == []
+    assert validate_decision(decision(), HEAD, 1, 0) == []
 
 
 def test_timeout_must_block() -> None:
-    errors = decision_module.validate(
-        decision(sources={"codex": "complete", "qodo": "timeout"}), HEAD, 1, 0
+    errors = validate_decision(
+        decision(sources={"codex": "complete", "qodo": "timeout"}),
+        HEAD,
+        1,
+        0,
+        expected_qodo_status="timeout",
     )
 
     assert "timeout, escalation, uncertainty, or the rework limit must block" in errors
 
 
 def test_accepted_finding_requires_rework() -> None:
-    errors = decision_module.validate(decision(findings=[finding("accept")]), HEAD, 1, 0)
+    errors = validate_decision(decision(findings=[finding("accept")]), HEAD, 1, 0)
 
     assert "accepted findings require rework" in errors
 
 
 def test_conflict_must_block() -> None:
-    errors = decision_module.validate(decision(findings=[finding("conflict")]), HEAD, 1, 0)
+    errors = validate_decision(decision(findings=[finding("conflict")]), HEAD, 1, 0)
 
     assert "timeout, escalation, uncertainty, or the rework limit must block" in errors
 
 
-def test_rework_limit_forbids_third_round() -> None:
-    errors = decision_module.validate(
-        decision(findings=[finding("accept")], gate="rework", rework_round=2), HEAD, 1, 2
+def test_rework_limit_forbids_an_eleventh_reviewed_head() -> None:
+    errors = validate_decision(
+        decision(
+            findings=[finding("accept")],
+            gate="rework",
+            review_head_number=10,
+            rework_round=9,
+        ),
+        HEAD,
+        10,
+        9,
     )
 
     assert "timeout, escalation, uncertainty, or the rework limit must block" in errors
 
 
+def test_tenth_reviewed_head_can_be_merge_ready_when_clean() -> None:
+    assert validate_decision(
+        decision(review_head_number=10, rework_round=9), HEAD, 10, 9
+    ) == []
+
+
 def test_duplicate_finding_fingerprints_are_rejected() -> None:
-    errors = decision_module.validate(
+    errors = validate_decision(
         decision(
             findings=[finding("reject"), finding("reject")],
             gate="merge_ready",
@@ -92,22 +128,22 @@ def test_duplicate_finding_fingerprints_are_rejected() -> None:
 
 
 def test_uncertainty_allows_block_without_fabricating_a_finding() -> None:
-    assert decision_module.validate(
+    assert validate_decision(
         decision(uncertain=True, gate="blocked"), HEAD, 1, 0
     ) == []
 
 
 def test_packet_counters_must_match_sol_output() -> None:
-    errors = decision_module.validate(decision(), HEAD, 2, 1)
+    errors = validate_decision(decision(), HEAD, 11, 10)
 
-    assert "review_head_number must equal the expected value between 1 and 3" in errors
-    assert "rework_round must equal the expected value between 0 and 2" in errors
+    assert "review_head_number must equal the expected value between 1 and 10" in errors
+    assert "rework_round must equal the expected value between 0 and 9" in errors
 
 
 def test_high_yagni_finding_cannot_enter_rework() -> None:
     item = finding("accept")
     item["yagni_risk"] = "high"
-    errors = decision_module.validate(
+    errors = validate_decision(
         decision(findings=[item], gate="rework"), HEAD, 1, 0
     )
 
@@ -118,7 +154,7 @@ def test_backlog_finding_is_not_rework_and_requires_title() -> None:
     item = finding("backlog")
     item["acceptance_required"] = False
     item["yagni_risk"] = "high"
-    errors = decision_module.validate(
+    errors = validate_decision(
         decision(findings=[item], gate="merge_ready"), HEAD, 1, 0
     )
 
@@ -131,7 +167,7 @@ def test_valid_backlog_finding_can_continue_to_merge_gate() -> None:
     item["yagni_risk"] = "high"
     item["backlog_title"] = "Defer shared retry abstraction to YU-200"
 
-    assert decision_module.validate(
+    assert validate_decision(
         decision(findings=[item], gate="merge_ready"), HEAD, 1, 0
     ) == []
 
@@ -139,7 +175,7 @@ def test_valid_backlog_finding_can_continue_to_merge_gate() -> None:
 def test_design_conflict_must_escalate() -> None:
     item = finding("reject")
     item["followup_alignment"] = "conflicts"
-    errors = decision_module.validate(
+    errors = validate_decision(
         decision(findings=[item], gate="merge_ready"), HEAD, 1, 0
     )
 
@@ -149,7 +185,7 @@ def test_design_conflict_must_escalate() -> None:
 def test_current_acceptance_requirement_cannot_be_rejected() -> None:
     item = finding("reject")
     item["acceptance_required"] = True
-    errors = decision_module.validate(
+    errors = validate_decision(
         decision(findings=[item], gate="merge_ready"), HEAD, 1, 0
     )
 
@@ -160,8 +196,18 @@ def test_unknown_followup_context_cannot_create_backlog() -> None:
     item = finding("backlog")
     item["backlog_title"] = "Potential shared abstraction"
     item["followup_alignment"] = "unknown"
-    errors = decision_module.validate(
+    errors = validate_decision(
         decision(findings=[item], gate="merge_ready"), HEAD, 1, 0
     )
 
     assert "backlog finding 0 needs known design/dependency evidence" in errors
+
+
+def test_decision_cannot_override_trusted_review_timeout() -> None:
+    errors = validate_decision(
+        decision(),
+        expected_qodo_status="timeout",
+    )
+
+    assert "decision sources must equal the trusted packet statuses" in errors
+    assert "timeout, escalation, uncertainty, or the rework limit must block" in errors

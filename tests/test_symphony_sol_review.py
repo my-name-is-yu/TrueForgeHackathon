@@ -19,7 +19,15 @@ def run_wrapper(packet: Path, output: Path) -> subprocess.CompletedProcess[str]:
 
 
 def valid_header() -> str:
-    return f"Head SHA: {HEAD}\nReview head number: 1\nRework round: 0\n"
+    return (
+        "SYMPHONY_REVIEW_PACKET_V1\n"
+        f"Head SHA: {HEAD}\n"
+        "Review head number: 1\n"
+        "Rework round: 0\n"
+        "Codex status: complete\n"
+        "Qodo status: complete\n"
+        "--- END TRUSTED HEADER ---\n"
+    )
 
 
 def test_wrapper_refuses_likely_secret_before_invoking_sol(tmp_path: Path) -> None:
@@ -42,11 +50,20 @@ def test_wrapper_refuses_oversize_packet_instead_of_truncating(tmp_path: Path) -
     assert "refusing to truncate evidence" in result.stderr
 
 
-def test_wrapper_refuses_ambiguous_head_metadata(tmp_path: Path) -> None:
+def test_wrapper_does_not_accept_head_metadata_outside_trusted_line(tmp_path: Path) -> None:
     packet = tmp_path / "packet.md"
-    packet.write_text(valid_header() + f"Head SHA: {HEAD}\n")
+    packet.write_text(
+        "SYMPHONY_REVIEW_PACKET_V1\n"
+        "not a trusted head line\n"
+        "Review head number: 1\n"
+        "Rework round: 0\n"
+        "Codex status: complete\n"
+        "Qodo status: complete\n"
+        "--- END TRUSTED HEADER ---\n"
+        f"Head SHA: {HEAD}\n"
+    )
 
     result = run_wrapper(packet, tmp_path / "decision.json")
 
     assert result.returncode == 1
-    assert "multiple head SHA" in result.stderr
+    assert "line 2 must contain the head SHA" in result.stderr

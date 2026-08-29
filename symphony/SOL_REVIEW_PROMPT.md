@@ -28,6 +28,8 @@ Rules:
    Set `uncertain=true` exactly when evidence confidence is insufficient or the packet is inconsistent.
 7. Otherwise set `gate` to `rework` when at least one item is accepted. `backlog` items do not cause
    rework. Set `gate` to `merge_ready` only when both sources completed and no item is accepted.
-8. At rework round 2, never request another rework; use `blocked` and explain that the safety limit was reached. This limit does not by itself set `uncertain=true`.
+8. At rework round 9, the tenth distinct head is the cap. Never request another rework; use
+   `blocked` and explain that the safety limit was reached. This limit does not by itself set
+   `uncertain=true`. This counter is per same-PR reviewed head, not a reviewer or Qodo quota.
 9. Rationale must cite the acceptance criteria plus design/dependency/contract evidence in
    paraphrase. Do not invent check results, future issues, frozen contracts, or reviewer completion.

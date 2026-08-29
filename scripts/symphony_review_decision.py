@@ -21,22 +21,32 @@ def validate(
     expected_head: str,
     expected_review_head: int,
     expected_rework_round: int,
+    expected_codex_status: str,
+    expected_qodo_status: str,
 ) -> list[str]:
     errors: list[str] = []
     if not isinstance(decision, dict):
         return ["decision must be a JSON object"]
     if decision.get("head_sha") != expected_head or not SHA_PATTERN.fullmatch(expected_head):
         errors.append("head_sha must equal the expected 40-character lowercase SHA")
-    if decision.get("review_head_number") != expected_review_head or expected_review_head not in (1, 2, 3):
-        errors.append("review_head_number must equal the expected value between 1 and 3")
-    if decision.get("rework_round") != expected_rework_round or expected_rework_round not in (0, 1, 2):
-        errors.append("rework_round must equal the expected value between 0 and 2")
+    if decision.get("review_head_number") != expected_review_head or expected_review_head not in range(1, 11):
+        errors.append("review_head_number must equal the expected value between 1 and 10")
+    if decision.get("rework_round") != expected_rework_round or expected_rework_round not in range(10):
+        errors.append("rework_round must equal the expected value between 0 and 9")
     sources = decision.get("sources")
     if not isinstance(sources, dict) or set(sources) != {"codex", "qodo"}:
         errors.append("sources must contain exactly codex and qodo")
         sources = {}
     elif any(value not in {"complete", "timeout"} for value in sources.values()):
         errors.append("each review source must be complete or timeout")
+    expected_sources = {
+        "codex": expected_codex_status,
+        "qodo": expected_qodo_status,
+    }
+    if any(value not in {"complete", "timeout"} for value in expected_sources.values()):
+        errors.append("expected review sources must be complete or timeout")
+    elif sources != expected_sources:
+        errors.append("decision sources must equal the trusted packet statuses")
     findings = decision.get("findings")
     if not isinstance(findings, list):
         errors.append("findings must be a list")
@@ -104,10 +114,10 @@ def validate(
     if not isinstance(uncertain, bool):
         errors.append("uncertain must be a boolean")
         uncertain = True
-    has_timeout = "timeout" in sources.values()
+    has_timeout = "timeout" in expected_sources.values()
     has_escalation = any(value in {"conflict", "human"} for value in classifications)
     has_accept = "accept" in classifications
-    limit_reached = has_accept and expected_rework_round == 2
+    limit_reached = has_accept and expected_rework_round == 9
     must_block = has_timeout or has_escalation or uncertain or limit_reached
     if must_block and gate != "blocked":
         errors.append("timeout, escalation, uncertainty, or the rework limit must block")
@@ -127,6 +137,8 @@ def main() -> int:
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--expected-review-head", required=True, type=int)
     parser.add_argument("--expected-rework-round", required=True, type=int)
+    parser.add_argument("--expected-codex-status", required=True, choices=("complete", "timeout"))
+    parser.add_argument("--expected-qodo-status", required=True, choices=("complete", "timeout"))
     arguments = parser.parse_args()
     try:
         decision = json.loads(arguments.decision.read_text(encoding="utf-8"))
@@ -138,6 +150,8 @@ def main() -> int:
         arguments.expected_head,
         arguments.expected_review_head,
         arguments.expected_rework_round,
+        arguments.expected_codex_status,
+        arguments.expected_qodo_status,
     )
     if errors:
         for error in errors:
