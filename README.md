@@ -42,8 +42,11 @@ Configured Linear resources:
 - Review state: `In Review`
 - Required issue label: `symphony`
 
-Symphony runs continuously on the Mac mini. The workflow deliberately uses one concurrent
-agent, isolated workspaces, `yu/` branches, human review before merge, and no automatic merge.
+Symphony runs continuously on the Mac mini. The workflow allows up to four concurrent
+agents, ramps cold starts through one `Todo` issue at a time, uses isolated workspaces and
+`yu/` branches, and keeps human review before merge with no automatic merge. Ready work is
+released in dependency-safe waves by adding the `symphony` label only after prerequisite PRs
+are merged to `main`.
 The HTTP dashboard is disabled because the pinned preview build reports known vulnerabilities
 in several web-server dependencies.
 
