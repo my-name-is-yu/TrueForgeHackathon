@@ -149,6 +149,40 @@ def test_duplicate_finding_fingerprints_are_rejected() -> None:
     assert "duplicate finding fingerprint: finding-1" in errors
 
 
+def test_duplicate_finding_sources_are_rejected() -> None:
+    item = finding("reject")
+    item["sources"] = ["codex", "codex"]
+
+    errors = validate_decision(
+        decision(findings=[item], gate="merge_ready"), HEAD, 1, 0
+    )
+
+    assert "finding 0 has duplicate sources" in errors
+
+
+def test_unknown_finding_source_is_rejected() -> None:
+    item = finding("reject")
+    item["sources"] = ["unknown"]
+
+    errors = validate_decision(
+        decision(findings=[item], gate="merge_ready"), HEAD, 1, 0
+    )
+
+    assert "finding 0 has an invalid source" in errors
+
+
+def test_unhashable_finding_sources_are_rejected_without_crashing() -> None:
+    for invalid_source in (["codex"], {"name": "codex"}):
+        item = finding("reject")
+        item["sources"] = [invalid_source]
+
+        errors = validate_decision(
+            decision(findings=[item], gate="merge_ready"), HEAD, 1, 0
+        )
+
+        assert "finding 0 has an invalid source" in errors
+
+
 def test_uncertainty_allows_block_without_fabricating_a_finding() -> None:
     assert validate_decision(
         decision(uncertain=True, gate="blocked"), HEAD, 1, 0
