@@ -119,6 +119,7 @@ class DummyFacade:
         self.allowed_origin = allowed_origin
         self.image = image or make_png()
         self.requests: list[dict[str, Any]] = []
+        self.results: list[Any] = []
         self.tool_calls: list[str] = []
         self._server = _DummyFacadeServer(("127.0.0.1", 0), self._handler_type())
         self._server.owner = self
@@ -203,6 +204,7 @@ class DummyFacade:
                         result = {"content": [{"type": "text", "text": "unknown synthetic tool"}], "isError": True}
                 else:
                     result = None
+                owner.results.append(result)
                 request["response_status"] = 200
                 owner.requests.append(request)
                 _json_response(self, 200, {"jsonrpc": "2.0", "id": message.get("id"), "result": result})
@@ -263,8 +265,9 @@ class _ModelServerServer(ThreadingHTTPServer):
 
 
 class ModelServer:
-    def __init__(self, checkout_root: Path) -> None:
+    def __init__(self, checkout_root: Path, boundary_canaries: tuple[Path, Path]) -> None:
         self.checkout_root = checkout_root
+        self.boundary_canaries = boundary_canaries
         self.request_count = 0
         self.saw_ltr_reference = False
         self.saw_sandbox_analysis = False
@@ -274,6 +277,7 @@ class ModelServer:
         self.saw_image_data = False
         self.saw_sandbox_exec = False
         self.saw_publish_request = False
+        self.request_bodies: list[Any] = []
         self._server = _ModelServerServer(("127.0.0.1", 0), self._handler_type())
         self._server.owner = self
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -293,6 +297,7 @@ class ModelServer:
                 except json.JSONDecodeError:
                     _json_response(self, 400, {"error": {"message": "invalid model request"}})
                     return
+                owner.request_bodies.append(body)
                 owner.saw_image_data |= _contains_image_content(body)
                 messages = body.get("messages", [])
                 text = json.dumps(messages, separators=(",", ":"))
@@ -332,7 +337,7 @@ class ModelServer:
                         "    except OSError:\n"
                         "        return 'error'\n"
                         "    return 'readable'\n"
-                        "boundary_canaries={'checkout':'/tmp/tf0-checkout-boundary','private_runtime':'/tmp/tf0-private-runtime-boundary'}\n"
+                        f"boundary_canaries={{'checkout':{str(owner.boundary_canaries[0])!r},'private_runtime':{str(owner.boundary_canaries[1])!r}}}\n"
                         "checkout_isolated=boundary_status(boundary_canaries['checkout'])=='blocked'\n"
                         "private_runtime_isolated=boundary_status(boundary_canaries['private_runtime'])=='blocked'\n"
                         "network='reachable'\n"

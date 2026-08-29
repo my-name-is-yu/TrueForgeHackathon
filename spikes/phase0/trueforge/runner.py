@@ -24,8 +24,6 @@ from .protocol import DUMMY_TOOLS, PLANNED_TOOLS, DummyFacade, ModelServer, plan
 ROOT = Path(__file__).resolve().parents[3]
 TRUEFORGE_VERSION = "0.1.4"
 SUCCESSFUL_TURN_STATUSES = {"done"}
-CHECKOUT_BOUNDARY_CANARY = Path("/tmp/tf0-checkout-boundary")
-PRIVATE_RUNTIME_BOUNDARY_CANARY = Path("/tmp/tf0-private-runtime-boundary")
 
 
 def _free_port() -> int:
@@ -231,6 +229,7 @@ def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str,
         and sandbox.get("successful") is True
         and sandbox.get("checkout_isolated") is True
         and sandbox.get("private_runtime_isolated") is True
+        and sandbox.get("private_data_clear") is True
         and sandbox.get("network_attempted") is True
         and sandbox.get("network") == "blocked"
     )
@@ -284,6 +283,7 @@ def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str,
             "result": "PASS" if sandbox_result else "BLOCKED_HARD_GATE",
             "checkout_isolated": sandbox.get("checkout_isolated") is True,
             "private_runtime_isolated": sandbox.get("private_runtime_isolated") is True,
+            "protected_data_clear": sandbox.get("private_data_clear") is True,
             "outbound_network_attempted": sandbox.get("network_attempted") is True,
             "outbound_network_blocked": sandbox.get("network") == "blocked",
         },
@@ -433,17 +433,25 @@ def _wait_for_turn(trueforge: TrueForgeProcess, session_id: str, initial: dict[s
     raise RuntimeError("TrueForge turn did not finish")
 
 
-def _make_sentinel(directory: Path, prefix: str) -> Path:
+def _make_sentinel(directory: Path, prefix: str) -> tuple[Path, bytes]:
+    value = os.urandom(32)
     with tempfile.NamedTemporaryFile(mode="wb", dir=directory, prefix=prefix, delete=False) as handle:
-        handle.write(os.urandom(32))
-        return Path(handle.name)
+        handle.write(value)
+        return Path(handle.name), value
 
 
-def _make_boundary_canary(path: Path, target: Path) -> Path:
-    if path.exists() or path.is_symlink():
-        raise RuntimeError("fixed boundary canary is already present")
-    path.symlink_to(target)
+def _make_boundary_canary(directory: Path, target: Path, name: str) -> Path:
+    path = directory / name
+    path.hardlink_to(target)
     return path
+
+
+def _contains_boundary_data(observed: Any, paths: list[Path], values: list[bytes]) -> bool:
+    serialized = json.dumps(observed, sort_keys=True, default=str)
+    needles = [str(path) for path in paths]
+    for value in values:
+        needles.extend((value.hex(), base64.b64encode(value).decode("ascii"), repr(value)))
+    return any(needle in serialized for needle in needles)
 
 
 def run_live_probe() -> dict[str, Any]:
@@ -456,22 +464,27 @@ def run_live_probe() -> dict[str, Any]:
 
     runtime_directory = Path(tempfile.mkdtemp(prefix="tf0-", dir="/tmp"))
     checkout_sentinel: Path | None = None
+    checkout_value: bytes | None = None
+    private_sentinel: Path | None = None
+    private_value: bytes | None = None
+    boundary_directory: Path | None = None
     boundary_canaries: list[Path] = []
     trueforge: TrueForgeProcess | None = None
     facade: DummyFacade | None = None
     model: ModelServer | None = None
     try:
-        checkout_sentinel = _make_sentinel(ROOT, ".trueforge-phase0-checkout-")
+        checkout_sentinel, checkout_value = _make_sentinel(ROOT, ".trueforge-phase0-checkout-")
         private_runtime = runtime_directory / "private-runtime"
         private_runtime.mkdir()
-        private_sentinel = _make_sentinel(private_runtime, "sentinel-")
-        boundary_canaries.append(_make_boundary_canary(CHECKOUT_BOUNDARY_CANARY, checkout_sentinel))
-        boundary_canaries.append(_make_boundary_canary(PRIVATE_RUNTIME_BOUNDARY_CANARY, private_sentinel))
+        private_sentinel, private_value = _make_sentinel(private_runtime, "sentinel-")
+        boundary_directory = Path(tempfile.mkdtemp(prefix="tf0-boundary-", dir="/tmp"))
+        boundary_canaries.append(_make_boundary_canary(boundary_directory, checkout_sentinel, "a"))
+        boundary_canaries.append(_make_boundary_canary(boundary_directory, private_sentinel, "b"))
         image = _render_cgl_png()
         trueforge = TrueForgeProcess(_free_port(), runtime_directory)
         allowed_origin = f"http://localhost:{trueforge.port}"
         facade = DummyFacade("phase0-bearer", allowed_origin, image=image)
-        model = ModelServer(ROOT)
+        model = ModelServer(ROOT, (boundary_canaries[0], boundary_canaries[1]))
         facade.start()
         model.start()
         trueforge.start()
@@ -592,6 +605,18 @@ def run_live_probe() -> dict[str, Any]:
         sandbox_evidence = _sandbox_analysis_evidence(
             events_payload, sandbox_call_ids[0] if len(sandbox_call_ids) == 1 else None
         )
+        private_data_clear = (
+            checkout_sentinel is not None
+            and private_sentinel is not None
+            and checkout_value is not None
+            and private_value is not None
+            and not _contains_boundary_data(
+                (facade.results, model.request_bodies, events_payload),
+                [ROOT, private_runtime, checkout_sentinel, private_sentinel],
+                [checkout_value, private_value],
+            )
+        )
+        sandbox_evidence["private_data_clear"] = private_data_clear
         publish_call_ids = _tool_call_ids(events_payload, "publish_revision")
         approval = _approval_evidence(events_payload, publish_call_ids)
         counts = facade.tool_call_counts()
@@ -627,6 +652,8 @@ def run_live_probe() -> dict[str, Any]:
             facade.close()
         for canary in boundary_canaries:
             canary.unlink(missing_ok=True)
+        if boundary_directory is not None:
+            shutil.rmtree(boundary_directory, ignore_errors=True)
         if checkout_sentinel is not None:
             checkout_sentinel.unlink(missing_ok=True)
         shutil.rmtree(runtime_directory, ignore_errors=True)
