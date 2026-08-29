@@ -215,6 +215,10 @@ case "$command" in
   check)
     check_setup
     ;;
+  status)
+    shift
+    exec python3 "$PROJECT_ROOT/scripts/symphony_status.py" "$@"
+    ;;
   start)
     check_setup
     cd "$ELIXIR_DIR"
@@ -224,7 +228,7 @@ case "$command" in
       "$RUNTIME_WORKFLOW"
     ;;
   *)
-    echo "Usage: $0 {install|render|check|start}" >&2
+    echo "Usage: $0 {install|render|check|status|start}" >&2
     exit 1
     ;;
 esac
