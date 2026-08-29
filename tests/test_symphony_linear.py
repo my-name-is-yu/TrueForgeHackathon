@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,30 @@ def test_read_safe_body_rejects_likely_secret(tmp_path: Path) -> None:
 
     with pytest.raises(symphony_linear.LinearError, match="secret"):
         symphony_linear.read_safe_body(body)
+
+
+def test_read_safe_body_rejects_fine_grained_github_pat(tmp_path: Path) -> None:
+    body = tmp_path / "body.md"
+    body.write_text("token: github_pat_abcdefghijklmnopqrstuvwxyz123456")
+
+    with pytest.raises(symphony_linear.LinearError, match="secret"):
+        symphony_linear.read_safe_body(body)
+
+
+def test_graphql_rejects_a_non_object_payload(monkeypatch) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setenv("LINEAR_API_KEY", "test-key")
+    monkeypatch.setattr(symphony_linear.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(json, "load", lambda _response: [])
+
+    with pytest.raises(symphony_linear.LinearError, match="invalid response"):
+        symphony_linear.graphql("query", {})
 
 
 def test_upsert_workpad_updates_existing_comment(tmp_path: Path, monkeypatch) -> None:

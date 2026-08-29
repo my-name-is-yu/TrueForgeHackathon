@@ -98,10 +98,12 @@ and never executes a candidate automatically.
 
 ## Safe rendering and rollout
 
-`zsh scripts/symphony render` writes a temporary workflow, checks protocol markers, writes its
-SHA-256, and atomically renames both files. This prevents Symphony's dynamic watcher from observing
-a partially rendered policy. `zsh scripts/symphony status` reports the source/runtime hashes and
-whether the runtime file matches its declared hash.
+`zsh scripts/symphony render` writes and validates a temporary workflow, then atomically replaces
+the complete runtime workflow before publishing its SHA-256 sidecar. This prevents Symphony's
+dynamic watcher from observing partial workflow content; it is not a two-file transaction. A
+concurrent status read may briefly report a mismatch, and interruption between the two renames
+leaves a persistent mismatch. Treat either case as an unverified rollout: do not activate the
+canary until a completed render and `status --json` report `runtime_verified: true`.
 
 Do not render or restart merely because this branch exists. After the implementation PR is tested,
 reviewed, and human-merged, use this rollout sequence on the Mac mini:

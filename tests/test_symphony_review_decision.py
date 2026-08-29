@@ -97,11 +97,11 @@ def test_rework_limit_forbids_an_eleventh_reviewed_head() -> None:
             findings=[finding("accept")],
             gate="rework",
             review_head_number=10,
-            rework_round=9,
+            rework_round=2,
         ),
         HEAD,
         10,
-        9,
+        2,
     )
 
     assert "timeout, escalation, uncertainty, or the rework limit must block" in errors
@@ -113,21 +113,26 @@ def test_tenth_reviewed_head_can_be_merge_ready_when_clean() -> None:
     ) == []
 
 
-def test_review_head_and_rework_round_cannot_drift() -> None:
+def test_external_head_change_does_not_consume_a_rework_round() -> None:
+    assert validate_decision(
+        decision(review_head_number=3, rework_round=1), HEAD, 3, 1
+    ) == []
+
+
+def test_rework_round_cannot_reach_the_reviewed_head_count() -> None:
     errors = validate_decision(
         decision(
             findings=[finding("accept")],
             gate="rework",
-            review_head_number=10,
-            rework_round=8,
+            review_head_number=2,
+            rework_round=2,
         ),
         HEAD,
-        10,
-        8,
+        2,
+        2,
     )
 
-    assert "review_head_number must equal rework_round plus one" in errors
-    assert "timeout, escalation, uncertainty, or the rework limit must block" in errors
+    assert "rework_round must be lower than review_head_number" in errors
 
 
 def test_duplicate_finding_fingerprints_are_rejected() -> None:

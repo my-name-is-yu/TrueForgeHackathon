@@ -31,6 +31,7 @@ REQUIRED_WORKPAD_HEADINGS = (
 SECRET_PATTERNS = (
     re.compile(r"\blin_api_[A-Za-z0-9_-]{8,}"),
     re.compile(r"\bgh[opusr]_[A-Za-z0-9_]{20,}"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
 )
 
@@ -54,8 +55,15 @@ def graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
             payload = json.load(response)
     except (OSError, urllib.error.URLError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise LinearError(f"Linear request failed: {type(error).__name__}") from error
-    if not isinstance(payload, dict) or payload.get("errors"):
-        messages = [item.get("message", "unknown error") for item in payload.get("errors", [])]
+    if not isinstance(payload, dict):
+        raise LinearError("Linear returned an invalid response")
+    errors = payload.get("errors")
+    if errors is not None and (
+        not isinstance(errors, list) or not all(isinstance(item, dict) for item in errors)
+    ):
+        raise LinearError("Linear returned an invalid response")
+    if errors:
+        messages = [str(item.get("message", "unknown error")) for item in errors]
         raise LinearError("Linear GraphQL error: " + "; ".join(messages))
     data = payload.get("data")
     if not isinstance(data, dict):

@@ -3,6 +3,7 @@ Return only the JSON object required by the supplied schema.
 
 The expected PR head is `__EXPECTED_HEAD_SHA__`. Reject any evidence for another head.
 Use only the supplied review packet; do not inspect the repository, browse, or modify anything.
+Do not invoke tools or delegate work. Adjudication is a pure transformation of the packet to JSON.
 
 Rules:
 
@@ -38,7 +39,8 @@ Rules:
    Set `uncertain=true` exactly when evidence confidence is insufficient or the packet is inconsistent.
 8. Otherwise set `gate` to `rework` when at least one item is accepted. `backlog` items do not cause
    rework. Set `gate` to `merge_ready` only when both sources completed and no item is accepted.
-9. At rework round 9, the tenth distinct head is the cap. Never request another rework; use
+9. At review head number 10, the distinct-head cap is reached regardless of rework round. Never
+   request another rework; use
    `blocked` and explain that the safety limit was reached. This limit does not by itself set
    `uncertain=true`. This counter is per same-PR reviewed head, not a reviewer or Qodo quota.
 10. Rationale must cite the acceptance criteria plus design/dependency/contract evidence in

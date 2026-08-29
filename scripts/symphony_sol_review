@@ -15,7 +15,7 @@ output=$2
 [ -f "$packet" ] || { echo "Review packet not found: $packet" >&2; exit 1; }
 [ -f "$PROMPT" ] || { echo "Sol prompt not found: $PROMPT" >&2; exit 1; }
 [ -f "$SCHEMA" ] || { echo "Decision schema not found: $SCHEMA" >&2; exit 1; }
-if grep -Eq 'lin_api_[A-Za-z0-9_-]{8,}|gh[opusr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}' "$packet"; then
+if grep -Eq 'lin_api_[A-Za-z0-9_-]{8,}|gh[opusr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}' "$packet"; then
   echo "Review packet appears to contain a secret; refusing to send it to Sol." >&2
   exit 1
 fi
@@ -48,7 +48,8 @@ qodo_status=$(sed -En '6s/^Qodo status: (complete|timeout)$/\1/p' "$packet")
 output_dir=$(dirname -- "$output")
 [ -d "$output_dir" ] || { echo "Output directory does not exist: $output_dir" >&2; exit 1; }
 temporary=$(mktemp "$output_dir/.symphony-sol-decision.XXXXXX")
-trap 'rm -f "$temporary"' EXIT HUP INT TERM
+temporary_workspace=$(mktemp -d "$output_dir/.symphony-sol-workspace.XXXXXX")
+trap 'rm -f "$temporary"; rm -rf "$temporary_workspace"' EXIT HUP INT TERM
 
 {
   sed "s/__EXPECTED_HEAD_SHA__/$head_sha/g" "$PROMPT"
@@ -62,6 +63,21 @@ trap 'rm -f "$temporary"' EXIT HUP INT TERM
   --ephemeral \
   --ignore-user-config \
   --ignore-rules \
+  --disable shell_tool \
+  --disable unified_exec \
+  --disable multi_agent \
+  --disable view_image \
+  --disable apps \
+  --disable browser_use \
+  --disable computer_use \
+  --disable image_generation \
+  --disable plugins \
+  --disable memories \
+  --config 'mcp_servers={}' \
+  --config 'web_search="disabled"' \
+  --config 'shell_environment_policy.inherit="none"' \
+  --cd "$temporary_workspace" \
+  --skip-git-repo-check \
   --output-schema "$SCHEMA" \
   --output-last-message "$temporary" \
   -
@@ -74,5 +90,6 @@ python3 "$PROJECT_ROOT/scripts/symphony_review_decision.py" \
   --expected-qodo-status "$qodo_status" \
   "$temporary" >/dev/null
 mv "$temporary" "$output"
+rm -rf "$temporary_workspace"
 trap - EXIT HUP INT TERM
 echo "Validated Sol decision: $output"

@@ -85,8 +85,9 @@ Operating rules:
    code changes, run `$no-comments` on the complete diff once before the first push and apply only
    verified in-scope fixes. This is implementation self-review, not the external review gate.
 8. After pushing a ready, non-draft PR, record its current head SHA and increment `Reviewed heads`.
-   At most ten distinct heads for the same PR may be reviewed: initial head plus nine rework heads.
-   This is not a Qodo or per-reviewer quota. Move the issue
+   At most ten distinct heads for the same PR may be reviewed, including external or bot pushes and
+   Luna rework heads. `Rework round` increments only for Luna rework, so it may be lower than
+   `Reviewed heads - 1`. This is not a Qodo or per-reviewer quota. Move the issue
    to `Auto Review` and execute the review protocol below.
 9. Review protocol, always scoped to the recorded head SHA:
    - Poll the GitHub connector every 30 seconds for both the configured OpenAI Codex review and
