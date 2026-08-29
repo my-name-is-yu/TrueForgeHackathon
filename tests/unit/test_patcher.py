@@ -68,6 +68,59 @@ def test_axis_patch_normalizes_the_new_value_without_editing_other_attributes() 
     assert b'damping="0.3"' in result.xml
 
 
+def test_patch_preserves_comments_and_processing_instructions() -> None:
+    xml = b"""<mujoco>
+  <!-- preserve this comment -->
+  <?fixture keep?>
+  <worldbody><body name="arm"><joint name="elbow" damping="0.3"/></body></worldbody>
+</mujoco>"""
+    result = apply_one_attribute_patch(
+        base_xml=xml,
+        expected_base_sha256=hashlib.sha256(xml).hexdigest(),
+        patch={
+            "target": {"kind": "joint", "name": "elbow"},
+            "attribute": "damping",
+            "expected_old_value": 0.3,
+            "new_value": 0.5,
+        },
+    )
+
+    assert b"<!-- preserve this comment -->" in result.xml
+    assert b"<?fixture keep?>" in result.xml
+    assert len(result.canonical_diff) == 1
+    assert result.canonical_diff[0].attribute == "damping"
+
+
+def test_axis_expected_value_allows_only_normalization_roundoff() -> None:
+    component = 1.0 / (2.0**0.5)
+    xml = BASE_XML.replace(b'axis="0 0 2"', b'axis="1 1 0"')
+    result = apply_one_attribute_patch(
+        base_xml=xml,
+        expected_base_sha256=hashlib.sha256(xml).hexdigest(),
+        patch={
+            "target": {"kind": "joint", "name": "elbow"},
+            "attribute": "axis",
+            "expected_old_value": [component, component, 0.0],
+            "new_value": [0.0, 4.0, 0.0],
+        },
+    )
+
+    assert result.canonical_diff[0].attribute == "axis"
+
+    with pytest.raises(PatcherError) as exc_info:
+        apply_one_attribute_patch(
+            base_xml=xml,
+            expected_base_sha256=hashlib.sha256(xml).hexdigest(),
+            patch={
+                "target": {"kind": "joint", "name": "elbow"},
+                "attribute": "axis",
+                "expected_old_value": [1.0, 0.0, 0.0],
+                "new_value": [0.0, 4.0, 0.0],
+            },
+        )
+    assert exc_info.value.code == "OLD_VALUE_MISMATCH"
+
+
 @pytest.mark.parametrize(
     ("xml", "expected_code"),
     [

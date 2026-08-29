@@ -75,6 +75,14 @@ def _local_name(tag: object) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+def _node_kind(tag: object) -> str:
+    if tag is ET.Comment:
+        return "<comment>"
+    if tag is ET.ProcessingInstruction:
+        return "<processing-instruction>"
+    return _local_name(tag)
+
+
 def _reject_external_features(source: bytes) -> None:
     text = source.decode("utf-8", errors="strict")
     if _UNSAFE_DECLARATION.search(text):
@@ -92,7 +100,8 @@ def _parse_safe(xml: bytes | str) -> ET.Element:
     except UnicodeDecodeError:
         raise PatcherError("INVALID_XML", "XML must be UTF-8") from None
     try:
-        root = ET.fromstring(source)
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+        root = ET.fromstring(source, parser=parser)
     except ET.ParseError:
         raise PatcherError("INVALID_XML", "XML is not well formed") from None
     if _local_name(root.tag) != "mujoco":
@@ -139,9 +148,11 @@ def _compare_nodes(
     before_path: str,
     changes: list[CanonicalChange],
 ) -> None:
-    if _local_name(before.tag) != _local_name(after.tag):
+    before_kind = _node_kind(before.tag)
+    after_kind = _node_kind(after.tag)
+    if before_kind != after_kind:
         changes.append(
-            CanonicalChange(before_path, "<element>", _local_name(before.tag), _local_name(after.tag))
+            CanonicalChange(before_path, "<element>", before_kind, after_kind)
         )
         return
     before_attrs = {_local_name(k): v for k, v in before.attrib.items()}
@@ -173,7 +184,7 @@ def _compare_nodes(
         )
         return
     for index, (before_child, after_child) in enumerate(zip(before_children, after_children)):
-        child_name = _local_name(before_child.tag)
+        child_name = _node_kind(before_child.tag)
         child_path = f"{before_path}/{child_name}[{index + 1}]"
         _compare_nodes(before_child, after_child, child_path, changes)
 
@@ -211,6 +222,16 @@ def _normalize_axis(value: tuple[float, float, float]) -> tuple[float, float, fl
     if length <= 0.0 or not math.isfinite(length):
         raise PatcherError("OLD_VALUE_MISMATCH", "axis must be non-zero and finite")
     return tuple(component / length for component in value)
+
+
+def _axis_matches(
+    actual: tuple[float, float, float],
+    expected: tuple[float, float, float],
+) -> bool:
+    return all(
+        math.isclose(component, wanted, rel_tol=1e-12, abs_tol=1e-12)
+        for component, wanted in zip(actual, expected)
+    )
 
 
 def _format_float(value: float) -> str:
@@ -258,7 +279,7 @@ def apply_one_attribute_patch(
     authored_value = joint.attrib[xml_attribute]
     if isinstance(validated_patch, AxisPatch):
         current_value = _normalize_axis(_parse_finite_values(authored_value, 3))
-        if current_value != validated_patch.expected_old_value:
+        if not _axis_matches(current_value, validated_patch.expected_old_value):
             raise PatcherError("OLD_VALUE_MISMATCH", "expected authored value does not match")
         replacement = _format_axis(validated_patch.new_value)
     else:

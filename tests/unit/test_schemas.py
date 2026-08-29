@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from asset_autopsy.schemas import (
     AxisPatch,
+    AggregateResult,
     CreateRevisionInput,
     OpenCaseInput,
     ScalarPatch,
@@ -149,6 +150,11 @@ def test_axis_is_normalized_and_family_ranges_are_enforced() -> None:
                 "new_value": 100.1,
             }
         )
+
+
+def test_aggregate_result_rejects_passed_above_total_regardless_of_field_order() -> None:
+    with pytest.raises(ValidationError):
+        AggregateResult.model_validate({"passed": 4, "total": 3})
 
 
 def test_schema_has_no_private_contract_fields() -> None:

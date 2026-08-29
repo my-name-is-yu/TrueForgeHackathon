@@ -13,6 +13,7 @@ from pydantic import (
     StrictInt,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 
@@ -503,13 +504,11 @@ class AggregateResult(StrictModel):
     total: StrictInt = Field(ge=0)
     violated_clause_ids: list[ElementName] = Field(default_factory=list, max_length=32)
 
-    @field_validator("passed")
-    @classmethod
-    def validate_passed(cls, value: int, info) -> int:
-        total = info.data.get("total")
-        if total is not None and value > total:
+    @model_validator(mode="after")
+    def validate_passed(self) -> AggregateResult:
+        if self.passed > self.total:
             raise ValueError("passed must not exceed total")
-        return value
+        return self
 
 
 class BudgetSummary(StrictModel):
