@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import threading
 from pathlib import Path
 
 
@@ -56,12 +57,11 @@ def test_collect_without_runtime_is_valid_idle_snapshot(tmp_path: Path, monkeypa
     json.dumps(status)
 
 
-def test_classify_health_requires_activity_not_only_a_pid() -> None:
+def test_classify_health_reports_runtime_state_without_inferring_progress() -> None:
     service = {"state": "running"}
     agents = [{"pid": 42}]
 
-    assert symphony_status.classify_health(service, agents, 10) == "working"
-    assert symphony_status.classify_health(service, agents, 301) == "stalled_candidate"
+    assert symphony_status.classify_health(service, agents) == "running"
 
 
 def test_agent_processes_only_returns_symphony_descendants(monkeypatch) -> None:
@@ -163,3 +163,35 @@ def test_collect_reports_failed_linear_lookup_as_unavailable(tmp_path: Path, mon
     assert status["linear"] == {"status": "unavailable"}
     assert status["workspaces"][0]["linear_lookup"] == "error"
     assert "linear=error" in symphony_status.render_text(status)
+
+
+def test_collect_inspects_workspaces_concurrently(tmp_path: Path, monkeypatch) -> None:
+    workspace_root = tmp_path / ".symphony" / "workspaces"
+    for identifier in ("YU-20", "YU-21"):
+        (workspace_root / identifier).mkdir(parents=True)
+    barrier = threading.Barrier(2)
+
+    monkeypatch.setattr(
+        symphony_status,
+        "service_status",
+        lambda: {"state": "running", "pid": 42, "runs": 1, "last_exit_code": None},
+    )
+    monkeypatch.setattr(symphony_status, "agent_processes", lambda _pid: [])
+
+    def inspect_workspace(path, _api_key):
+        barrier.wait(timeout=1)
+        return {
+            "issue": path.name,
+            "branch": None,
+            "dirty": False,
+            "head": None,
+            "last_file_update_at": None,
+            "linear_lookup": "disabled",
+            "linear": None,
+        }
+
+    monkeypatch.setattr(symphony_status, "workspace_status", inspect_workspace)
+
+    status = symphony_status.collect(tmp_path)
+
+    assert [workspace["issue"] for workspace in status["workspaces"]] == ["YU-20", "YU-21"]

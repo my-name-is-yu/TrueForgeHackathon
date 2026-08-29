@@ -71,6 +71,8 @@ zsh scripts/symphony start
 The read-only status command combines LaunchAgent health, Codex activity, workspaces, and Linear
 issue state. Pull request, review, and check state are monitored separately through the Codex
 GitHub connector so the Mac mini does not need GitHub CLI authentication for status collection.
+The command reports one read-only snapshot; the recurring monitor determines stalled work only
+after comparing each active workspace across three consecutive observations.
 
 Local credentials, the pinned Symphony source/build, logs, generated workflow files, and
 per-issue workspaces live under `.env` and `.symphony/`. The source build applies only

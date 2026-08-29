@@ -8,13 +8,13 @@ import re
 import subprocess
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 SERVICE_LABEL = "com.trueforge.symphony"
-STALL_CANDIDATE_SECONDS = 300
 
 
 def run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -129,16 +129,12 @@ def latest_workspace_update(workspace: Path) -> str | None:
     return datetime.fromtimestamp(latest, timezone.utc).isoformat()
 
 
-def classify_health(
-    service: dict[str, Any], agents: list[dict[str, Any]], activity_age_seconds: int | None
-) -> str:
+def classify_health(service: dict[str, Any], agents: list[dict[str, Any]]) -> str:
     if service["state"] != "running":
         return "stopped"
     if not agents:
         return "idle"
-    if activity_age_seconds is not None and activity_age_seconds > STALL_CANDIDATE_SECONDS:
-        return "stalled_candidate"
-    return "working"
+    return "running"
 
 
 def linear_issue(identifier: str, api_key: str | None) -> tuple[str, dict[str, Any] | None]:
@@ -200,11 +196,14 @@ def collect(project_root: Path) -> dict[str, Any]:
     linear_api_key = os.environ.get("LINEAR_API_KEY")
     workspaces = []
     if workspace_root.is_dir():
-        workspaces = [
-            workspace_status(path, linear_api_key)
-            for path in sorted(workspace_root.iterdir())
-            if path.is_dir()
-        ]
+        workspace_paths = [path for path in sorted(workspace_root.iterdir()) if path.is_dir()]
+        if workspace_paths:
+            with ThreadPoolExecutor(max_workers=min(4, len(workspace_paths))) as executor:
+                workspaces = list(
+                    executor.map(
+                        lambda path: workspace_status(path, linear_api_key), workspace_paths
+                    )
+                )
     stdout_log = symphony_home / "launchd.stdout.log"
     stderr_log = symphony_home / "launchd.stderr.log"
     structured_log_dir = symphony_home / "logs" / "log"
@@ -232,7 +231,7 @@ def collect(project_root: Path) -> dict[str, Any]:
         if latest_activity is not None
         else None
     )
-    health = classify_health(service, agents, activity_age_seconds)
+    health = classify_health(service, agents)
     linear_lookups = [workspace["linear_lookup"] for workspace in workspaces]
     if not linear_api_key:
         linear_status = "disabled"
@@ -265,7 +264,6 @@ def collect(project_root: Path) -> dict[str, Any]:
                 else None
             ),
             "age_seconds": activity_age_seconds,
-            "stall_candidate_after_seconds": STALL_CANDIDATE_SECONDS,
         },
         "linear": {"status": linear_status},
     }
