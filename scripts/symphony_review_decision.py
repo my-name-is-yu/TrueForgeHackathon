@@ -33,6 +33,12 @@ def validate(
         errors.append("review_head_number must equal the expected value between 1 and 10")
     if decision.get("rework_round") != expected_rework_round or expected_rework_round not in range(10):
         errors.append("rework_round must equal the expected value between 0 and 9")
+    if (
+        expected_review_head in range(1, 11)
+        and expected_rework_round in range(10)
+        and expected_review_head != expected_rework_round + 1
+    ):
+        errors.append("review_head_number must equal rework_round plus one")
     sources = decision.get("sources")
     if not isinstance(sources, dict) or set(sources) != {"codex", "qodo"}:
         errors.append("sources must contain exactly codex and qodo")
@@ -117,7 +123,9 @@ def validate(
     has_timeout = "timeout" in expected_sources.values()
     has_escalation = any(value in {"conflict", "human"} for value in classifications)
     has_accept = "accept" in classifications
-    limit_reached = has_accept and expected_rework_round == 9
+    limit_reached = has_accept and (
+        expected_review_head == 10 or expected_rework_round == 9
+    )
     must_block = has_timeout or has_escalation or uncertain or limit_reached
     if must_block and gate != "blocked":
         errors.append("timeout, escalation, uncertainty, or the rework limit must block")

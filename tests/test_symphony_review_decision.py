@@ -113,6 +113,23 @@ def test_tenth_reviewed_head_can_be_merge_ready_when_clean() -> None:
     ) == []
 
 
+def test_review_head_and_rework_round_cannot_drift() -> None:
+    errors = validate_decision(
+        decision(
+            findings=[finding("accept")],
+            gate="rework",
+            review_head_number=10,
+            rework_round=8,
+        ),
+        HEAD,
+        10,
+        8,
+    )
+
+    assert "review_head_number must equal rework_round plus one" in errors
+    assert "timeout, escalation, uncertainty, or the rework limit must block" in errors
+
+
 def test_duplicate_finding_fingerprints_are_rejected() -> None:
     errors = validate_decision(
         decision(

@@ -19,7 +19,7 @@ if grep -Eq 'lin_api_[A-Za-z0-9_-]{8,}|gh[opusr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9
   echo "Review packet appears to contain a secret; refusing to send it to Sol." >&2
   exit 1
 fi
-packet_lines=$(wc -l < "$packet" | tr -d ' ')
+packet_lines=$(awk 'END { print NR }' "$packet")
 packet_bytes=$(wc -c < "$packet" | tr -d ' ')
 if [ "$packet_lines" -gt 4000 ] || [ "$packet_bytes" -gt 1048576 ]; then
   echo "Review packet exceeds the 4000-line or 1 MiB safety limit; refusing to truncate evidence." >&2
@@ -32,13 +32,13 @@ fi
 }
 head_sha=$(sed -n '2s/^Head SHA: \([0-9a-f]\{40\}\)$/\1/p' "$packet")
 [ -n "$head_sha" ] || { echo "Packet line 2 must contain the head SHA." >&2; exit 1; }
-review_head=$(sed -n '3s/^Review head number: \([1-9]\|10\)$/\1/p' "$packet")
+review_head=$(sed -En '3s/^Review head number: ([1-9]|10)$/\1/p' "$packet")
 [ -n "$review_head" ] || { echo "Packet line 3 must contain the review head number." >&2; exit 1; }
 rework_round=$(sed -n '4s/^Rework round: \([0-9]\)$/\1/p' "$packet")
 [ -n "$rework_round" ] || { echo "Packet line 4 must contain the rework round." >&2; exit 1; }
-codex_status=$(sed -n '5s/^Codex status: \(complete\|timeout\)$/\1/p' "$packet")
+codex_status=$(sed -En '5s/^Codex status: (complete|timeout)$/\1/p' "$packet")
 [ -n "$codex_status" ] || { echo "Packet line 5 must contain the Codex status." >&2; exit 1; }
-qodo_status=$(sed -n '6s/^Qodo status: \(complete\|timeout\)$/\1/p' "$packet")
+qodo_status=$(sed -En '6s/^Qodo status: (complete|timeout)$/\1/p' "$packet")
 [ -n "$qodo_status" ] || { echo "Packet line 6 must contain the Qodo status." >&2; exit 1; }
 [ "$(sed -n '7p' "$packet")" = '--- END TRUSTED HEADER ---' ] || {
   echo "Packet line 7 must terminate the trusted header." >&2
@@ -53,7 +53,7 @@ trap 'rm -f "$temporary"' EXIT HUP INT TERM
 {
   sed "s/__EXPECTED_HEAD_SHA__/$head_sha/g" "$PROMPT"
   printf '\n\n# Review packet\n\n'
-  sed -n '1,4000p' "$packet"
+  cat "$packet"
 } | env -u LINEAR_API_KEY -u GH_TOKEN -u GITHUB_TOKEN codex exec \
   --model gpt-5.6-sol \
   --config 'model_reasoning_effort="xhigh"' \
