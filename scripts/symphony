@@ -161,6 +161,22 @@ validate_environment() {
   }
 }
 
+workflow_has_tracker_entry() {
+  section=$1
+  entry=$2
+  file=$3
+  awk -v section="$section" -v entry="$entry" '
+    NR == 1 && $0 == "---" { frontmatter = 1; next }
+    frontmatter && $0 == "---" { exit found ? 0 : 1 }
+    frontmatter && $0 == "tracker:" { tracker = 1; next }
+    tracker && $0 ~ /^[^ ]/ { tracker = 0; list = 0 }
+    tracker && $0 == "  " section ":" { list = 1; next }
+    list && $0 ~ /^  [^ ]/ { list = 0 }
+    list && $0 == "    - " entry { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$file"
+}
+
 render_workflow() {
   mode=${1:-apply}
   validate_environment
@@ -177,12 +193,22 @@ render_workflow() {
     exit 1
   fi
 
-  for required in 'Auto Review' 'Rework' 'Merge Ready' 'Blocked' 'symphony-workpad:v1'; do
-    if ! grep -q "$required" "$temporary_workflow"; then
-      echo "Rendered workflow is missing required protocol marker: $required" >&2
+  for required in 'Auto Review' 'Rework'; do
+    if ! workflow_has_tracker_entry active_states "$required" "$temporary_workflow"; then
+      echo "Rendered workflow is missing tracker.active_states entry: $required" >&2
       exit 1
     fi
   done
+  for required in 'Merge Ready' 'Blocked'; do
+    if ! workflow_has_tracker_entry terminal_states "$required" "$temporary_workflow"; then
+      echo "Rendered workflow is missing tracker.terminal_states entry: $required" >&2
+      exit 1
+    fi
+  done
+  if ! grep -Fq 'symphony-workpad:v1' "$temporary_workflow"; then
+    echo "Rendered workflow is missing required protocol marker: symphony-workpad:v1" >&2
+    exit 1
+  fi
 
   shasum -a 256 "$temporary_workflow" | awk '{print $1}' > "$temporary_sha"
   if [ "$mode" = check ]; then
