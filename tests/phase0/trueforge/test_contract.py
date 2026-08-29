@@ -23,6 +23,7 @@ from spikes.phase0.trueforge.runner import (
     TrueForgeProcess,
     _approval_evidence,
     _boundary_helper_source,
+    _cleanup_live_probe,
     _contains_prohibited_boundary_data,
     _sandbox_analysis_evidence,
     _sanitized_events_payload,
@@ -307,6 +308,30 @@ def test_helper_failure_is_bounded_without_traceback(tmp_path: Path) -> None:
     assert result.stderr == ""
 
 
+def test_helper_invalid_utf8_failure_is_bounded_without_traceback(tmp_path: Path) -> None:
+    (tmp_path / "invalid-ltr.json").write_bytes(b"\xff")
+    helper = tmp_path / ".phase0-boundary-probe.py"
+    helper.write_text(
+        _boundary_helper_source(
+            "invalid-ltr.json",
+            tmp_path / "checkout-sentinel",
+            tmp_path / "private-sentinel",
+        )
+    )
+
+    result = subprocess.run(
+        [sys.executable, helper.name],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {"helper_status": "error"}
+    assert result.stderr == ""
+
+
 def test_partial_start_cleanup_removes_owned_tmpdir_and_home_alias(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
     runtime_root.mkdir()
@@ -325,3 +350,48 @@ def test_partial_start_cleanup_removes_owned_tmpdir_and_home_alias(tmp_path: Pat
 
     assert not temp.exists()
     assert not home_alias.exists()
+
+
+def test_cleanup_continues_after_one_teardown_failure(tmp_path: Path) -> None:
+    class FailingTrueForge:
+        def stop(self) -> None:
+            raise OSError("injected teardown failure")
+
+    class CloseRecorder:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    (runtime_root / "artifact").write_text("transient")
+    home = runtime_root / "home"
+    home.mkdir()
+    home_alias = tmp_path / "home-alias"
+    home_alias.symlink_to(home, target_is_directory=True)
+    checkout_sentinel = tmp_path / "checkout-sentinel"
+    checkout_sentinel.write_text("sentinel")
+    boundary_helper = tmp_path / ".phase0-boundary-probe.py"
+    boundary_helper.write_text("helper")
+    model = CloseRecorder()
+    facade = CloseRecorder()
+
+    with pytest.raises(OSError, match="injected teardown failure"):
+        _cleanup_live_probe(
+            boundary_helper,
+            FailingTrueForge(),  # type: ignore[arg-type]
+            model,  # type: ignore[arg-type]
+            facade,  # type: ignore[arg-type]
+            home_alias,
+            checkout_sentinel,
+            runtime_root,
+        )
+
+    assert model.closed is True
+    assert facade.closed is True
+    assert not boundary_helper.exists()
+    assert not home_alias.exists()
+    assert not checkout_sentinel.exists()
+    assert not runtime_root.exists()

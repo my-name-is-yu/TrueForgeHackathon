@@ -549,7 +549,7 @@ def main() -> int:
     try:
         data = json.loads(LTR_PATH.read_text())
         rows = len(data["rows"])
-    except (KeyError, TypeError, OSError, json.JSONDecodeError):
+    except (KeyError, TypeError, OSError, UnicodeError, json.JSONDecodeError):
         print(json.dumps({{"helper_status": "error"}}, separators=(",", ":")))
         return 1
 
@@ -595,6 +595,35 @@ def _stage_boundary_helper(
     helper.write_text(_boundary_helper_source(ltr_path, checkout_sentinel, private_sentinel))
     helper.chmod(0o600)
     return helper
+
+
+def _cleanup_live_probe(
+    boundary_helper: Path | None,
+    trueforge: TrueForgeProcess | None,
+    model: ModelServer | None,
+    facade: DummyFacade | None,
+    home_alias: Path | None,
+    checkout_sentinel: Path | None,
+    runtime_directory: Path,
+) -> None:
+    cleanup_error: Exception | None = None
+    actions = (
+        lambda: boundary_helper.unlink(missing_ok=True) if boundary_helper is not None else None,
+        lambda: trueforge.stop() if trueforge is not None else None,
+        lambda: model.close() if model is not None else None,
+        lambda: facade.close() if facade is not None else None,
+        lambda: home_alias.unlink(missing_ok=True) if home_alias is not None else None,
+        lambda: checkout_sentinel.unlink(missing_ok=True) if checkout_sentinel is not None else None,
+        lambda: shutil.rmtree(runtime_directory, ignore_errors=True),
+    )
+    for action in actions:
+        try:
+            action()
+        except Exception as error:
+            if cleanup_error is None:
+                cleanup_error = error
+    if cleanup_error is not None:
+        raise cleanup_error
 
 
 def run_live_probe() -> dict[str, Any]:
@@ -806,16 +835,12 @@ def run_live_probe() -> dict[str, Any]:
             raise RuntimeError("one or more TrueForge Phase 0 gates failed")
         return {"overall": "PASS", "gates": gates, "runtime": TRUEFORGE_VERSION}
     finally:
-        if boundary_helper is not None:
-            boundary_helper.unlink(missing_ok=True)
-        if trueforge is not None:
-            trueforge.stop()
-        if model is not None:
-            model.close()
-        if facade is not None:
-            facade.close()
-        if home_alias is not None:
-            home_alias.unlink(missing_ok=True)
-        if checkout_sentinel is not None:
-            checkout_sentinel.unlink(missing_ok=True)
-        shutil.rmtree(runtime_directory, ignore_errors=True)
+        _cleanup_live_probe(
+            boundary_helper,
+            trueforge,
+            model,
+            facade,
+            home_alias,
+            checkout_sentinel,
+            runtime_directory,
+        )
