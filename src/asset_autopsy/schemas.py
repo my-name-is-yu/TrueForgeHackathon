@@ -267,6 +267,20 @@ class BodyPositionObservable(StrictModel):
     body_name: ElementName
 
 
+EXPERIMENT_OBSERVABLE_KINDS = (
+    "qpos",
+    "qvel",
+    "energy",
+    "contact_count",
+    "body_position",
+)
+EXPERIMENT_OBSERVABLES_DESCRIPTION = (
+    "Each item is an object whose kind is one of "
+    + ", ".join(EXPERIMENT_OBSERVABLE_KINDS)
+    + "; body_position also requires body_name."
+)
+
+
 ExperimentObservable: TypeAlias = Annotated[
     QposObservable
     | QvelObservable
@@ -305,7 +319,11 @@ class RunExperimentInput(StrictModel):
     hypothesis: Hypothesis
     initial_joint_positions: list[JointPosition] = Field(min_length=1, max_length=64)
     segments: list[ConstantControlSegment] = Field(min_length=1, max_length=16)
-    observables: list[ExperimentObservable] = Field(min_length=1, max_length=8)
+    observables: list[ExperimentObservable] = Field(
+        min_length=1,
+        max_length=8,
+        description=EXPERIMENT_OBSERVABLES_DESCRIPTION,
+    )
     capture_final_snapshot: StrictBool = False
 
     @model_validator(mode="after")
