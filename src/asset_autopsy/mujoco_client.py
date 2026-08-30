@@ -516,6 +516,7 @@ def _render_png(result: Any, *, width: int, height: int) -> bytes:
         or not isinstance(getattr(image, "data", None), str)
         or getattr(summary, "type", None) != "text"
         or not isinstance(getattr(summary, "text", None), str)
+        or len(summary.text) > 256
     ):
         raise _bad_response("Upstream render response was unexpected.")
     if len(image.data) > ((MAX_RENDER_BYTES + 2) // 3) * 4:
@@ -572,6 +573,7 @@ class PinnedMujocoClient:
         self._slots: list[SimulationSlot] = []
         self._generation = 0
         self._lifecycle_lock = asyncio.Lock()
+        self._operation_lock = asyncio.Lock()
         self._context_owners = 0
         self._context_tokens: dict[asyncio.Task[Any], list[object]] = {}
 
@@ -790,49 +792,50 @@ class PinnedMujocoClient:
     ) -> Any:
         if tool_name not in REQUIRED_TOOL_NAMES:
             raise ValueError("upstream operation is not permitted")
-        if slot is not None and tool_name != "sim_load":
-            self._require_ready_slot(slot)
-        session = self._session
-        session_token = self._session_token
-        if session is None:
-            if slot is not None:
-                slot.state = SlotState.POISONED
-            raise UpstreamToolError(
-                UPSTREAM_UNAVAILABLE,
-                SAFE_MESSAGE,
-                True,
-                SAFE_NEXT_ACTION,
-            )
-        try:
-            return await asyncio.wait_for(
-                session.call_tool(tool_name, arguments=arguments),
-                timeout=timeout or self.call_timeout,
-            )
-        except asyncio.CancelledError:
-            if slot is not None:
-                slot.state = SlotState.POISONED
-            await self._shutdown_child_preserving_primary_error(session_token)
-            raise
-        except (TimeoutError, asyncio.TimeoutError):
-            if slot is not None:
-                slot.state = SlotState.POISONED
-            await self._shutdown_child_preserving_primary_error(session_token)
-            raise UpstreamToolError(
-                UPSTREAM_TIMEOUT,
-                SAFE_TIMEOUT_MESSAGE,
-                True,
-                SAFE_NEXT_ACTION,
-            ) from None
-        except Exception:
-            if slot is not None:
-                slot.state = SlotState.POISONED
-            await self._shutdown_child_preserving_primary_error(session_token)
-            raise UpstreamToolError(
-                UPSTREAM_UNAVAILABLE,
-                SAFE_MESSAGE,
-                True,
-                SAFE_NEXT_ACTION,
-            ) from None
+        async with self._operation_lock:
+            if slot is not None and tool_name != "sim_load":
+                self._require_ready_slot(slot)
+            session = self._session
+            session_token = self._session_token
+            if session is None:
+                if slot is not None:
+                    slot.state = SlotState.POISONED
+                raise UpstreamToolError(
+                    UPSTREAM_UNAVAILABLE,
+                    SAFE_MESSAGE,
+                    True,
+                    SAFE_NEXT_ACTION,
+                )
+            try:
+                return await asyncio.wait_for(
+                    session.call_tool(tool_name, arguments=arguments),
+                    timeout=timeout or self.call_timeout,
+                )
+            except asyncio.CancelledError:
+                if slot is not None:
+                    slot.state = SlotState.POISONED
+                await self._shutdown_child_preserving_primary_error(session_token)
+                raise
+            except (TimeoutError, asyncio.TimeoutError):
+                if slot is not None:
+                    slot.state = SlotState.POISONED
+                await self._shutdown_child_preserving_primary_error(session_token)
+                raise UpstreamToolError(
+                    UPSTREAM_TIMEOUT,
+                    SAFE_TIMEOUT_MESSAGE,
+                    True,
+                    SAFE_NEXT_ACTION,
+                ) from None
+            except Exception:
+                if slot is not None:
+                    slot.state = SlotState.POISONED
+                await self._shutdown_child_preserving_primary_error(session_token)
+                raise UpstreamToolError(
+                    UPSTREAM_UNAVAILABLE,
+                    SAFE_MESSAGE,
+                    True,
+                    SAFE_NEXT_ACTION,
+                ) from None
 
     async def load(self, xml_string: str) -> SimulationSlot:
         if not isinstance(xml_string, str) or not xml_string or len(xml_string.encode("utf-8")) > MAX_XML_BYTES:

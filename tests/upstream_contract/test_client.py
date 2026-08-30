@@ -1098,6 +1098,12 @@ def test_render_payload_accepts_only_observed_profile_and_bounds_data(monkeypatc
     )
     assert _render_png(result, width=160, height=120) == png
 
+    result.content[1].text = "x" * 257
+    with pytest.raises(UpstreamToolError) as caught:
+        _render_png(result, width=160, height=120)
+    assert caught.value.code == UPSTREAM_BAD_RESPONSE
+    result.content[1].text = "synthetic"
+
     for invalid_data in (
         "not-base64",
         base64.b64encode(b"not an image").decode(),
@@ -1173,7 +1179,7 @@ def test_concurrent_context_entry_reuses_one_started_session() -> None:
 
 def test_concurrent_first_runner_startup_shares_lifecycle_without_early_close() -> None:
     async def check() -> None:
-        transport, make_session, _get_session = _fake_client(synchronize_two_runs=True)
+        transport, make_session, _get_session = _fake_client()
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
         session_count = 0
@@ -1267,6 +1273,55 @@ def test_concurrent_calls_on_one_slot_are_serialized(second_operation: str) -> N
                 with pytest.raises(UpstreamToolError):
                     await second
             assert session.overlapped is False
+
+    asyncio.run(check())
+
+
+def test_queue_wait_between_slots_does_not_consume_call_timeout() -> None:
+    async def check() -> None:
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        render_started = asyncio.Event()
+        release_render = asyncio.Event()
+
+        class QueueSession(_FakeSession):
+            async def call_tool(
+                self, name: str, *, arguments: dict[str, object]
+            ) -> SimpleNamespace:
+                if name != "render_snapshot":
+                    return await super().call_tool(name, arguments=arguments)
+                render_started.set()
+                await release_render.wait()
+                png = _png_bytes()
+                return SimpleNamespace(
+                    isError=False,
+                    content=[
+                        SimpleNamespace(
+                            type="image",
+                            mimeType="image/png",
+                            data=base64.b64encode(png).decode(),
+                        ),
+                        SimpleNamespace(type="text", text="synthetic"),
+                    ],
+                )
+
+        async with PinnedMujocoClient(
+            call_timeout=0.01,
+            render_timeout=1.0,
+            transport_factory=lambda _parameters: _FakeTransport(),
+            session_factory=QueueSession,
+        ) as client:
+            first_slot = await client.load("<mujoco model=\"first\"/>")
+            second_slot = await client.load("<mujoco model=\"second\"/>")
+            render = asyncio.create_task(client.render(first_slot))
+            await render_started.wait()
+            reset = asyncio.create_task(client.reset(second_slot))
+            await asyncio.sleep(0.03)
+            assert reset.done() is False
+            release_render.set()
+            await render
+            await reset
+            assert second_slot.state is SlotState.READY
 
     asyncio.run(check())
 
