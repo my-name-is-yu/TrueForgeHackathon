@@ -122,6 +122,14 @@ def test_patch_preserves_prolog_and_epilog_nodes() -> None:
     assert any(change.attribute == "<text>" for change in changes)
 
 
+def test_fixture_allows_urls_in_comments_and_processing_instructions() -> None:
+    xml = b'''<!-- license: https://www.apache.org/licenses/LICENSE-2.0 -->
+<?documentation href="https://example.invalid/fixture"?>
+<mujoco><worldbody><body name="arm"><joint name="elbow" damping="0.3"/></body></worldbody></mujoco>'''
+
+    assert provision_fixture(xml) == xml
+
+
 def test_axis_expected_value_allows_only_normalization_roundoff() -> None:
     component = 1.0 / (2.0**0.5)
     xml = BASE_XML.replace(b'axis="0 0 2"', b'axis="1 1 0"')

@@ -218,16 +218,78 @@ def test_behavior_diff_encodes_frozen_comparison_evidence() -> None:
             "metric_deltas": [
                 {"metric": "hold_error_p95_m", "before": 0.04, "after": 0.02, "delta": -0.02}
             ],
-            "clause_results": [{"clause_id": "hold_error", "outcome": "improved"}],
+            "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
             "verdict": "improved",
         }
     )
     assert behavior_diff.first_divergence is not None
     assert behavior_diff.metric_deltas[0].delta == -0.02
-    assert behavior_diff.clause_results[0].outcome == "improved"
+    assert behavior_diff.clause_outcomes[0].outcome == "improved"
 
     with pytest.raises(ValidationError):
         behavior_diff.model_validate({"changed": True, "verdict": "unknown"})
+
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(
+            {
+                "changed": True,
+                "metric_deltas": [
+                    {"metric": "hold_error_p95_m", "before": 0.04, "after": 0.02, "delta": -0.02}
+                ],
+                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
+                "verdict": "improved",
+            }
+        )
+
+
+def test_behavior_diff_rejects_false_metric_deltas_and_contradictory_state() -> None:
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(
+            {
+                "changed": True,
+                "first_divergence": {
+                    "step": 12,
+                    "time_s": 0.12,
+                    "signal": "qpos",
+                    "magnitude": 0.002,
+                },
+                "metric_deltas": [
+                    {"metric": "hold_error_p95_m", "before": 0.04, "after": 0.02, "delta": 0.02}
+                ],
+                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
+                "verdict": "improved",
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(
+            {
+                "changed": False,
+                "first_divergence": {
+                    "step": 12,
+                    "time_s": 0.12,
+                    "signal": "qpos",
+                    "magnitude": 0.002,
+                },
+                "metric_deltas": [
+                    {"metric": "hold_error_p95_m", "before": 0.04, "after": 0.04, "delta": 0.0}
+                ],
+                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                "verdict": "public_pass",
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(
+            {
+                "changed": False,
+                "metric_deltas": [
+                    {"metric": "hold_error_p95_m", "before": 0.04, "after": 0.04, "delta": 0.0}
+                ],
+                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                "verdict": "improved",
+            }
+        )
 
 
 def test_run_task_output_accepts_behavior_diff_evidence() -> None:
@@ -245,8 +307,10 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
             "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
             "behavior_diff": {
                 "changed": False,
-                "metric_deltas": [],
-                "clause_results": [],
+                "metric_deltas": [
+                    {"metric": "hold_error_p95_m", "before": 0.02, "after": 0.02, "delta": 0.0}
+                ],
+                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
                 "verdict": "public_pass",
             },
         }

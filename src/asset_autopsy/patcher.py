@@ -98,8 +98,6 @@ def _reject_external_features(source: bytes) -> None:
         raise PatcherError("UNSAFE_XML", "XML declarations are not allowed")
     if _UNSAFE_ELEMENT.search(text) or _UNKNOWN_ENTITY.search(text):
         raise PatcherError("UNSAFE_XML", "external XML features are not allowed")
-    if _EXTERNAL_URI.search(text):
-        raise PatcherError("UNSAFE_XML", "external XML references are not allowed")
 
 
 def _document_element(document_root: ET.Element) -> ET.Element:

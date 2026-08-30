@@ -97,6 +97,8 @@ MetricName: TypeAlias = Annotated[
 ]
 StrictFiniteFloat: TypeAlias = Annotated[float, Strict(), AllowInfNan(False)]
 AxisVector: TypeAlias = tuple[StrictFiniteFloat, StrictFiniteFloat, StrictFiniteFloat]
+_METRIC_DELTA_REL_TOLERANCE = 1e-9
+_METRIC_DELTA_ABS_TOLERANCE = 1e-12
 
 AllowedAttribute: TypeAlias = Literal["axis", "damping", "armature", "frictionloss"]
 HypothesisAttribute: TypeAlias = Literal[
@@ -468,6 +470,18 @@ class MetricDelta(StrictModel):
     after: StrictFiniteFloat
     delta: StrictFiniteFloat
 
+    @model_validator(mode="after")
+    def validate_delta(self) -> MetricDelta:
+        expected = self.after - self.before
+        if not math.isclose(
+            self.delta,
+            expected,
+            rel_tol=_METRIC_DELTA_REL_TOLERANCE,
+            abs_tol=_METRIC_DELTA_ABS_TOLERANCE,
+        ):
+            raise ValueError("delta must equal after minus before")
+        return self
+
 
 class ClauseResult(StrictModel):
     clause_id: ElementName
@@ -477,9 +491,20 @@ class ClauseResult(StrictModel):
 class BehaviorDiff(StrictModel):
     changed: StrictBool
     first_divergence: FirstDivergence | None = None
-    metric_deltas: list[MetricDelta] = Field(default_factory=list, max_length=64)
-    clause_results: list[ClauseResult] = Field(default_factory=list, max_length=32)
+    metric_deltas: list[MetricDelta] = Field(min_length=1, max_length=64)
+    clause_outcomes: list[ClauseResult] = Field(min_length=1, max_length=32)
     verdict: Literal["regressed", "changed", "improved", "public_pass"]
+
+    @model_validator(mode="after")
+    def validate_evidence_state(self) -> BehaviorDiff:
+        if self.changed and self.first_divergence is None:
+            raise ValueError("changed behavior requires first divergence evidence")
+        if not self.changed:
+            if self.first_divergence is not None:
+                raise ValueError("unchanged behavior cannot report first divergence")
+            if self.verdict in {"regressed", "changed", "improved"}:
+                raise ValueError("unchanged behavior must have the public_pass verdict")
+        return self
 
 
 class RunTaskOutput(CommonOutput):
