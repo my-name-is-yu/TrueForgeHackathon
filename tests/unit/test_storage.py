@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -208,6 +209,55 @@ def test_object_store_syncs_new_shard_and_hash_root_parent(
     assert synchronized.index(hash_root.parent) < synchronized.index((tmp_path / "objects").parent)
 
 
+def test_concurrent_object_publication_syncs_existing_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_store = ObjectStore(tmp_path / "objects")
+    second_store = ObjectStore(tmp_path / "objects")
+    payload = b"same digest published concurrently"
+    digest = hashlib.sha256(payload).hexdigest()
+    first_started = threading.Event()
+    release_first = threading.Event()
+    first_errors: list[BaseException] = []
+
+    def hold_first_sync(_path: Path) -> None:
+        first_started.set()
+        release_first.wait(timeout=5)
+
+    monkeypatch.setattr(first_store, "_fsync_directory", hold_first_sync)
+    second_synchronized: list[Path] = []
+    monkeypatch.setattr(
+        second_store,
+        "_fsync_directory",
+        lambda path: second_synchronized.append(path),
+    )
+
+    def publish_first() -> None:
+        try:
+            first_store.put_bytes(payload, expected_sha256=digest)
+        except BaseException as exc:
+            first_errors.append(exc)
+
+    first_thread = threading.Thread(target=publish_first)
+    first_thread.start()
+    assert first_started.wait(timeout=5)
+
+    second_store.put_bytes(payload, expected_sha256=digest)
+    release_first.set()
+    first_thread.join(timeout=5)
+
+    assert not first_thread.is_alive()
+    assert first_errors == []
+    hash_root = tmp_path / "objects" / "sha256"
+    shard = hash_root / digest[:2]
+    assert second_synchronized == [
+        shard,
+        hash_root,
+        hash_root.parent,
+        hash_root.parent.parent,
+    ]
+
+
 def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     before = store.ledger_events("case-1")
@@ -370,6 +420,25 @@ def test_revision_retry_rejects_changed_ledger_event(
         )
     assert store.get_revision("case-1", "r001") == child
     assert store.ledger_events("case-1")[-1].event_id == persisted.event_id
+
+
+def test_revision_retry_accepts_omitted_generated_event_metadata(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    child = store.get_revision("case-1", "r001")
+
+    assert store.commit_revision_with_event(
+        revision=child,
+        event=LedgerEventRecord(
+            event_id="evt-revision-r001",
+            case_id="case-1",
+            revision_id="r001",
+            event_type="REVISION_CREATED",
+            payload={"asset_sha256": "2" * 64},
+        ),
+        expected_head_revision_id="r001",
+    ) == child
 
 
 def test_child_revision_requires_probe_run(tmp_path: Path) -> None:

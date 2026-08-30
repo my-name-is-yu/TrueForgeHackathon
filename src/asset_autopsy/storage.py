@@ -315,6 +315,10 @@ class ObjectStore:
                 stored, stored_size = self._digest_file(destination)
                 if stored != actual:
                     raise ObjectIntegrityError("canonical object failed hash verification")
+                self._fsync_directory(destination.parent)
+                self._fsync_directory(self.hash_root)
+                self._fsync_directory(self.hash_root.parent)
+                self._fsync_directory(self.root.parent)
                 return ObjectReference(stored, stored_size)
             os.replace(temporary_path, destination)
             temporary_path = None
@@ -545,7 +549,9 @@ class EvidenceStore:
         event: LedgerEventRecord,
     ) -> bool:
         request_id, payload_json, artifact_refs_json = cls._validate_event_record(event)
-        created_at = _timestamp(event.created_at)
+        if event.request_id is None:
+            request_id = row["request_id"]
+        created_at = row["created_at"] if event.created_at is None else _timestamp(event.created_at)
         without_hash = {
             "event_id": event.event_id,
             "request_id": request_id,
