@@ -229,6 +229,21 @@ class RunRecord:
         }
 
 
+class PartialRunError(UpstreamToolError):
+    __slots__ = ("partial_record",)
+
+    def __init__(
+        self, upstream_error: UpstreamToolError, partial_record: RunRecord
+    ) -> None:
+        super().__init__(
+            upstream_error.code,
+            upstream_error.message,
+            upstream_error.retryable,
+            upstream_error.next_action,
+        )
+        self.partial_record = partial_record
+
+
 class DeterministicRunner:
     def __init__(self, client: PinnedMujocoClient | None = None) -> None:
         self.client = client or PinnedMujocoClient()
@@ -281,59 +296,75 @@ class DeterministicRunner:
         previous_timestamp: float | None = None
         timestep = slot.summary["timestep"]
         interval_tolerance = timestep * 1e-6
-        for segment in configuration.segments:
-            if len(segment.ctrl) != slot.summary["nu"]:
-                raise ValueError("controller width does not match the loaded model")
-            payload = await self.client.run_segment(
-                slot,
-                ctrl=list(segment.ctrl),
-                n_steps=segment.n_steps,
-                track=configuration.track,
-            )
-            rows = tuple(
-                {**row, "ctrl": list(segment.ctrl)} for row in payload["timeseries"]
-            )
-            if len(rows) != segment.n_steps or payload["n_steps"] != segment.n_steps:
-                raise ValueError("runner received an unexpected step count")
-            if not all(
-                isinstance(row, dict) and all(_numbers(value) for value in row.values())
-                for row in rows
-            ):
-                raise ValueError("runner received a non-numeric run record")
-            expected_start = (
-                timestep
-                if previous_timestamp is None
-                else previous_timestamp + timestep
-            )
-            if not math.isclose(
-                rows[0]["t"],
-                expected_start,
-                rel_tol=0.0,
-                abs_tol=interval_tolerance,
-            ):
-                slot.state = SlotState.POISONED
-                raise UpstreamToolError(
-                    UPSTREAM_BAD_RESPONSE,
-                    "Upstream returned discontinuous segment timestamps.",
-                    False,
-                    SAFE_SLOT_ACTION,
+        try:
+            for segment in configuration.segments:
+                if len(segment.ctrl) != slot.summary["nu"]:
+                    raise ValueError("controller width does not match the loaded model")
+                payload = await self.client.run_segment(
+                    slot,
+                    ctrl=list(segment.ctrl),
+                    n_steps=segment.n_steps,
+                    track=configuration.track,
                 )
-            previous_timestamp = rows[-1]["t"]
-            records.append(
-                SegmentRecord(
-                    label=segment.label,
-                    step_count=segment.n_steps,
-                    ctrl=segment.ctrl,
-                    timeseries=rows,
+                rows = tuple(
+                    {**row, "ctrl": list(segment.ctrl)}
+                    for row in payload["timeseries"]
                 )
-            )
-            nonfinite_state = any(
-                not all(_finite_numbers(value) for value in row.values())
-                for row in rows
-            )
-            if nonfinite_state:
-                slot.state = SlotState.POISONED
-                break
+                if (
+                    len(rows) != segment.n_steps
+                    or payload["n_steps"] != segment.n_steps
+                ):
+                    raise ValueError("runner received an unexpected step count")
+                if not all(
+                    isinstance(row, dict)
+                    and all(_numbers(value) for value in row.values())
+                    for row in rows
+                ):
+                    raise ValueError("runner received a non-numeric run record")
+                expected_start = (
+                    timestep
+                    if previous_timestamp is None
+                    else previous_timestamp + timestep
+                )
+                if not math.isclose(
+                    rows[0]["t"],
+                    expected_start,
+                    rel_tol=0.0,
+                    abs_tol=interval_tolerance,
+                ):
+                    slot.state = SlotState.POISONED
+                    raise UpstreamToolError(
+                        UPSTREAM_BAD_RESPONSE,
+                        "Upstream returned discontinuous segment timestamps.",
+                        False,
+                        SAFE_SLOT_ACTION,
+                    )
+                previous_timestamp = rows[-1]["t"]
+                records.append(
+                    SegmentRecord(
+                        label=segment.label,
+                        step_count=segment.n_steps,
+                        ctrl=segment.ctrl,
+                        timeseries=rows,
+                    )
+                )
+                nonfinite_state = any(
+                    not all(_finite_numbers(value) for value in row.values())
+                    for row in rows
+                )
+                if nonfinite_state:
+                    slot.state = SlotState.POISONED
+                    break
+        except UpstreamToolError as error:
+            if not records:
+                raise
+            raise PartialRunError(
+                error,
+                RunRecord(
+                    step_count=sum(record.step_count for record in records),
+                    segments=tuple(records),
+                ),
+            ) from error
 
         image: bytes | None = None
         render_fallback = False
@@ -379,6 +410,7 @@ __all__ = [
     "DeterministicRunner",
     "MAX_SEGMENTS",
     "MAX_TOTAL_STEPS",
+    "PartialRunError",
     "RunConfiguration",
     "RunRecord",
     "SegmentRecord",

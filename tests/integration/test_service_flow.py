@@ -7,7 +7,12 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from asset_autopsy.fixture import CASE_ID, clean_end_effector_position
-from asset_autopsy.runner import RunRecord, SegmentRecord
+from asset_autopsy.mujoco_client import (
+    SAFE_NEXT_ACTION,
+    UPSTREAM_TIMEOUT,
+    UpstreamToolError,
+)
+from asset_autopsy.runner import PartialRunError, RunRecord, SegmentRecord
 from asset_autopsy.schemas import (
     ActuatorControl,
     AxisPatch,
@@ -107,6 +112,32 @@ class NonfiniteExperimentRunner(DeterministicFakeRunner):
         )
 
 
+class UpstreamFailingExperimentRunner(DeterministicFakeRunner):
+    def __init__(self, completed_segments: int) -> None:
+        self.completed_segments = completed_segments
+
+    async def run(self, configuration):
+        record = await super().run(configuration)
+        if configuration.segments[0].label == "public_center":
+            return record
+        error = UpstreamToolError(
+            UPSTREAM_TIMEOUT,
+            "private upstream failure detail",
+            True,
+            SAFE_NEXT_ACTION,
+        )
+        if self.completed_segments == 0:
+            raise error
+        completed = record.segments[: self.completed_segments]
+        raise PartialRunError(
+            error,
+            RunRecord(
+                step_count=sum(segment.step_count for segment in completed),
+                segments=completed,
+            ),
+        )
+
+
 def hypothesis(
     primary: str, attribute: str, competing: str, competing_attribute: str
 ) -> Hypothesis:
@@ -157,6 +188,20 @@ def experiment(
             QvelObservable(kind="qvel"),
             BodyPositionObservable(kind="body_position", body_name="end_effector"),
         ],
+    )
+
+
+def multi_segment_experiment(revision_id: str, claim: Hypothesis) -> RunExperimentInput:
+    value = experiment(revision_id, claim)
+    segment = value.segments[0]
+    return value.model_copy(
+        update={
+            "segments": [
+                segment.model_copy(update={"label": "first", "n_steps": 128}),
+                segment.model_copy(update={"label": "second", "n_steps": 128}),
+            ],
+            "capture_final_snapshot": True,
+        }
     )
 
 
@@ -476,6 +521,163 @@ def test_nonfinite_experiment_is_a_sanitized_budget_consuming_domain_outcome(
     opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
     assert opened.remaining_budgets.runs_remaining == 8
     assert opened.remaining_budgets.experiments_remaining == 4
+
+
+def test_upstream_failure_before_first_completed_segment_consumes_no_budget(
+    tmp_path,
+) -> None:
+    service = AssetAutopsyService(
+        tmp_path, runner=UpstreamFailingExperimentRunner(completed_segments=0)
+    )
+    run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id="r000",
+                scenario_id="public_center",
+                capture="metrics",
+            )
+        )
+    )
+
+    with pytest.raises(DomainError) as caught:
+        run(
+            service.run_experiment(
+                multi_segment_experiment(
+                    "r000", hypothesis("joint_b", "axis", "joint_c", "damping")
+                )
+            )
+        )
+
+    assert caught.value.code == UPSTREAM_TIMEOUT
+    assert "private upstream" not in caught.value.safe_message
+    events = service.store.ledger_events(CASE_ID)
+    assert sum(event.event_type == "HYPOTHESIS_RECORDED" for event in events) == 1
+    assert not any(event.event_type == "EXPERIMENT_FAILED" for event in events)
+    opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
+    assert opened.remaining_budgets.runs_remaining == 9
+    assert opened.remaining_budgets.experiments_remaining == 5
+
+
+def test_partial_experiment_failure_persists_bounded_evidence_and_budget_after_restart(
+    tmp_path,
+) -> None:
+    service = AssetAutopsyService(
+        tmp_path, runner=UpstreamFailingExperimentRunner(completed_segments=1)
+    )
+    run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id="r000",
+                scenario_id="public_center",
+                capture="metrics",
+            )
+        )
+    )
+
+    with pytest.raises(DomainError) as caught:
+        run(
+            service.run_experiment(
+                multi_segment_experiment(
+                    "r000", hypothesis("joint_b", "axis", "joint_c", "damping")
+                )
+            )
+        )
+
+    assert caught.value.code == UPSTREAM_TIMEOUT
+    assert caught.value.retryable is True
+    assert "private upstream" not in caught.value.safe_message
+    failed_events = [
+        event
+        for event in service.store.ledger_events(CASE_ID)
+        if event.event_type == "EXPERIMENT_FAILED"
+    ]
+    assert len(failed_events) == 1
+    failed = failed_events[0]
+    assert failed.payload["outcome"] == {
+        "kind": "upstream_failure",
+        "budget_consumed": True,
+    }
+    assert failed.payload["failure_code"] == UPSTREAM_TIMEOUT
+    assert failed.payload["requested_steps"] == 256
+    assert failed.payload["completed_steps"] == 128
+    assert failed.payload["completed_segment_boundaries"] == [
+        {"segment_index": 0, "start_step": 0, "end_step": 128}
+    ]
+    stored_run = service.store.get_run(failed.payload["run_id"])
+    assert stored_run.passed is False
+    assert stored_run.trace_sha256 is None
+    assert stored_run.metrics_sha256 is None
+    assert {reference["kind"] for reference in failed.artifact_refs} == {
+        "experiment_spec",
+        "partial_experiment",
+    }
+    partial_ref = next(
+        reference
+        for reference in failed.artifact_refs
+        if reference["kind"] == "partial_experiment"
+    )
+    partial = json.loads(service.store.objects.read_bytes(partial_ref["sha256"]))
+    assert set(partial) == {
+        "run_id",
+        "requested_steps",
+        "completed_steps",
+        "segment_boundaries",
+        "segments",
+    }
+    assert partial["requested_steps"] == 256
+    assert partial["completed_steps"] == 128
+    assert partial["segment_boundaries"] == [
+        {"segment_index": 0, "start_step": 0, "end_step": 128}
+    ]
+    assert len(partial["segments"]) == 1
+    assert partial["segments"][0]["label"] == "first"
+    assert len(partial["segments"][0]["timeseries"]) == 128
+
+    opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
+    with pytest.raises(DomainError) as invalid_basis:
+        run(
+            service.create_revision(
+                CreateRevisionInput(
+                    case_id=CASE_ID,
+                    base_revision_id="r000",
+                    expected_base_sha256=opened.original_asset_sha256,
+                    basis_hypothesis_id=failed.payload["hypothesis_id"],
+                    basis_experiment_run_id=failed.payload["run_id"],
+                    patch=AxisPatch(
+                        target=PatchTarget(kind="joint", name="joint_b"),
+                        attribute="axis",
+                        expected_old_value=(0.0, 0.0, 1.0),
+                        new_value=(0.0, 1.0, 0.0),
+                    ),
+                    rationale="The partial experiment must not authorize a repair.",
+                    expected_effect=ExpectedEffect(
+                        scenario_id="public_center",
+                        predicates=[
+                            Predicate(
+                                metric="hold_error_p95_m", op="lt", value=0.03
+                            )
+                        ],
+                    ),
+                )
+            )
+        )
+    assert invalid_basis.value.code == "CAUSAL_EXPERIMENT_INVALID"
+
+    service.store.close()
+    restarted = AssetAutopsyService(tmp_path, runner=DeterministicFakeRunner())
+    reopened = run(restarted.open_case(OpenCaseInput(case_id=CASE_ID)))
+    assert reopened.remaining_budgets.runs_remaining == 8
+    assert reopened.remaining_budgets.experiments_remaining == 4
+    assert restarted.store.get_run(failed.payload["run_id"]) == stored_run
+    assert len(
+        [
+            event
+            for event in restarted.store.verify_ledger()
+            if event.event_type == "EXPERIMENT_FAILED"
+        ]
+    ) == 1
 
 
 def test_service_rejects_incomplete_named_topology_before_physics(tmp_path) -> None:
