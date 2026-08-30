@@ -854,6 +854,14 @@ class CreateRevisionOutput(CommonOutput):
     canonical_diff: list[CanonicalDiffEntry] = Field(min_length=1, max_length=1)
     status: Literal["created", "already_exists"]
 
+    @model_validator(mode="after")
+    def validate_lineage(self) -> CreateRevisionOutput:
+        if self.revision_id == "r000":
+            raise ValueError("create revision cannot return the pre-provisioned root")
+        if self.revision_id == self.parent_revision_id:
+            raise ValueError("created revision cannot be its own parent")
+        return self
+
 
 class IntegrityChecks(StrictModel):
     original: StrictBool

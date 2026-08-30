@@ -215,6 +215,19 @@ def test_fixture_provisioning_rejects_unsafe_external_features(xml: bytes, expec
     assert exc_info.value.code == expected_code
 
 
+@pytest.mark.parametrize(
+    "xml",
+    [
+        b'<?xml version="1.0" encoding="x-unknown"?><mujoco/>',
+        b'<?xml version="1.0" encoding="UTF-7"?><mujoco/>',
+    ],
+)
+def test_fixture_rejects_unsupported_encodings_with_a_typed_error(xml: bytes) -> None:
+    with pytest.raises(PatcherError) as exc_info:
+        provision_fixture(xml)
+    assert exc_info.value.code == "INVALID_XML"
+
+
 def test_base_hash_and_expected_old_value_guards_fail_closed() -> None:
     patch = {
         "target": {"kind": "joint", "name": "elbow"},

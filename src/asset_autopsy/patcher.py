@@ -105,6 +105,8 @@ def _reject_external_features(source: bytes) -> None:
         parser.Parse(source, True)
     except _UnsafeXMLFeature:
         raise PatcherError("UNSAFE_XML", "external XML features are not allowed") from None
+    except (LookupError, ValueError):
+        raise PatcherError("INVALID_XML", "XML declares an unsupported encoding") from None
     except expat.ExpatError:
         return
 

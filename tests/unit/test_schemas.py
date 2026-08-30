@@ -8,6 +8,7 @@ from asset_autopsy.schemas import (
     AxisPatch,
     AggregateResult,
     BehaviorDiff,
+    CreateRevisionOutput,
     CreateRevisionInput,
     FirstDivergence,
     OpenCaseOutput,
@@ -1324,6 +1325,35 @@ def test_revision_summary_requires_root_and_child_provenance() -> None:
         RevisionSummary.model_validate({**root, **child, "revision_id": "r000"})
     with pytest.raises(ValidationError):
         RevisionSummary.model_validate({**child, "canonical_diff": []})
+
+
+@pytest.mark.parametrize(
+    ("revision_id", "parent_revision_id"),
+    [("r001", "r001"), ("r000", "r001")],
+)
+def test_create_revision_output_rejects_invalid_lineage(
+    revision_id: str, parent_revision_id: str
+) -> None:
+    with pytest.raises(ValidationError):
+        CreateRevisionOutput.model_validate(
+            {
+                "schema_version": "asset-autopsy/v1",
+                "request_id": "req_demo",
+                "case_id": "case_demo",
+                "revision_id": revision_id,
+                "parent_revision_id": parent_revision_id,
+                "asset_sha256": "1" * 64,
+                "canonical_diff": [
+                    {
+                        "target": "elbow",
+                        "attribute": "damping",
+                        "before": "0.3",
+                        "after": "0.5",
+                    }
+                ],
+                "status": "created",
+            }
+        )
 
 
 def test_schema_has_no_private_contract_fields() -> None:
