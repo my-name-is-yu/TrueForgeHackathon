@@ -26,22 +26,20 @@ if [ "$packet_lines" -gt 4000 ] || [ "$packet_bytes" -gt 1048576 ]; then
   exit 1
 fi
 
-[ "$(sed -n '1p' "$packet")" = 'SYMPHONY_REVIEW_PACKET_V1' ] || {
+[ "$(sed -n '1p' "$packet")" = 'SYMPHONY_REVIEW_PACKET_V2' ] || {
   echo "Packet line 1 must be the trusted-header version marker." >&2
   exit 1
 }
 head_sha=$(sed -n '2s/^Head SHA: \([0-9a-f]\{40\}\)$/\1/p' "$packet")
 [ -n "$head_sha" ] || { echo "Packet line 2 must contain the head SHA." >&2; exit 1; }
-review_head=$(sed -En '3s/^Review head number: ([1-9]|10)$/\1/p' "$packet")
+review_head=$(sed -En '3s/^Review head number: ([1-9][0-9]*)$/\1/p' "$packet")
 [ -n "$review_head" ] || { echo "Packet line 3 must contain the review head number." >&2; exit 1; }
-rework_round=$(sed -n '4s/^Rework round: \([0-9]\)$/\1/p' "$packet")
+rework_round=$(sed -En '4s/^Rework round: (0|[1-9][0-9]*)$/\1/p' "$packet")
 [ -n "$rework_round" ] || { echo "Packet line 4 must contain the rework round." >&2; exit 1; }
-codex_status=$(sed -En '5s/^Codex status: (complete|timeout)$/\1/p' "$packet")
-[ -n "$codex_status" ] || { echo "Packet line 5 must contain the Codex status." >&2; exit 1; }
-qodo_status=$(sed -En '6s/^Qodo status: (complete|timeout)$/\1/p' "$packet")
-[ -n "$qodo_status" ] || { echo "Packet line 6 must contain the Qodo status." >&2; exit 1; }
-[ "$(sed -n '7p' "$packet")" = '--- END TRUSTED HEADER ---' ] || {
-  echo "Packet line 7 must terminate the trusted header." >&2
+current_reviewer=$(sed -En '5s/^Current reviewer: (codex|qodo|both)$/\1/p' "$packet")
+[ -n "$current_reviewer" ] || { echo "Packet line 5 must contain the current reviewer." >&2; exit 1; }
+[ "$(sed -n '6p' "$packet")" = '--- END TRUSTED HEADER ---' ] || {
+  echo "Packet line 6 must terminate the trusted header." >&2
   exit 1
 }
 
@@ -82,14 +80,7 @@ trap 'rm -f "$temporary"; rm -rf "$temporary_workspace"' EXIT HUP INT TERM
   --output-last-message "$temporary" \
   -
 
-python3 "$PROJECT_ROOT/scripts/symphony_review_decision.py" \
-  --expected-head "$head_sha" \
-  --expected-review-head "$review_head" \
-  --expected-rework-round "$rework_round" \
-  --expected-codex-status "$codex_status" \
-  --expected-qodo-status "$qodo_status" \
-  "$temporary" >/dev/null
 mv "$temporary" "$output"
 rm -rf "$temporary_workspace"
 trap - EXIT HUP INT TERM
-echo "Validated Sol decision: $output"
+echo "Wrote schema-valid Sol decision: $output"
