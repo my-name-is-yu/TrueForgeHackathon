@@ -125,9 +125,116 @@ def test_unknown_top_level_fields_are_rejected_without_echoing_values() -> None:
         assert "INVALID_REQUEST" in message
         assert "secret-value" not in message
         assert "xml_string" not in message
+        assert '"path":"$.<unknown>"' in message
+        assert '"type":"extra_forbidden"' in message
 
     asyncio.run(call())
     assert facade.recorder.counts["open_case"] == 0
+
+
+def test_validation_feedback_names_only_public_paths_and_safe_error_types() -> None:
+    _, facade = make_facade()
+
+    async def call() -> None:
+        with pytest.raises(ToolError) as captured:
+            await facade.mcp.call_tool(
+                "run_experiment",
+                {
+                    "case_id": "case_compound_arm_01",
+                    "revision_id": "r000",
+                    "hypothesis": {
+                        "claim": "bounded claim",
+                        "suspected_elements": [
+                            {
+                                "kind": "joint",
+                                "name": "joint_a",
+                                "attributes": ["axis"],
+                            }
+                        ],
+                        "competing_explanation": {
+                            "claim": "bounded alternative",
+                            "suspected_elements": [
+                                {
+                                    "kind": "joint",
+                                    "name": "joint_a",
+                                    "attributes": ["axis"],
+                                }
+                            ],
+                            "discriminating_reason": "bounded reason",
+                            "prediction": "must remain outside competing_explanation",
+                        },
+                        "prediction": "bounded prediction",
+                        "falsifier": "bounded falsifier",
+                    },
+                    "initial_joint_positions": [
+                        {"joint_name": "joint_a", "position_rad": 0.0}
+                    ],
+                    "segments": [
+                        {
+                            "n_steps": 256,
+                            "controls": [
+                                {"actuator_name": "motor_a", "value": 0.0}
+                            ],
+                        }
+                    ],
+                    "observables": [
+                        {
+                            "kind": "body_position",
+                            "body_name": "https://example.invalid/private.xml",
+                            "secret/path.xml": "<hidden>bearer-secret</hidden>",
+                        }
+                    ],
+                },
+            )
+        message = str(captured.value)
+        assert '"path":"$.observables[0].body_name"' in message
+        assert '"type":"string_pattern_mismatch"' in message
+        assert '"path":"$.observables[0].<unknown>"' in message
+        assert (
+            '"path":"$.hypothesis.competing_explanation.prediction"'
+            in message
+        )
+        assert '"type":"extra_forbidden"' in message
+        for prohibited in (
+            "example.invalid",
+            "private.xml",
+            "secret/path.xml",
+            "hidden",
+            "bearer-secret",
+            "must remain outside",
+            "String should match",
+        ):
+            assert prohibited not in message
+
+    asyncio.run(call())
+    assert facade.recorder.counts["run_experiment"] == 0
+
+
+def test_validation_feedback_is_bounded_and_reports_missing_public_fields() -> None:
+    _, facade = make_facade()
+
+    async def call() -> None:
+        with pytest.raises(ToolError) as captured:
+            await facade.mcp.call_tool(
+                "create_revision",
+                {"case_id": "case_compound_arm_01"},
+            )
+        message = str(captured.value)
+        envelope = json.loads(message)
+        assert envelope["validation_errors"] == [
+            {"path": "$.base_revision_id", "type": "missing"},
+            {"path": "$.expected_base_sha256", "type": "missing"},
+            {"path": "$.basis_hypothesis_id", "type": "missing"},
+            {"path": "$.basis_experiment_run_id", "type": "missing"},
+            {"path": "$.patch", "type": "missing"},
+            {"path": "$.rationale", "type": "missing"},
+            {"path": "$.expected_effect", "type": "missing"},
+        ]
+        assert envelope["validation_errors_truncated"] is False
+        assert len(message) < 1_500
+
+    asyncio.run(call())
+    assert facade.recorder.counts["create_revision"] == 0
 
 
 def test_unexpected_service_errors_are_redacted_and_recorded() -> None:

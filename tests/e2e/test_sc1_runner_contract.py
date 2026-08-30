@@ -14,11 +14,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from asset_autopsy.storage import CaseRecord  # noqa: E402
 from run_sc1_e2e import (  # noqa: E402
+    _EvidenceGateFailure,
     _case_is_qualified_and_unpublished,
     _commit_sha,
     _raw_events_are_clear,
     _runtime_state_gates,
     _safe_blocker,
+    _terminal_failure_category,
 )
 import run_sc1_e2e as e2e_runner  # noqa: E402
 
@@ -192,3 +194,30 @@ def test_blocker_redacts_untrusted_exception_text() -> None:
     assert blocker["stage"] == "model_turn"
     assert "secret raw upstream" not in rendered
     assert "/private/tmp/private.xml" not in rendered
+
+
+def test_evidence_gate_blocker_records_only_sanitized_terminal_category() -> None:
+    terminal = {
+        "state": {
+            "status": "error",
+            "message": "Request failed (429): Rate limit; /private/tmp/private.xml",
+        }
+    }
+    category = _terminal_failure_category(terminal)
+    blocker = _safe_blocker(
+        "evidence_gate",
+        _EvidenceGateFailure(
+            ["turn_done", "event_contract"],
+            turn_status="error",
+            terminal_category=category,
+        ),
+        "a" * 40,
+    )
+
+    assert blocker["details"] == {
+        "error_type": "_EvidenceGateFailure",
+        "failed_gates": ["turn_done", "event_contract"],
+        "turn_status": "error",
+        "terminal_category": "provider_rate_limit",
+    }
+    assert "/private/tmp/private.xml" not in json.dumps(blocker, sort_keys=True)

@@ -36,6 +36,20 @@ TRUEFORGE_URL = "http://localhost:8790"
 ORIGIN = "http://localhost:8790"
 
 
+class _EvidenceGateFailure(RuntimeError):
+    def __init__(
+        self,
+        failed_gates: list[str],
+        *,
+        turn_status: str,
+        terminal_category: str,
+    ) -> None:
+        super().__init__("failed gates: " + ", ".join(failed_gates))
+        self.failed_gates = tuple(failed_gates)
+        self.turn_status = turn_status
+        self.terminal_category = terminal_category
+
+
 class _FacadeServer:
     def __init__(self, app: Any, config: MCPRuntimeConfig) -> None:
         self._server = uvicorn.Server(
@@ -247,6 +261,22 @@ def _case_is_qualified_and_unpublished(case: CaseRecord) -> bool:
     return case.qualification_state == "passed" and case.promotion_state == "open"
 
 
+def _terminal_failure_category(turn: Mapping[str, Any]) -> str:
+    status = TrueForgeClient.turn_status(turn)
+    state = turn.get("state")
+    message = state.get("message") if isinstance(state, Mapping) else None
+    normalized = message.lower() if isinstance(message, str) else ""
+    if status == "done":
+        return "none"
+    if status == "error" and ("rate limit" in normalized or "429" in normalized):
+        return "provider_rate_limit"
+    if status in {"error", "failed"}:
+        return "provider_or_harness_error"
+    if status in {"cancelled", "canceled"}:
+        return "turn_cancelled"
+    return "unexpected_terminal_state"
+
+
 def _runtime_state_gates(
     evidence: Mapping[str, Any],
     *,
@@ -319,6 +349,14 @@ def _safe_blocker(stage: str, error: Exception, commit_sha: str) -> dict[str, An
     if isinstance(error, TrueForgeError):
         reason = str(error)
         details = {"http_status": error.status, "api_path": error.path}
+    elif isinstance(error, _EvidenceGateFailure):
+        reason = str(error)
+        details = {
+            "error_type": type(error).__name__,
+            "failed_gates": list(error.failed_gates),
+            "turn_status": error.turn_status,
+            "terminal_category": error.terminal_category,
+        }
     elif isinstance(error, RuntimeError) and str(error).startswith("failed gates:"):
         reason = str(error)
         details = {"error_type": type(error).__name__}
@@ -398,7 +436,11 @@ def run() -> dict[str, Any]:
             }
             if not all(gates.values()):
                 failed = [name for name, passed in gates.items() if not passed]
-                raise RuntimeError("failed gates: " + ", ".join(failed))
+                raise _EvidenceGateFailure(
+                    failed,
+                    turn_status=turn_status,
+                    terminal_category=_terminal_failure_category(terminal),
+                )
 
             payload = {
                 "schema_version": "asset-autopsy-sc1-evidence/v1",

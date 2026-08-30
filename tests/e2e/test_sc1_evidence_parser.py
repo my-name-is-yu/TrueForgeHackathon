@@ -416,6 +416,7 @@ def test_accepts_complete_one_prompt_evidence_sequence() -> None:
     assert evidence["failures"] == []
     assert evidence["experiment_count"] == 2
     assert evidence["revision_count"] == 2
+    assert evidence["rejected_attempts"] == {"count": 0, "tools": []}
     assert evidence["large_tool_response"] == {
         "offloaded_experiments": 2,
         "all_read_by_sandbox_python": True,
@@ -449,6 +450,64 @@ def test_accepts_complete_one_prompt_evidence_sequence() -> None:
         "verify_revision",
         "publish_revision",
     ]
+
+
+def test_accepts_ordered_schema_rejection_before_corrected_public_call() -> None:
+    events = _successful_events()
+    invalid = _experiment_arguments(
+        "r000",
+        primary="joint_b",
+        primary_attribute="axis",
+        competing="joint_c",
+        competing_attribute="damping",
+    )
+    invalid["hypothesis"]["initial_joint_positions"] = invalid.pop(
+        "initial_joint_positions"
+    )
+    experiment_index = next(
+        index
+        for index, item in enumerate(events)
+        if any(
+            call.get("id") == "experiment-1"
+            for call in item["event"].get("tool_calls", [])
+            if isinstance(call, dict)
+        )
+    )
+    events[experiment_index:experiment_index] = [
+        _model_call("experiment-invalid", "run_experiment", invalid),
+        _tool_response(
+            "experiment-invalid",
+            {
+                "error": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "code": "INVALID_REQUEST",
+                                "message": "The request did not satisfy the public tool contract.",
+                                "validation_errors": [
+                                    {
+                                        "path": "$.initial_joint_positions",
+                                        "type": "missing",
+                                    }
+                                ],
+                            }
+                        ),
+                    }
+                ]
+            },
+        ),
+    ]
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is True
+    assert evidence["rejected_attempts"] == {
+        "count": 1,
+        "tools": ["run_experiment"],
+    }
+    assert evidence["experiment_count"] == 2
+    assert evidence["tool_order"].count("run_experiment") == 2
 
 
 def test_rejects_experiment_without_large_tool_response_offload() -> None:

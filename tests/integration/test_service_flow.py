@@ -183,6 +183,8 @@ def test_full_two_revision_service_flow_qualifies_and_direct_publication_emits_o
     )
     assert root_task.result == "fail"
     assert root_task.behavior_diff is None
+    assert root_task.trace == []
+    assert any(artifact.kind == "trace_json" for artifact in root_task.artifacts)
 
     axis_run = run(
         service.run_experiment(

@@ -56,6 +56,98 @@ TOOL_NAMES = (
     "publish_revision",
 )
 
+_MAX_VALIDATION_ERRORS = 8
+_MAX_VALIDATION_PATH_PARTS = 8
+_MAX_VALIDATION_PATH_LENGTH = 160
+_PUBLIC_INPUT_FIELD_NAMES = frozenset(
+    {
+        "actuator_name",
+        "after",
+        "asset_sha256",
+        "attribute",
+        "attributes",
+        "base_revision_id",
+        "basis_experiment_run_id",
+        "basis_hypothesis_id",
+        "before",
+        "body_name",
+        "canonical_diff",
+        "capture",
+        "capture_final_snapshot",
+        "case_id",
+        "claim",
+        "competing_explanation",
+        "controls",
+        "discriminating_reason",
+        "expected_asset_sha256",
+        "expected_base_sha256",
+        "expected_effect",
+        "expected_old_value",
+        "export_name",
+        "falsifier",
+        "holdout_result",
+        "hypothesis",
+        "initial_joint_positions",
+        "joint_name",
+        "kind",
+        "label",
+        "metric",
+        "n_steps",
+        "name",
+        "new_value",
+        "observables",
+        "op",
+        "passed",
+        "patch",
+        "position_rad",
+        "predicates",
+        "prediction",
+        "promotion_ticket",
+        "public_result",
+        "qualified_core_sha256",
+        "rationale",
+        "revision_id",
+        "scenario_id",
+        "segments",
+        "suspected_elements",
+        "target",
+        "ticket_digest",
+        "ticket_id",
+        "total",
+        "value",
+        "view",
+        "violated_clause_ids",
+    }
+)
+_SAFE_VALIDATION_ERROR_TYPES = frozenset(
+    {
+        "bool_type",
+        "dict_type",
+        "extra_forbidden",
+        "finite_number",
+        "float_parsing",
+        "float_type",
+        "greater_than",
+        "greater_than_equal",
+        "int_parsing",
+        "int_type",
+        "less_than",
+        "less_than_equal",
+        "list_type",
+        "literal_error",
+        "missing",
+        "string_pattern_mismatch",
+        "string_too_long",
+        "string_too_short",
+        "string_type",
+        "too_long",
+        "too_short",
+        "tuple_type",
+        "union_tag_invalid",
+        "union_tag_not_found",
+    }
+)
+
 
 class AssetAutopsyServiceProtocol(Protocol):
     async def open_case(self, request: OpenCaseInput) -> OpenCaseOutput: ...
@@ -185,6 +277,55 @@ def _request_id() -> str:
     return f"req_{uuid.uuid4().hex}"
 
 
+def _safe_validation_path(location: tuple[Any, ...], *, unknown_field: bool) -> str:
+    parts = ["$"]
+    visible = location[:_MAX_VALIDATION_PATH_PARTS]
+    for index, part in enumerate(visible):
+        is_unknown_field = unknown_field and index == len(location) - 1
+        if is_unknown_field and not (
+            isinstance(part, str) and part in _PUBLIC_INPUT_FIELD_NAMES
+        ):
+            parts.append(".<unknown>")
+        elif isinstance(part, str) and part in _PUBLIC_INPUT_FIELD_NAMES:
+            parts.append(f".{part}")
+        elif isinstance(part, int) and not isinstance(part, bool):
+            parts.append(f"[{part}]" if 0 <= part <= 999 else "[*]")
+    if len(location) > _MAX_VALIDATION_PATH_PARTS:
+        parts.append("...")
+    return "".join(parts)[:_MAX_VALIDATION_PATH_LENGTH]
+
+
+def _safe_validation_feedback(error: PydanticValidationError) -> tuple[list[dict[str, str]], bool]:
+    raw_errors = error.errors(
+        include_url=False,
+        include_input=False,
+        include_context=False,
+    )
+    feedback: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_errors:
+        raw_type = item.get("type")
+        error_type = (
+            raw_type
+            if isinstance(raw_type, str) and raw_type in _SAFE_VALIDATION_ERROR_TYPES
+            else "invalid_value"
+        )
+        raw_location = item.get("loc")
+        location = raw_location if isinstance(raw_location, tuple) else ()
+        path = _safe_validation_path(
+            location,
+            unknown_field=error_type == "extra_forbidden",
+        )
+        identity = (path, error_type)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        feedback.append({"path": path, "type": error_type})
+        if len(feedback) == _MAX_VALIDATION_ERRORS:
+            break
+    return feedback, len(raw_errors) > len(feedback)
+
+
 def _safe_error(error: Exception) -> _SanitizedToolError:
     code = getattr(error, "code", None)
     safe_message = getattr(error, "safe_message", None)
@@ -212,6 +353,10 @@ def _safe_error(error: Exception) -> _SanitizedToolError:
         "request_id": request_id,
         "next_action": next_action,
     }
+    if isinstance(error, PydanticValidationError):
+        validation_errors, validation_errors_truncated = _safe_validation_feedback(error)
+        envelope["validation_errors"] = validation_errors
+        envelope["validation_errors_truncated"] = validation_errors_truncated
     return _SanitizedToolError(
         json.dumps(envelope, sort_keys=True, separators=(",", ":"))
     )

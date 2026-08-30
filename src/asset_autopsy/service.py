@@ -373,7 +373,11 @@ class AssetAutopsyService:
                 scenario_id="public_center",
                 result="pass" if evaluation.passed else "fail",
                 observations=list(evaluation.observations),
-                trace=list(evaluation.trace),
+                # The complete fixed-task trace remains content-addressed in the
+                # task artifact. The public response only needs contract metrics
+                # and the parent BehaviorDiff; experiment traces are the values
+                # intentionally offloaded for Sandbox analysis.
+                trace=[],
                 behavior_diff=diff,
             )
 

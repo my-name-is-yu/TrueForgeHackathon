@@ -29,16 +29,16 @@ Follow this mandatory evidence loop in the same turn: open_case; failing run_tas
 
 Before every run_experiment, register a concrete causal claim, suspected elements, a competing explanation, a prediction, and a falsifier. Isolate a suspected joint from neutral positions and choose controls and qpos, qvel, energy, contact_count, or body_position observations that discriminate the explanations. Name joint_a, joint_b, and joint_c exactly once in initial_joint_positions. Name motor_a, motor_b, and motor_c exactly once in every segment, and use at least 256 total steps.
 
-Before choosing each experiment, use only public inspect and task evidence to rank at least two competing causal hypotheses. Choose an input and named observation whose measured outcome can falsify one explanation while supporting the other. Treat authored patterns as hypotheses, not diagnoses, until the trace discriminates them.
+Before choosing each experiment, use only public inspect and task evidence to rank at least two competing causal hypotheses. Choose an input and named observation whose measured outcome can falsify one explanation while supporting the other. Treat authored patterns as hypotheses, not diagnoses, until the trace discriminates them. For scalar dynamics, compare dynamically equivalent joints and use isolated decay responses before changing a repeated parameter. For direction vectors, use body-parent topology and isolated end-effector response planes to compare only kinematically equivalent joints; do not choose by a model-wide majority.
 
-Use this exact run_experiment structure. REVISION_ID, SUSPECTED_JOINT, SUSPECTED_ATTRIBUTE, COMPETING_JOINT, and COMPETING_ATTRIBUTE are metavariables, not literal values: replace every one from the current head, inspect_asset, and your ranking before calling the tool. The first REVISION_ID is r000; after create_revision use that latest child revision. Replace neutral numeric examples with an informative isolated excitation; all-zero controls are useful only for a decay experiment with a nonzero initial displacement.
+Use this exact run_experiment structure. REVISION_ID, SUSPECTED_JOINT, SUSPECTED_ATTRIBUTE, COMPETING_JOINT, and COMPETING_ATTRIBUTE are metavariables, not literal values: replace every one from the current head, inspect_asset, and your ranking before calling the tool. The first REVISION_ID is r000; after create_revision use that latest child revision. Replace neutral numeric examples with an informative isolated excitation; all-zero controls are useful only for a decay experiment with a nonzero initial displacement. The request root contains exactly case_id, revision_id, hypothesis, initial_joint_positions, segments, observables, and capture_final_snapshot. Hypothesis contains exactly claim, suspected_elements, competing_explanation, prediction, and falsifier. Competing_explanation contains exactly claim, suspected_elements, and discriminating_reason. Close competing_explanation before prediction and falsifier, then close hypothesis before initial_joint_positions. Never move root fields under hypothesis or prediction/falsifier under competing_explanation.
 {"case_id":"case_compound-arm-01","revision_id":"REVISION_ID","hypothesis":{"claim":"...","suspected_elements":[{"kind":"joint","name":"SUSPECTED_JOINT","attributes":["SUSPECTED_ATTRIBUTE"]}],"competing_explanation":{"claim":"...","suspected_elements":[{"kind":"joint","name":"COMPETING_JOINT","attributes":["COMPETING_ATTRIBUTE"]}],"discriminating_reason":"..."},"prediction":"...","falsifier":"..."},"initial_joint_positions":[{"joint_name":"joint_a","position_rad":0.0},{"joint_name":"joint_b","position_rad":0.0},{"joint_name":"joint_c","position_rad":0.0}],"segments":[{"label":"isolate","n_steps":512,"controls":[{"actuator_name":"motor_a","value":0.0},{"actuator_name":"motor_b","value":0.0},{"actuator_name":"motor_c","value":0.0}]}],"observables":[{"kind":"qpos"},{"kind":"qvel"},{"kind":"energy"},{"kind":"body_position","body_name":"end_effector"}],"capture_final_snapshot":false}
 
 After every run_experiment response, copy the exact `Result saved to:` path into a TrueForge Sandbox exec command using `python - <<'PY'` and `payload=json.load(open(exact_path))`. Actually analyze that JSON; do not merely mention the path or fabricate a result. The loaded root is the full run_experiment output: assign `rows=payload["trace"]["rows"]`. Each row is shaped as {"time_s": number, "values": {"qpos:joint_name": number, "control:actuator_name": number, ...}}. Build a list from one exact named signal key, optionally applying abs to each selected value. Compute a direct aggregate such as max(signal), mean(signal), or max(signal)-min(signal); do not replace or transform the aggregate afterward. Print one compact JSON object with exactly these keys: {"rows":len(rows),"run_id":payload["run_id"],"metric":f"signal_name={computed_value:.8g}","finding":"your evidence-bounded interpretation","candidate_attribute":"joint_name.attribute"}. The metric string must include the computed numeric aggregate. Never paste the 256 rows back into context. Use the exact hypothesis_id and run_id returned by that experiment in the next create_revision. A revision patch has target {"kind":"joint","name":"..."}, one attribute, expected_old_value, and new_value; expected_effect has scenario_id `public_center` and one or more metric predicates.
 
 For create_revision, copy base_revision_id and expected_base_sha256 from open_case or the preceding revision, and copy basis_hypothesis_id and basis_experiment_run_id from the completed run_experiment. Use patch {"target":{"kind":"joint","name":"..."},"attribute":"...","expected_old_value":...,"new_value":...} and expected_effect {"scenario_id":"public_center","predicates":[{"metric":"hold_error_p95_m","op":"lte","value":0.03}]}. Choose the candidate value from public evidence and the analyzed experiment, not an arbitrary guess; only two revisions are available.
 
-Create one attribute per revision and re-run the public task after each. Continue until two different causes have been repaired in two immutable child revisions and the public BehaviorDiff passes. Only then call verify_revision. If qualification returns 3/3, request publish_revision exactly once with the returned promotion ticket. If a bounded tool call returns INVALID_REQUEST, compare the rejected call field-for-field with the exact shapes above and continue; never stop, use Sandbox to call MCP tools, or offer to continue later. Do not ask the user questions, do not change the controller or tests, and do not use or request XML, host paths, URLs, seeds, timesteps, hidden targets, or hidden traces."""
+Create one attribute per revision and re-run the public task after each. Continue until two different causes have been repaired in two immutable child revisions and the public BehaviorDiff passes. Only then call verify_revision. If qualification returns 3/3, request publish_revision exactly once with the returned promotion ticket. If a bounded tool call returns INVALID_REQUEST, read every returned field path and error type, compare the rejected call with the exact keysets above, and make one corrected retry; do not guess repeatedly. Never stop, use Sandbox to call MCP tools, or offer to continue later. Do not ask the user questions, do not change the controller or tests, and do not use or request XML, host paths, URLs, seeds, timesteps, hidden targets, or hidden traces."""
 
 
 class TrueForgeError(RuntimeError):
@@ -563,6 +563,17 @@ def _response_payload(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return candidates[-1] if candidates else None
 
 
+def _response_error_code(record: Mapping[str, Any]) -> str | None:
+    event = record.get("event")
+    if not isinstance(event, Mapping):
+        return None
+    for candidate in _json_objects(event.get("content")):
+        code = candidate.get("code")
+        if isinstance(code, str):
+            return code
+    return None
+
+
 def _call_arguments(call: Mapping[str, Any]) -> Mapping[str, Any]:
     function = call.get("function")
     if not isinstance(function, Mapping):
@@ -1026,16 +1037,50 @@ def _python_source_reads_json(
 def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
     calls = _call_records(events)
     responses = _response_records(events)
-    public_calls = [record for record in calls if record["name"] in TOOL_NAMES]
-    experiments = [record for record in calls if record["name"] == "run_experiment"]
-    revisions = [record for record in calls if record["name"] == "create_revision"]
-    task_calls = [record for record in calls if record["name"] == "run_task"]
-    verify_calls = [record for record in calls if record["name"] == "verify_revision"]
-    publish_calls = [record for record in calls if record["name"] == "publish_revision"]
+    all_public_calls = [record for record in calls if record["name"] in TOOL_NAMES]
+    public_calls: list[dict[str, Any]] = []
+    rejected_attempts: list[dict[str, Any]] = []
+    for record in all_public_calls:
+        model = _TOOL_INPUT_BY_NAME[record["name"]]
+        try:
+            model.model_validate(_call_arguments(record["call"]))
+            schema_valid = True
+        except ValueError:
+            schema_valid = False
+        response = responses.get(record["id"])
+        if (
+            not schema_valid
+            and response is not None
+            and _response_error_code(response) == "INVALID_REQUEST"
+        ):
+            rejected_attempts.append(record)
+        else:
+            public_calls.append(record)
+    experiments = [record for record in public_calls if record["name"] == "run_experiment"]
+    revisions = [record for record in public_calls if record["name"] == "create_revision"]
+    task_calls = [record for record in public_calls if record["name"] == "run_task"]
+    verify_calls = [record for record in public_calls if record["name"] == "verify_revision"]
+    publish_calls = [record for record in public_calls if record["name"] == "publish_revision"]
     exec_calls = [record for record in calls if record["name"] == "exec"]
 
     failures: list[str] = []
-    for index, record in enumerate(public_calls):
+    for record in rejected_attempts:
+        response = responses[record["id"]]
+        next_public_index = min(
+            (
+                candidate["event_index"]
+                for candidate in all_public_calls
+                if candidate["event_index"] > record["event_index"]
+            ),
+            default=len(events),
+        )
+        if not (
+            record["event_index"] < response["event_index"] < next_public_index
+        ):
+            failures.append(
+                f"rejected {record['name']} attempt lacks an ordered INVALID_REQUEST response"
+            )
+    for record in public_calls:
         model = _TOOL_INPUT_BY_NAME[record["name"]]
         try:
             model.model_validate(_call_arguments(record["call"]))
@@ -1044,10 +1089,13 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         if record["name"] == "publish_revision":
             continue
         response = responses.get(record["id"])
-        next_public_index = (
-            public_calls[index + 1]["event_index"]
-            if index + 1 < len(public_calls)
-            else len(events)
+        next_public_index = min(
+            (
+                candidate["event_index"]
+                for candidate in all_public_calls
+                if candidate["event_index"] > record["event_index"]
+            ),
+            default=len(events),
         )
         if (
             response is None
@@ -1075,7 +1123,7 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         next_public_index = min(
             (
                 record["event_index"]
-                for record in public_calls
+                for record in all_public_calls
                 if record["event_index"] > response["event_index"]
             ),
             default=len(events),
@@ -1269,6 +1317,10 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         "passed": not failures,
         "failures": failures,
         "tool_order": [record["name"] for record in public_calls],
+        "rejected_attempts": {
+            "count": len(rejected_attempts),
+            "tools": [record["name"] for record in rejected_attempts],
+        },
         "experiment_count": len(experiments),
         "revision_count": len(revisions),
         "large_tool_response": {
