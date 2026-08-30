@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -121,3 +122,27 @@ def test_service_rejects_a_tampered_revision_object_with_a_sanitized_integrity_e
     assert caught.value.code == "EVIDENCE_INTEGRITY_FAILED"
     assert "path" not in caught.value.safe_message.lower()
     assert caught.value.retryable is False
+
+
+def test_revision_resolution_preserves_corrupt_row_as_integrity_error(tmp_path) -> None:
+    service = AssetAutopsyService(tmp_path)
+    with sqlite3.connect(tmp_path / "evidence.sqlite") as connection:
+        connection.execute(
+            "UPDATE revisions SET asset_sha256 = 'corrupt' WHERE revision_id = 'r000'"
+        )
+        connection.commit()
+
+    with pytest.raises(DomainError) as caught:
+        service._revision(CASE_ID, "r000", "req_corrupt_revision")
+
+    assert caught.value.code == "EVIDENCE_INTEGRITY_FAILED"
+    assert caught.value.retryable is False
+
+
+def test_revision_resolution_keeps_missing_row_distinct_from_corruption(tmp_path) -> None:
+    service = AssetAutopsyService(tmp_path)
+
+    with pytest.raises(DomainError) as caught:
+        service._revision(CASE_ID, "r999", "req_missing_revision")
+
+    assert caught.value.code == "REVISION_NOT_FOUND"

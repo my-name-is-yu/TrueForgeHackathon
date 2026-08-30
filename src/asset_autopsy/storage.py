@@ -77,6 +77,10 @@ class CaseNotFoundError(StorageError):
     """Raised when a case identity is not present."""
 
 
+class RevisionNotFoundError(StorageError):
+    """Raised when a revision identity is not present."""
+
+
 class CaseAlreadyExistsError(StorageError):
     """Raised when pre-provisioning would replace an existing case."""
 
@@ -166,6 +170,31 @@ class LedgerEventRecord:
     artifact_refs: Sequence[Mapping[str, Any]] = ()
     request_id: str | None = None
     created_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ArtifactReferenceSnapshot:
+    sha256: str
+    size: int
+    canonical_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedLedgerEvent:
+    event_id: str
+    case_id: str
+    revision_id: str | None
+    event_type: str
+    payload_json: str
+    artifact_refs: tuple[_ArtifactReferenceSnapshot, ...]
+    artifact_refs_json: str
+    request_id: str | None
+    created_at: str | None
+
+    def payload(self) -> dict[str, Any]:
+        value = json.loads(self.payload_json)
+        assert isinstance(value, dict)
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -662,20 +691,18 @@ class EvidenceStore:
     def _event_matches_record(
         cls,
         row: sqlite3.Row,
-        event: LedgerEventRecord,
+        event: _PreparedLedgerEvent,
     ) -> bool:
-        request_id, payload_json, artifact_refs_json = cls._validate_event_record(event)
-        if event.request_id is None:
-            request_id = row["request_id"]
-        created_at = row["created_at"] if event.created_at is None else _timestamp(event.created_at)
+        request_id = event.request_id or row["request_id"]
+        created_at = event.created_at or row["created_at"]
         without_hash = {
             "event_id": event.event_id,
             "request_id": request_id,
             "case_id": event.case_id,
             "revision_id": event.revision_id,
             "event_type": event.event_type,
-            "payload_json": payload_json,
-            "artifact_refs_json": artifact_refs_json,
+            "payload_json": event.payload_json,
+            "artifact_refs_json": event.artifact_refs_json,
             "created_at": created_at,
         }
         try:
@@ -714,8 +741,8 @@ class EvidenceStore:
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise ValidationError("artifact reference size must be nonnegative")
 
-    @staticmethod
-    def _validate_event_record(event: LedgerEventRecord) -> tuple[str, str, str]:
+    @classmethod
+    def _prepare_event_record(cls, event: LedgerEventRecord) -> _PreparedLedgerEvent:
         _id(event.event_id, "event_id")
         _id(event.case_id, "case_id")
         if event.revision_id is not None:
@@ -727,32 +754,59 @@ class EvidenceStore:
             event.artifact_refs, (str, bytes)
         ):
             raise ValidationError("artifact_refs must be a sequence")
-        if any(not isinstance(reference, Mapping) for reference in event.artifact_refs):
-            raise ValidationError("artifact_refs must contain objects")
-        for reference in event.artifact_refs:
-            EvidenceStore._validate_artifact_reference(reference)
         payload_json = _json_text(dict(event.payload))
-        artifact_refs_json = _json_text(list(event.artifact_refs))
-        request_id = event.request_id or _new_id("req")
-        _id(request_id, "request_id")
-        return request_id, payload_json, artifact_refs_json
+        snapshots: list[_ArtifactReferenceSnapshot] = []
+        for reference in tuple(event.artifact_refs):
+            if not isinstance(reference, Mapping):
+                raise ValidationError("artifact_refs must contain objects")
+            reference_json = _json_text(dict(reference))
+            normalized = json.loads(reference_json)
+            assert isinstance(normalized, dict)
+            cls._validate_artifact_reference(normalized)
+            snapshots.append(
+                _ArtifactReferenceSnapshot(
+                    sha256=normalized["sha256"],
+                    size=normalized["size"],
+                    canonical_json=reference_json,
+                )
+            )
+        request_id = event.request_id
+        if request_id is not None:
+            _id(request_id, "request_id")
+        created_at = (
+            _timestamp(event.created_at) if event.created_at is not None else None
+        )
+        artifact_refs = tuple(snapshots)
+        return _PreparedLedgerEvent(
+            event_id=event.event_id,
+            case_id=event.case_id,
+            revision_id=event.revision_id,
+            event_type=event.event_type,
+            payload_json=payload_json,
+            artifact_refs=artifact_refs,
+            artifact_refs_json=(
+                "[" + ",".join(reference.canonical_json for reference in artifact_refs) + "]"
+            ),
+            request_id=request_id,
+            created_at=created_at,
+        )
 
     def _validate_artifact_objects(
-        self, artifact_refs: Sequence[Mapping[str, Any]]
+        self, artifact_refs: Sequence[_ArtifactReferenceSnapshot]
     ) -> None:
         for reference in artifact_refs:
-            data = self.objects.read_bytes(reference["sha256"])
-            if len(data) != reference["size"]:
+            data = self.objects.read_bytes(reference.sha256)
+            if len(data) != reference.size:
                 raise ObjectIntegrityError("object size does not match artifact reference")
 
     @classmethod
     def _append_event(
         cls,
         connection: sqlite3.Connection,
-        event: LedgerEventRecord,
+        event: _PreparedLedgerEvent,
     ) -> LedgerEvent:
-        request_id, payload_json, artifact_refs_json = cls._validate_event_record(event)
-        created_at = _timestamp(event.created_at)
+        request_id = event.request_id or _new_id("req")
+        created_at = event.created_at or _timestamp(None)
         previous = connection.execute(
             "SELECT event_hash FROM ledger_events ORDER BY seq DESC LIMIT 1"
         ).fetchone()
@@ -764,8 +818,8 @@ class EvidenceStore:
             "case_id": event.case_id,
             "revision_id": event.revision_id,
             "event_type": event.event_type,
-            "payload_json": payload_json,
-            "artifact_refs_json": artifact_refs_json,
+            "payload_json": event.payload_json,
+            "artifact_refs_json": event.artifact_refs_json,
             "created_at": created_at,
         }
         event_hash = hashlib.sha256(
@@ -785,8 +839,8 @@ class EvidenceStore:
                     event.case_id,
                     event.revision_id,
                     event.event_type,
-                    payload_json,
-                    artifact_refs_json,
+                    event.payload_json,
+                    event.artifact_refs_json,
                     prev_hash,
                     event_hash,
                     created_at,
@@ -799,6 +853,12 @@ class EvidenceStore:
         ).fetchone()
         assert row is not None
         return cls._event_from_row(row)
+
+    @classmethod
+    def _append_event_record(
+        cls, connection: sqlite3.Connection, event: LedgerEventRecord
+    ) -> LedgerEvent:
+        return cls._append_event(connection, cls._prepare_event_record(event))
 
     def create_preprovisioned_case(
         self,
@@ -863,7 +923,7 @@ class EvidenceStore:
                     """,
                     (case_id, root_revision_id, source_asset_sha256, timestamp),
                 )
-                self._append_event(
+                self._append_event_record(
                     connection,
                     LedgerEventRecord(
                         event_id=_new_id("evt"),
@@ -1009,7 +1069,7 @@ class EvidenceStore:
                 (case_id, revision_id),
             ).fetchone()
             if row is None:
-                raise StorageError("revision was not found")
+                raise RevisionNotFoundError("revision was not found")
             self._validate_case_lifecycle_from_connection(connection, case_id)
             return self._revision_from_row(row)
 
@@ -1032,23 +1092,23 @@ class EvidenceStore:
             return self._validated_run_from_row(row)
 
     def append_event(self, event: LedgerEventRecord) -> LedgerEvent:
-        self._validate_event_record(event)
-        self._validate_generic_event_type(event.event_type)
+        prepared = self._prepare_event_record(event)
+        self._validate_generic_event_type(prepared.event_type)
         with self._transaction() as connection:
             if connection.execute(
-                "SELECT 1 FROM cases WHERE case_id = ?", (event.case_id,)
+                "SELECT 1 FROM cases WHERE case_id = ?", (prepared.case_id,)
             ).fetchone() is None:
                 raise CaseNotFoundError("case was not found")
-            self._validate_case_lifecycle_from_connection(connection, event.case_id)
-            if event.revision_id is not None and connection.execute(
+            self._validate_case_lifecycle_from_connection(connection, prepared.case_id)
+            if prepared.revision_id is not None and connection.execute(
                 """
                 SELECT 1 FROM revisions WHERE case_id = ? AND revision_id = ?
                 """,
-                (event.case_id, event.revision_id),
+                (prepared.case_id, prepared.revision_id),
             ).fetchone() is None:
-                raise StorageError("revision was not found")
-            self._validate_artifact_objects(event.artifact_refs)
-            return self._append_event(connection, event)
+                raise RevisionNotFoundError("revision was not found")
+            self._validate_artifact_objects(prepared.artifact_refs)
+            return self._append_event(connection, prepared)
 
     append_ledger_event = append_event
 
@@ -1114,17 +1174,21 @@ class EvidenceStore:
         expected_head_revision_id: str,
     ) -> RevisionRecord:
         created_at = self._validate_revision(revision)
-        self._validate_event_record(event)
+        prepared_event = self._prepare_event_record(event)
         if revision.parent_revision_id is None:
             raise ValidationError("commit_revision_with_event requires a child revision")
-        if event.case_id != revision.case_id or event.revision_id != revision.revision_id:
+        if (
+            prepared_event.case_id != revision.case_id
+            or prepared_event.revision_id != revision.revision_id
+        ):
             raise ValidationError("revision and event identities do not match")
-        if event.event_type != "REVISION_CREATED":
+        if prepared_event.event_type != "REVISION_CREATED":
             raise ValidationError("revision transaction requires REVISION_CREATED")
         required_payload = self._revision_event_payload(revision)
-        if not self._payload_contains(event.payload, required_payload):
+        event_payload = prepared_event.payload()
+        if not self._payload_contains(event_payload, required_payload):
             raise ValidationError("revision event does not bind the revision")
-        if not isinstance(event.payload.get("probe_run"), Mapping):
+        if not isinstance(event_payload.get("probe_run"), Mapping):
             raise ValidationError("revision event does not bind the probe run")
         _id(expected_head_revision_id, "expected_head_revision_id")
         with self._transaction() as connection:
@@ -1134,7 +1198,7 @@ class EvidenceStore:
             if case is None:
                 raise CaseNotFoundError("case was not found")
             self._validate_case_lifecycle_from_connection(connection, revision.case_id)
-            self._validate_artifact_objects(event.artifact_refs)
+            self._validate_artifact_objects(prepared_event.artifact_refs)
             existing = connection.execute(
                 """
                 SELECT * FROM revisions
@@ -1144,7 +1208,8 @@ class EvidenceStore:
             ).fetchone()
             if existing is not None:
                 event_row = connection.execute(
-                    "SELECT * FROM ledger_events WHERE event_id = ?", (event.event_id,)
+                    "SELECT * FROM ledger_events WHERE event_id = ?",
+                    (prepared_event.event_id,),
                 ).fetchone()
                 if (
                     event_row is not None
@@ -1152,7 +1217,7 @@ class EvidenceStore:
                     and event_row["revision_id"] == revision.revision_id
                     and self._revision_matches(existing, revision)
                 ):
-                    if self._event_matches_record(event_row, event):
+                    if self._event_matches_record(event_row, prepared_event):
                         return self._revision_from_row(existing)
                     raise IntegrityError("revision retry event does not match")
                 raise RevisionConflictError("revision identity already exists")
@@ -1196,7 +1261,7 @@ class EvidenceStore:
             ):
                 raise RevisionConflictError("probe citation is invalid")
             if not self._payload_contains(
-                event.payload,
+                event_payload,
                 {"probe_run": self._run_event_payload(probe_record)},
             ):
                 raise ValidationError("revision event does not bind the probe run")
@@ -1221,7 +1286,7 @@ class EvidenceStore:
                         created_at,
                     ),
                 )
-                self._append_event(connection, event)
+                self._append_event(connection, prepared_event)
                 connection.execute(
                     "UPDATE cases SET head_revision_id = ? WHERE case_id = ?",
                     (revision.revision_id, revision.case_id),
@@ -1246,12 +1311,12 @@ class EvidenceStore:
             ("case_id", run.case_id),
             ("revision_id", run.revision_id),
             ("run_kind", run.run_kind),
-            ("condition_hash", run.condition_hash),
-            ("execution_fingerprint", run.execution_fingerprint),
         ):
             _id(value, field)
         if run.probe_kind is not None:
             _id(run.probe_kind, "probe_kind")
+        _sha256(run.condition_hash, "condition_hash")
+        _sha256(run.execution_fingerprint, "execution_fingerprint")
         _optional_sha256(run.trace_sha256, "trace_sha256")
         _optional_sha256(run.metrics_sha256, "metrics_sha256")
         if not isinstance(run.passed, bool):
@@ -1265,15 +1330,19 @@ class EvidenceStore:
         event: LedgerEventRecord | None = None,
     ) -> RunRecord:
         created_at = self._validate_run(run)
+        prepared_event = None
         if event is not None:
-            self._validate_event_record(event)
-            if event.case_id != run.case_id or event.revision_id != run.revision_id:
+            prepared_event = self._prepare_event_record(event)
+            if (
+                prepared_event.case_id != run.case_id
+                or prepared_event.revision_id != run.revision_id
+            ):
                 raise ValidationError("run and event identities do not match")
-            self._validate_generic_event_type(event.event_type)
+            self._validate_generic_event_type(prepared_event.event_type)
         with self._transaction() as connection:
             self._validate_case_lifecycle_from_connection(connection, run.case_id)
-            if event is not None:
-                self._validate_artifact_objects(event.artifact_refs)
+            if prepared_event is not None:
+                self._validate_artifact_objects(prepared_event.artifact_refs)
             if connection.execute(
                 "SELECT 1 FROM runs WHERE run_id = ?", (run.run_id,)
             ).fetchone() is not None:
@@ -1308,8 +1377,8 @@ class EvidenceStore:
                         created_at,
                     ),
                 )
-                if event is not None:
-                    self._append_event(connection, event)
+                if prepared_event is not None:
+                    self._append_event(connection, prepared_event)
             except sqlite3.IntegrityError as exc:
                 raise StorageError("run transaction conflicted") from exc
             row = connection.execute("SELECT * FROM runs WHERE run_id = ?", (run.run_id,)).fetchone()
@@ -1788,7 +1857,7 @@ class EvidenceStore:
                     """,
                     (revision_id, attempt_id, case_id),
                 )
-                self._append_event(
+                self._append_event_record(
                     connection,
                     LedgerEventRecord(
                         event_id=_new_id("evt"),
@@ -1851,7 +1920,7 @@ class EvidenceStore:
                 "UPDATE cases SET qualification_result = 'RECOVERING' WHERE case_id = ?",
                 (case_id,),
             )
-            self._append_event(
+            self._append_event_record(
                 connection,
                 LedgerEventRecord(
                     event_id=_new_id("evt"),
@@ -1917,7 +1986,7 @@ class EvidenceStore:
                 "UPDATE cases SET qualification_result = 'RUNNING' WHERE case_id = ?",
                 (case_id,),
             )
-            self._append_event(
+            self._append_event_record(
                 connection,
                 LedgerEventRecord(
                     event_id=_new_id("evt"),
@@ -2055,7 +2124,7 @@ class EvidenceStore:
                 "UPDATE cases SET qualification_result = ? WHERE case_id = ?",
                 (state, case_id),
             )
-            self._append_event(
+            self._append_event_record(
                 connection,
                 LedgerEventRecord(
                     event_id=_new_id("evt"),
@@ -2177,7 +2246,7 @@ class EvidenceStore:
                 "UPDATE cases SET promoted_revision_id = ? WHERE case_id = ?",
                 (revision_id, case_id),
             )
-            self._append_event(
+            self._append_event_record(
                 connection,
                 LedgerEventRecord(
                     event_id=_new_id("evt"),
