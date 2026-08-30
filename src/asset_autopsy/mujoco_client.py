@@ -25,6 +25,7 @@ MAX_STEPS = 100_000
 MAX_XML_BYTES = 2_000_000
 MAX_RENDER_DIMENSION = 4096
 MAX_RENDER_BYTES = 64 * 1024 * 1024
+MAX_TRACE_SCALARS = 2_000_000
 
 UPSTREAM_UNAVAILABLE = "UPSTREAM_UNAVAILABLE"
 UPSTREAM_BAD_RESPONSE = "UPSTREAM_BAD_RESPONSE"
@@ -203,7 +204,7 @@ class SimulationSlot:
     _name: str
     summary: dict[str, Any]
     state: SlotState = SlotState.READY
-    _xml_string: str = field(default="", repr=False)
+    _session_token: object | None = field(default=None, repr=False)
 
     @property
     def poisoned(self) -> bool:
@@ -406,6 +407,7 @@ def _matches_run(
         or type(final_state["energy"]) is not list
         or len(final_state["energy"]) != 2
         or type(final_state["n_contacts"]) is not int
+        or final_state["n_contacts"] < 0
         or not _numeric_tree(final_state["energy"])
     ):
         return False
@@ -419,7 +421,10 @@ def _matches_run(
         and _strict_float(row["t"])
         and _strict_float(row["E_pot"])
         and _strict_float(row["E_kin"])
-        and ("ncon" not in row or type(row["ncon"]) is int)
+        and (
+            "ncon" not in row
+            or (type(row["ncon"]) is int and row["ncon"] >= 0)
+        )
         and _numeric_vector(row["qpos"], qpos_width)
         and _numeric_vector(row["qvel"], qvel_width)
         for row in timeseries
@@ -433,16 +438,16 @@ def _matches_run(
     return bool(
         timestamps
         and math.isclose(
-            timestamps[0], sim_start, rel_tol=1e-6, abs_tol=interval_tolerance
+            timestamps[0], sim_start, rel_tol=0.0, abs_tol=interval_tolerance
         )
         and math.isclose(
-            timestamps[-1], sim_end, rel_tol=1e-6, abs_tol=interval_tolerance
+            timestamps[-1], sim_end, rel_tol=0.0, abs_tol=interval_tolerance
         )
         and all(
             math.isclose(
                 current - previous,
                 timestep,
-                rel_tol=1e-6,
+                rel_tol=0.0,
                 abs_tol=interval_tolerance,
             )
             for previous, current in zip(timestamps, timestamps[1:])
@@ -514,100 +519,131 @@ class PinnedMujocoClient:
         self._session_factory = session_factory
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
+        self._session_token: object | None = None
         self._slots: list[SimulationSlot] = []
         self._generation = 0
-        self._shutdown_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
+        self._context_owners = 0
 
     @property
     def ready(self) -> bool:
         return self._session is not None and self._stack is not None
 
     async def __aenter__(self) -> PinnedMujocoClient:
-        if self.ready:
-            return self
-        verify_pinned_upstream()
-        stack = AsyncExitStack()
-        try:
-            read, write = await asyncio.wait_for(
-                stack.enter_async_context(
-                    self._transport_factory(server_parameters(no_render=self.no_render))
-                ),
-                timeout=self.startup_timeout,
-            )
-            session = await asyncio.wait_for(
-                stack.enter_async_context(self._session_factory(read, write)),
-                timeout=self.startup_timeout,
-            )
-            await asyncio.wait_for(session.initialize(), timeout=self.startup_timeout)
-            tools = await asyncio.wait_for(session.list_tools(), timeout=self.startup_timeout)
+        async with self._lifecycle_lock:
+            if self.ready:
+                self._context_owners += 1
+                return self
+            verify_pinned_upstream()
+            stack = AsyncExitStack()
             try:
-                actual = {tool.name: tool.inputSchema for tool in tools.tools}
-            except Exception:
-                raise UpstreamToolError(
-                    UPSTREAM_SCHEMA_DRIFT,
-                    SAFE_SCHEMA_MESSAGE,
-                    False,
-                    "Install the pinned upstream dependency.",
-                ) from None
-            if any(actual.get(name) != REQUIRED_TOOL_SCHEMAS[name] for name in REQUIRED_TOOL_NAMES):
-                raise UpstreamToolError(
-                    UPSTREAM_SCHEMA_DRIFT,
-                    SAFE_SCHEMA_MESSAGE,
-                    False,
-                    "Install the pinned upstream dependency.",
+                read, write = await asyncio.wait_for(
+                    stack.enter_async_context(
+                        self._transport_factory(server_parameters(no_render=self.no_render))
+                    ),
+                    timeout=self.startup_timeout,
                 )
-        except UpstreamToolError:
+                session = await asyncio.wait_for(
+                    stack.enter_async_context(self._session_factory(read, write)),
+                    timeout=self.startup_timeout,
+                )
+                await asyncio.wait_for(session.initialize(), timeout=self.startup_timeout)
+                tools = await asyncio.wait_for(session.list_tools(), timeout=self.startup_timeout)
+                try:
+                    actual = {tool.name: tool.inputSchema for tool in tools.tools}
+                except Exception:
+                    raise UpstreamToolError(
+                        UPSTREAM_SCHEMA_DRIFT,
+                        SAFE_SCHEMA_MESSAGE,
+                        False,
+                        "Install the pinned upstream dependency.",
+                    ) from None
+                if any(actual.get(name) != REQUIRED_TOOL_SCHEMAS[name] for name in REQUIRED_TOOL_NAMES):
+                    raise UpstreamToolError(
+                        UPSTREAM_SCHEMA_DRIFT,
+                        SAFE_SCHEMA_MESSAGE,
+                        False,
+                        "Install the pinned upstream dependency.",
+                    )
+            except asyncio.CancelledError:
+                await _close_stack(stack)
+                raise
+            except UpstreamToolError:
+                await _close_stack(stack)
+                raise
+            except (TimeoutError, asyncio.TimeoutError):
+                await _close_stack(stack)
+                raise UpstreamToolError(
+                    UPSTREAM_TIMEOUT,
+                    SAFE_TIMEOUT_MESSAGE,
+                    True,
+                    SAFE_NEXT_ACTION,
+                ) from None
+            except Exception:
+                await _close_stack(stack)
+                raise UpstreamToolError(
+                    UPSTREAM_UNAVAILABLE,
+                    SAFE_MESSAGE,
+                    True,
+                    SAFE_NEXT_ACTION,
+                ) from None
+            self._stack = stack
+            self._session = session
+            self._session_token = object()
+            self._context_owners = 1
+            return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        async with self._lifecycle_lock:
+            if self._context_owners == 0:
+                return
+            self._context_owners -= 1
+            if self._context_owners == 0:
+                await self._shutdown_child_locked(poison=False)
+
+    async def _shutdown_child(self, *, poison: bool = True) -> None:
+        async with self._lifecycle_lock:
+            self._context_owners = 0
+            await self._shutdown_child_locked(poison=poison)
+
+    async def _shutdown_child_locked(self, *, poison: bool) -> None:
+        stack, self._stack = self._stack, None
+        self._session = None
+        self._session_token = None
+        slots, self._slots = self._slots, []
+        for slot in slots:
+            if poison and slot.state is not SlotState.CLOSED:
+                slot.state = SlotState.POISONED
+            elif not poison and slot.state is SlotState.READY:
+                slot.state = SlotState.CLOSED
+        if stack is not None:
             await _close_stack(stack)
-            raise
-        except (TimeoutError, asyncio.TimeoutError):
-            await _close_stack(stack)
-            raise UpstreamToolError(
-                UPSTREAM_TIMEOUT,
-                SAFE_TIMEOUT_MESSAGE,
-                True,
-                SAFE_NEXT_ACTION,
-            ) from None
-        except Exception:
-            await _close_stack(stack)
+
+    def _new_slot(self, xml_string: str) -> SimulationSlot:
+        if self._session_token is None:
             raise UpstreamToolError(
                 UPSTREAM_UNAVAILABLE,
                 SAFE_MESSAGE,
                 True,
                 SAFE_NEXT_ACTION,
-            ) from None
-        self._stack = stack
-        self._session = session
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        await self._shutdown_child(poison=False)
-
-    async def _shutdown_child(self, *, poison: bool = True) -> None:
-        async with self._shutdown_lock:
-            stack, self._stack = self._stack, None
-            self._session = None
-            for slot in self._slots:
-                if poison and slot.state is not SlotState.CLOSED:
-                    slot.state = SlotState.POISONED
-                elif not poison and slot.state is SlotState.READY:
-                    slot.state = SlotState.CLOSED
-            if stack is not None:
-                await _close_stack(stack)
-
-    def _new_slot(self, xml_string: str) -> SimulationSlot:
+            )
         self._generation += 1
         digest = hashlib.sha256(xml_string.encode("utf-8")).hexdigest()[:16]
         slot = SimulationSlot(
             _name=f"aa_{digest}_{self._generation:04d}",
             summary={},
             state=SlotState.PENDING,
-            _xml_string=xml_string,
+            _session_token=self._session_token,
         )
         self._slots.append(slot)
         return slot
 
     def _require_ready_slot(self, slot: SimulationSlot) -> None:
-        if slot.state is not SlotState.READY:
+        if (
+            slot.state is not SlotState.READY
+            or self._session_token is None
+            or slot._session_token is not self._session_token
+        ):
             raise UpstreamToolError(
                 SLOT_POISONED,
                 SAFE_MESSAGE,
@@ -735,6 +771,12 @@ class PinnedMujocoClient:
     ) -> dict[str, Any]:
         if type(n_steps) is not int or not 1 <= n_steps <= MAX_STEPS:
             raise ValueError(f"n_steps must be between 1 and {MAX_STEPS}")
+        self._require_ready_slot(slot)
+        projected_scalars = n_steps * (
+            slot.summary["nq"] + slot.summary["nv"] + 4
+        )
+        if projected_scalars > MAX_TRACE_SCALARS:
+            raise ValueError("requested trace exceeds the bounded numeric record budget")
         result = await self._invoke(
             slot,
             "run_and_analyze",

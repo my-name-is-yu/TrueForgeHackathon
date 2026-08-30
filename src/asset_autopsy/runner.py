@@ -162,13 +162,20 @@ class DeterministicRunner:
         self.client = client or PinnedMujocoClient()
 
     async def run(self, configuration: RunConfiguration) -> RunRecord:
-        if self.client.ready:
-            return await self._run(configuration)
         async with self.client:
             return await self._run(configuration)
 
     async def _run(self, configuration: RunConfiguration) -> RunRecord:
         slot = await self.client.load(configuration.xml_string)
+        if configuration.initial_qpos and len(configuration.initial_qpos) != slot.summary["nq"]:
+            raise ValueError("initial qpos width does not match the loaded model")
+        if configuration.initial_qvel and len(configuration.initial_qvel) != slot.summary["nv"]:
+            raise ValueError("initial qvel width does not match the loaded model")
+        if (
+            configuration.initial_ctrl is not None
+            and len(configuration.initial_ctrl) != slot.summary["nu"]
+        ):
+            raise ValueError("initial ctrl width does not match the loaded model")
         await self.client.reset(slot)
         await self.client.set_state(
             slot,
@@ -203,7 +210,7 @@ class DeterministicRunner:
             if not math.isclose(
                 rows[0]["t"],
                 expected_start,
-                rel_tol=1e-6,
+                rel_tol=0.0,
                 abs_tol=interval_tolerance,
             ):
                 raise ValueError("runner received discontinuous segment timestamps")
