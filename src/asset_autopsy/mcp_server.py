@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
@@ -147,9 +148,30 @@ _SAFE_VALIDATION_ERROR_TYPES = frozenset(
         "union_tag_not_found",
     }
 )
+_SAFE_STARTUP_ERROR_CODES = frozenset(
+    {
+        "MCP_FIXTURE_SMOKE_FAILED",
+        "MCP_STARTUP_PREFLIGHT_FAILED",
+        "UPSTREAM_BAD_RESPONSE",
+        "UPSTREAM_SCHEMA_DRIFT",
+        "UPSTREAM_TIMEOUT",
+        "UPSTREAM_UNAVAILABLE",
+    }
+)
+
+
+class _StartupRunnerProtocol(Protocol):
+    async def validate(self, xml_string: str) -> bool: ...
+
+
+class _StartupFixtureProtocol(Protocol):
+    asset_xml: bytes
 
 
 class AssetAutopsyServiceProtocol(Protocol):
+    runner: _StartupRunnerProtocol
+    fixture: _StartupFixtureProtocol
+
     async def open_case(self, request: OpenCaseInput) -> OpenCaseOutput: ...
 
     async def inspect_asset(self, request: InspectAssetInput) -> InspectAssetOutput: ...
@@ -184,24 +206,54 @@ class _SanitizedFastMCP(FastMCP):
             raise _safe_error(error) from None
 
 
+def _http_header_bytes(value: str, *, name: str) -> bytes:
+    if not isinstance(value, str):
+        raise ValueError(f"SC1 MCP {name} must be a safe Latin-1 HTTP header value")
+    try:
+        encoded = value.encode("latin-1")
+    except UnicodeEncodeError:
+        raise ValueError(
+            f"SC1 MCP {name} must be a safe Latin-1 HTTP header value"
+        ) from None
+    if any(byte < 0x20 or 0x7F <= byte <= 0x9F for byte in encoded):
+        raise ValueError(f"SC1 MCP {name} must be a safe Latin-1 HTTP header value")
+    return encoded
+
+
 @dataclass(frozen=True)
 class MCPRuntimeConfig:
     bearer_token: str = field(repr=False)
     allowed_origin: str
     host: str = "127.0.0.1"
     port: int = 8712
+    _authorization_header: bytes = field(init=False, repr=False)
+    _origin_header: bytes = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.host != "127.0.0.1":
             raise ValueError("SC1 MCP must bind to 127.0.0.1")
-        if not 1 <= self.port <= 65535:
+        if type(self.port) is not int or not 1 <= self.port <= 65535:
             raise ValueError("SC1 MCP port is invalid")
-        if len(self.bearer_token) < 16 or any(character.isspace() for character in self.bearer_token):
-            raise ValueError("SC1 MCP bearer must be a non-whitespace secret of at least 16 characters")
-        if not self.allowed_origin.startswith(("http://localhost:", "http://127.0.0.1:")):
+        if (
+            not isinstance(self.bearer_token, str)
+            or len(self.bearer_token) < 16
+            or any(character.isspace() for character in self.bearer_token)
+        ):
+            raise ValueError(
+                "SC1 MCP bearer must be a non-whitespace secret of at least 16 characters"
+            )
+        authorization_header = _http_header_bytes(
+            f"Bearer {self.bearer_token}", name="bearer"
+        )
+        origin_header = _http_header_bytes(self.allowed_origin, name="Origin")
+        if not self.allowed_origin.startswith(
+            ("http://localhost:", "http://127.0.0.1:")
+        ):
             raise ValueError("SC1 MCP Origin must be a loopback HTTP origin")
         if "/" in self.allowed_origin.removeprefix("http://"):
             raise ValueError("SC1 MCP Origin must not include a path")
+        object.__setattr__(self, "_authorization_header", authorization_header)
+        object.__setattr__(self, "_origin_header", origin_header)
 
     @classmethod
     def from_environment(cls) -> MCPRuntimeConfig:
@@ -228,10 +280,10 @@ class InvocationRecorder:
 
 
 class _AuthOriginMiddleware:
-    def __init__(self, app: Any, *, bearer_token: str, allowed_origin: str) -> None:
+    def __init__(self, app: Any, *, config: MCPRuntimeConfig) -> None:
         self._app = app
-        self._bearer = f"Bearer {bearer_token}".encode("latin-1")
-        self._origin = allowed_origin.encode("latin-1")
+        self._bearer = config._authorization_header
+        self._origin = config._origin_header
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") != "http" or scope.get("path") != "/mcp":
@@ -271,6 +323,34 @@ class MCPFacade:
     app: Any
     recorder: InvocationRecorder
     config: MCPRuntimeConfig
+
+
+class MCPStartupError(RuntimeError):
+    __slots__ = ("code",)
+
+    def __init__(self, code: str) -> None:
+        safe_code = (
+            code
+            if isinstance(code, str) and code in _SAFE_STARTUP_ERROR_CODES
+            else "MCP_STARTUP_PREFLIGHT_FAILED"
+        )
+        self.code = safe_code
+        super().__init__(f"{self.code}: SC1 MCP startup preflight failed safely.")
+
+
+async def preflight_mcp_startup(service: AssetAutopsyServiceProtocol) -> None:
+    try:
+        fixture_source = service.fixture.asset_xml
+        if not isinstance(fixture_source, bytes):
+            raise TypeError("fixture source must be bytes")
+        fixture_xml = fixture_source.decode("utf-8")
+        ready = await service.runner.validate(fixture_xml)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        raise MCPStartupError(getattr(error, "code", "")) from None
+    if ready is not True:
+        raise MCPStartupError("MCP_FIXTURE_SMOKE_FAILED")
 
 
 def _request_id() -> str:
@@ -385,12 +465,13 @@ def _enforce_strict_tool_arguments(mcp: FastMCP) -> None:
         tool.parameters = public_model.model_json_schema(by_alias=True)
 
 
-def create_mcp_facade(
+async def create_mcp_facade(
     service: AssetAutopsyServiceProtocol,
     config: MCPRuntimeConfig,
     *,
     recorder: InvocationRecorder | None = None,
 ) -> MCPFacade:
+    await preflight_mcp_startup(service)
     provision = getattr(service, "provision_demo_case", None)
     if callable(provision):
         provision()
@@ -585,8 +666,7 @@ def create_mcp_facade(
     _enforce_strict_tool_arguments(mcp)
     app = _AuthOriginMiddleware(
         mcp.streamable_http_app(),
-        bearer_token=config.bearer_token,
-        allowed_origin=config.allowed_origin,
+        config=config,
     )
     return MCPFacade(mcp=mcp, app=app, recorder=calls, config=config)
 
@@ -594,7 +674,7 @@ def create_mcp_facade(
 def serve(service: AssetAutopsyServiceProtocol, config: MCPRuntimeConfig) -> None:
     import uvicorn
 
-    facade = create_mcp_facade(service, config)
+    facade = asyncio.run(create_mcp_facade(service, config))
     uvicorn.run(facade.app, host=config.host, port=config.port, log_level="warning")
 
 
@@ -603,7 +683,9 @@ __all__ = [
     "InvocationRecorder",
     "MCPFacade",
     "MCPRuntimeConfig",
+    "MCPStartupError",
     "TOOL_NAMES",
     "create_mcp_facade",
+    "preflight_mcp_startup",
     "serve",
 ]

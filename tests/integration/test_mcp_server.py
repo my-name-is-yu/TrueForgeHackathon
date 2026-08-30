@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -9,14 +10,32 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from asset_autopsy.mcp_server import (
     MCPRuntimeConfig,
+    MCPStartupError,
     TOOL_NAMES,
     create_mcp_facade,
+    serve,
 )
+from asset_autopsy.mujoco_client import UpstreamToolError
+
+
+class FakeRunner:
+    def __init__(self) -> None:
+        self.result = True
+        self.error: Exception | None = None
+        self.validated: list[str] = []
+
+    async def validate(self, xml_string: str) -> bool:
+        self.validated.append(xml_string)
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 class FakeService:
     def __init__(self) -> None:
         self.provisioned = 0
+        self.fixture = SimpleNamespace(asset_xml=b'<mujoco model="startup-smoke"/>')
+        self.runner = FakeRunner()
 
     def provision_demo_case(self) -> None:
         self.provisioned += 1
@@ -42,12 +61,14 @@ class RawToolErrorService(FakeService):
 
 def make_facade() -> tuple[FakeService, Any]:
     service = FakeService()
-    facade = create_mcp_facade(
-        service,
-        MCPRuntimeConfig(
-            bearer_token="test-bearer-token-value",
-            allowed_origin="http://localhost:8790",
-        ),
+    facade = asyncio.run(
+        create_mcp_facade(
+            service,
+            MCPRuntimeConfig(
+                bearer_token="test-bearer-token-value",
+                allowed_origin="http://localhost:8790",
+            ),
+        )
     )
     return service, facade
 
@@ -68,6 +89,141 @@ def test_runtime_config_is_loopback_and_secret_safe() -> None:
             bearer_token="short",
             allowed_origin="http://localhost:8790",
         )
+
+
+@pytest.mark.parametrize(
+    ("bearer", "origin"),
+    (
+        ("abcdefghijklmnop€", "http://localhost:8790"),
+        ("abcdefghijklmnop\x00", "http://localhost:8790"),
+        ("abcdefghijklmnop\n", "http://localhost:8790"),
+        ("test-bearer-token-value", "http://localhost:8790€"),
+        ("test-bearer-token-value", "http://localhost:8790\x00"),
+        ("test-bearer-token-value", "http://localhost:8790\rInjected: value"),
+    ),
+)
+def test_runtime_config_rejects_header_unsafe_values_without_echoing(
+    bearer: str, origin: str
+) -> None:
+    with pytest.raises(ValueError) as captured:
+        MCPRuntimeConfig(bearer_token=bearer, allowed_origin=origin)
+    message = str(captured.value)
+    assert bearer not in message
+    assert origin not in message
+    assert "€" not in message
+    assert "Injected" not in message
+    assert "\x00" not in message
+    assert "\n" not in message
+    assert "\r" not in message
+
+
+@pytest.mark.parametrize(
+    ("startup_error", "expected_code"),
+    (
+        (
+            UpstreamToolError(
+                "UPSTREAM_SCHEMA_DRIFT",
+                "runtime metadata at /private/runtime leaked raw-secret-value",
+                False,
+                "private upstream action",
+            ),
+            "UPSTREAM_SCHEMA_DRIFT",
+        ),
+        (
+            UpstreamToolError(
+                "UPSTREAM_SCHEMA_DRIFT",
+                "schema response at /private/schema leaked raw-secret-value",
+                False,
+                "private upstream action",
+            ),
+            "UPSTREAM_SCHEMA_DRIFT",
+        ),
+        (
+            RuntimeError("smoke process failed at /private/smoke with raw-secret-value"),
+            "MCP_STARTUP_PREFLIGHT_FAILED",
+        ),
+    ),
+    ids=("runtime-identity", "tool-schema", "unexpected-smoke-error"),
+)
+def test_startup_preflight_failure_is_sanitized_and_never_binds(
+    startup_error: Exception,
+    expected_code: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakeService()
+    service.runner.error = startup_error
+    binds: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "uvicorn.run",
+        lambda app, **kwargs: binds.append({"app": app, **kwargs}),
+    )
+
+    with pytest.raises(MCPStartupError) as captured:
+        serve(
+            service,
+            MCPRuntimeConfig(
+                bearer_token="test-bearer-token-value",
+                allowed_origin="http://localhost:8790",
+            ),
+        )
+
+    assert captured.value.code == expected_code
+    assert binds == []
+    assert service.provisioned == 0
+    assert len(service.runner.validated) == 1
+    message = str(captured.value)
+    assert len(message) < 120
+    assert "/private/" not in message
+    assert "raw-secret-value" not in message
+    assert "upstream action" not in message
+
+
+def test_fixture_smoke_rejection_never_builds_or_binds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakeService()
+    service.runner.result = False
+    binds: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "uvicorn.run",
+        lambda app, **kwargs: binds.append({"app": app, **kwargs}),
+    )
+
+    with pytest.raises(MCPStartupError) as captured:
+        serve(
+            service,
+            MCPRuntimeConfig(
+                bearer_token="test-bearer-token-value",
+                allowed_origin="http://localhost:8790",
+            ),
+        )
+
+    assert captured.value.code == "MCP_FIXTURE_SMOKE_FAILED"
+    assert binds == []
+    assert service.provisioned == 0
+
+
+def test_valid_preflight_starts_only_on_the_configured_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakeService()
+    binds: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "uvicorn.run",
+        lambda app, **kwargs: binds.append({"app": app, **kwargs}),
+    )
+    config = MCPRuntimeConfig(
+        bearer_token="test-bearer-token-value",
+        allowed_origin="http://localhost:8790",
+    )
+
+    serve(service, config)
+
+    assert service.runner.validated == ['<mujoco model="startup-smoke"/>']
+    assert service.provisioned == 1
+    assert len(binds) == 1
+    assert binds[0]["host"] == "127.0.0.1"
+    assert binds[0]["port"] == 8712
 
 
 def test_exact_strict_tool_schemas_and_annotations() -> None:
@@ -253,12 +409,14 @@ def test_unexpected_service_errors_are_redacted_and_recorded() -> None:
 
 
 def test_service_tool_errors_are_redacted_unless_created_by_the_facade() -> None:
-    facade = create_mcp_facade(
-        RawToolErrorService(),
-        MCPRuntimeConfig(
-            bearer_token="test-bearer-token-value",
-            allowed_origin="http://localhost:8790",
-        ),
+    facade = asyncio.run(
+        create_mcp_facade(
+            RawToolErrorService(),
+            MCPRuntimeConfig(
+                bearer_token="test-bearer-token-value",
+                allowed_origin="http://localhost:8790",
+            ),
+        )
     )
 
     async def call() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -432,7 +433,7 @@ def run() -> dict[str, Any]:
                 bearer_token=bearer,
                 allowed_origin=ORIGIN,
             )
-            facade = create_mcp_facade(service, config)
+            facade = asyncio.run(create_mcp_facade(service, config))
             private_payloads = tuple(service.hidden_verifier._scenario_payloads)
 
             with _FacadeServer(facade.app, config):
