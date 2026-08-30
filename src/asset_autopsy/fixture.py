@@ -99,6 +99,7 @@ class CompoundArmFixture:
                 "version": self.version,
                 "scenario_id": scenario.scenario_id,
                 "initial_qpos": scenario.initial_qpos,
+                "target_qpos": scenario.target_qpos,
                 "target_body_position": scenario.target_body_position,
                 "duration_steps": scenario.duration_steps,
                 "hold_steps": scenario.hold_steps,
