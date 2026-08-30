@@ -402,7 +402,7 @@ def _matches_run(payload: dict[str, Any], *, qpos_width: int, qvel_width: int) -
     timeseries = payload["timeseries"]
     if type(timeseries) is not list or len(timeseries) > MAX_STEPS:
         return False
-    return all(
+    if not all(
         isinstance(row, dict)
         and {"t", "E_pot", "E_kin", "qpos", "qvel"}.issubset(row)
         and set(row).issubset({"t", "E_pot", "E_kin", "ncon", "qpos", "qvel"})
@@ -413,6 +413,16 @@ def _matches_run(payload: dict[str, Any], *, qpos_width: int, qvel_width: int) -
         and _numeric_vector(row["qpos"], qpos_width)
         and _numeric_vector(row["qvel"], qvel_width)
         for row in timeseries
+    ):
+        return False
+    timestamps = [row["t"] for row in timeseries]
+    if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
+        return False
+    sim_start, sim_end = payload["sim_time"]
+    return bool(
+        timestamps
+        and math.isclose(timestamps[0], sim_start, rel_tol=0.0, abs_tol=1e-9)
+        and math.isclose(timestamps[-1], sim_end, rel_tol=0.0, abs_tol=1e-9)
     )
 
 
@@ -426,6 +436,9 @@ def _valid_png(data: bytes) -> bool:
     saw_iend = False
     expected_scanline_bytes: int | None = None
     row_stride: int | None = None
+    bit_depth: int | None = None
+    color_type: int | None = None
+    palette_entries: int | None = None
     idat_data = bytearray()
     while offset < len(data):
         if len(data) - offset < 12:
@@ -484,7 +497,21 @@ def _valid_png(data: bytes) -> bool:
             saw_ihdr = True
         elif chunk_type == b"IHDR":
             return False
+        if chunk_type == b"PLTE":
+            if (
+                saw_idat
+                or palette_entries is not None
+                or length == 0
+                or length % 3 != 0
+                or length > 3 * 256
+            ):
+                return False
+            palette_entries = length // 3
+            if color_type == 3 and bit_depth is not None and palette_entries > 1 << bit_depth:
+                return False
         if chunk_type == b"IDAT":
+            if color_type == 3 and palette_entries is None:
+                return False
             saw_idat = True
             idat_data.extend(chunk_data)
         if chunk_type == b"IEND":

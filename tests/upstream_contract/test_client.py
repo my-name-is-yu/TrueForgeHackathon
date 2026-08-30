@@ -43,10 +43,18 @@ def _png_chunk(kind: bytes, payload: bytes) -> bytes:
     return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", crc)
 
 
-def _synthetic_png(idat: bytes) -> bytes:
+def _synthetic_png(
+    idat: bytes,
+    *,
+    bit_depth: int = 8,
+    color_type: int = 6,
+    palette: bytes | None = None,
+) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + _png_chunk(
-        b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
-    ) + _png_chunk(b"IDAT", idat) + _png_chunk(b"IEND", b"")
+        b"IHDR", struct.pack(">IIBBBBB", 1, 1, bit_depth, color_type, 0, 0, 0)
+    ) + (b"" if palette is None else _png_chunk(b"PLTE", palette)) + _png_chunk(
+        b"IDAT", idat
+    ) + _png_chunk(b"IEND", b"")
 
 
 class _FakeTransport:
@@ -72,6 +80,7 @@ class _FakeSession:
         block_on_run: bool = False,
         render_is_error: bool = False,
         invalid_render_png: bool = False,
+        timestamp_mode: str | None = None,
         wrong_load_name: bool = False,
         nq: int = 0,
         nv: int = 0,
@@ -85,6 +94,7 @@ class _FakeSession:
         self.block_on_run = block_on_run
         self.render_is_error = render_is_error
         self.invalid_render_png = invalid_render_png
+        self.timestamp_mode = timestamp_mode
         self.wrong_load_name = wrong_load_name
         self.nq = nq
         self.nv = nv
@@ -146,15 +156,26 @@ class _FakeSession:
                 await asyncio.Event().wait()
             qpos = [0.0] if self.wrong_width_run else [0.0] * self.nq
             qvel = [0.0] if self.wrong_width_run else [0.0] * self.nv
-            row = {"t": 0.002, "E_pot": 0.0, "E_kin": 0.0, "ncon": 0}
-            if not self.incomplete_run:
-                row.update({"qpos": qpos, "qvel": qvel})
+            timestamps = [0.002 * (index + 1) for index in range(steps)]
+            if self.timestamp_mode == "duplicate" and len(timestamps) >= 2:
+                timestamps[1] = timestamps[0]
+            elif self.timestamp_mode == "reversed":
+                timestamps.reverse()
+            rows = []
+            for timestamp in timestamps:
+                row = {"t": timestamp, "E_pot": 0.0, "E_kin": 0.0, "ncon": 0}
+                if not self.incomplete_run:
+                    row.update({"qpos": qpos, "qvel": qvel})
+                rows.append(row)
+            sim_time = [timestamps[0], timestamps[-1]]
+            if self.timestamp_mode == "inconsistent":
+                sim_time[1] += 0.002
             return _text_result(
                 {
                     "n_steps": steps,
-                    "sim_time": [0.0, 0.002],
+                    "sim_time": sim_time,
                     "final_state": {"qpos": qpos, "qvel": qvel, "n_contacts": 0, "energy": [0.0, 0.0]},
-                    "timeseries": [row for _ in range(steps)],
+                    "timeseries": rows,
                 }
             )
         if name == "render_snapshot":
@@ -165,7 +186,12 @@ class _FakeSession:
                         SimpleNamespace(
                             type="image",
                             mimeType="image/png",
-                            data=base64.b64encode(_synthetic_png(b"synthetic")).decode(),
+                            data=base64.b64encode(
+                                _synthetic_png(
+                                    zlib.compress(b"\x00\x00"),
+                                    color_type=3,
+                                )
+                            ).decode(),
                         ),
                         SimpleNamespace(type="text", text="synthetic"),
                     ],
@@ -185,6 +211,7 @@ def _fake_client(
     block_on_run: bool = False,
     render_is_error: bool = False,
     invalid_render_png: bool = False,
+    timestamp_mode: str | None = None,
     wrong_load_name: bool = False,
     nq: int = 0,
     nv: int = 0,
@@ -204,6 +231,7 @@ def _fake_client(
             block_on_run=block_on_run,
             render_is_error=render_is_error,
             invalid_render_png=invalid_render_png,
+            timestamp_mode=timestamp_mode,
             wrong_load_name=wrong_load_name,
             nq=nq,
             nv=nv,
@@ -387,6 +415,25 @@ def test_run_response_requires_requested_signals_and_model_widths() -> None:
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("timestamp_mode", ("duplicate", "reversed", "inconsistent"))
+def test_run_response_requires_monotonic_consistent_timestamps(timestamp_mode: str) -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(timestamp_mode=timestamp_mode)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.run_segment(slot, ctrl=[], n_steps=3)
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
 def test_render_failure_returns_one_numeric_only_fallback() -> None:
     async def run() -> None:
         transport, make_session, _get_session = _fake_client(
@@ -559,6 +606,33 @@ def test_render_payload_requires_complete_png_structure() -> None:
         ],
     )
     assert _render_png(result) == png
+
+    indexed = _synthetic_png(
+        zlib.compress(b"\x00\x00"),
+        color_type=3,
+        palette=b"\x00\x00\x00",
+    )
+    result.content[0].data = base64.b64encode(indexed).decode()
+    assert _render_png(result) == indexed
+
+    for invalid_palette in (
+        _synthetic_png(zlib.compress(b"\x00\x00"), color_type=3),
+        _synthetic_png(
+            zlib.compress(b"\x00\x00"),
+            color_type=3,
+            palette=b"\x00",
+        ),
+        _synthetic_png(
+            zlib.compress(b"\x00\x00"),
+            bit_depth=1,
+            color_type=3,
+            palette=b"\x00\x00\x00" * 3,
+        ),
+    ):
+        result.content[0].data = base64.b64encode(invalid_palette).decode()
+        with pytest.raises(UpstreamToolError) as caught:
+            _render_png(result)
+        assert caught.value.code == UPSTREAM_BAD_RESPONSE
 
     result.content[0].data = base64.b64encode(_synthetic_png(b"synthetic")).decode()
     with pytest.raises(UpstreamToolError) as caught:
