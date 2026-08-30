@@ -777,19 +777,42 @@ class EvidenceStore:
             if row is None:
                 raise CaseNotFoundError("case was not found")
             case = self._case_from_row(row)
+            case_commitments = {
+                field: getattr(case, field) for field in COMMITMENT_FIELDS
+            }
             root_revision = connection.execute(
                 """
-                SELECT asset_sha256 FROM revisions
+                SELECT * FROM revisions
                 WHERE case_id = ? AND revision_id = ?
                 """,
                 (case_id, case.root_revision_id),
             ).fetchone()
+            revision_rows = connection.execute(
+                "SELECT * FROM revisions WHERE case_id = ?",
+                (case_id,),
+            ).fetchall()
+            run_rows = connection.execute(
+                "SELECT * FROM runs WHERE case_id = ?",
+                (case_id,),
+            ).fetchall()
         case_events = tuple(event for event in events if event.case_id == case_id)
+        events_by_id = {event.event_id: event for event in case_events}
+        revisions_by_id = {row["revision_id"]: row for row in revision_rows}
+        runs_by_id = {row["run_id"]: row for row in run_rows}
         created = tuple(event for event in case_events if event.event_type == "CASE_CREATED")
         if len(created) != 1 or created[0].payload.get("root_revision_id") != case.root_revision_id:
             raise IntegrityError("case creation state does not match the ledger")
+        if (
+            root_revision is None
+            or root_revision["parent_revision_id"] is not None
+            or root_revision["ordinal"] != 0
+            or root_revision["hypothesis_event_id"] is not None
+            or root_revision["probe_run_id"] is not None
+        ):
+            raise IntegrityError("root revision state is invalid")
 
         head_revision_id = case.root_revision_id
+        head_ordinal = 0
         qualification_revision_id: str | None = None
         qualification_attempt_id: str | None = None
         qualification_result: str | None = None
@@ -799,9 +822,30 @@ class EvidenceStore:
             if event.event_type == "REVISION_CREATED":
                 if event.revision_id is None:
                     raise IntegrityError("revision event identity is invalid")
+                revision = revisions_by_id.get(event.revision_id)
+                if (
+                    revision is None
+                    or revision["parent_revision_id"] != head_revision_id
+                    or revision["ordinal"] != head_ordinal + 1
+                ):
+                    raise IntegrityError("revision event state is not linear")
+                hypothesis = events_by_id.get(revision["hypothesis_event_id"])
+                probe = runs_by_id.get(revision["probe_run_id"])
+                if (
+                    hypothesis is None
+                    or hypothesis.event_type != "HYPOTHESIS_RECORDED"
+                    or hypothesis.revision_id != head_revision_id
+                    or probe is None
+                    or probe["revision_id"] != head_revision_id
+                    or probe["run_kind"] != "probe"
+                ):
+                    raise IntegrityError("revision causal citations are invalid")
                 head_revision_id = event.revision_id
+                head_ordinal = revision["ordinal"]
             elif event.event_type == "QUALIFICATION_RESERVED":
-                attempt = self._attempt_from_payload(case_id, "RUNNING", event.payload)
+                attempt = self._attempt_from_payload(
+                    case_id, "RUNNING", event.payload, commitments=case_commitments
+                )
                 qualification_revision_id = attempt.revision_id
                 qualification_attempt_id = attempt.attempt_id
                 qualification_result = "RUNNING"
@@ -818,7 +862,9 @@ class EvidenceStore:
                     "QUALIFICATION_PASSED": "PASSED",
                     "QUALIFICATION_FAILED": "FAILED",
                 }[event.event_type]
-                attempt = self._attempt_from_payload(case_id, state, event.payload)
+                attempt = self._attempt_from_payload(
+                    case_id, state, event.payload, commitments=case_commitments
+                )
                 if qualification_identity != (attempt.revision_id, attempt.attempt_id):
                     raise IntegrityError("qualification event identity is invalid")
                 qualification_result = state
@@ -829,7 +875,6 @@ class EvidenceStore:
 
         if (
             case.head_revision_id != head_revision_id
-            or root_revision is None
             or root_revision["asset_sha256"] != case.source_asset_sha256
             or case.qualification_revision_id != qualification_revision_id
             or case.qualification_attempt_id != qualification_attempt_id
@@ -1160,18 +1205,31 @@ class EvidenceStore:
         return normalized
 
     @staticmethod
+    def _commitment_payload(
+        values: Mapping[str, Any] | sqlite3.Row,
+    ) -> dict[str, str]:
+        try:
+            return {
+                field: _sha256(values[field], field) for field in COMMITMENT_FIELDS
+            }
+        except (KeyError, IndexError) as exc:
+            raise ValidationError("qualification commitments are incomplete") from exc
+
+    @staticmethod
     def _identity_payload(
         *,
         attempt_id: str,
         revision_id: str,
         suite_commitment_sha256: str,
         scenario_hashes: Sequence[str],
+        commitments: Mapping[str, str],
     ) -> dict[str, Any]:
         return {
             "attempt_id": attempt_id,
             "revision_id": revision_id,
             "suite_commitment_sha256": suite_commitment_sha256,
             "scenario_hashes": list(scenario_hashes),
+            **commitments,
         }
 
     @staticmethod
@@ -1180,6 +1238,8 @@ class EvidenceStore:
         state: str,
         payload: Mapping[str, Any],
         result: Mapping[str, Any] | None = None,
+        *,
+        commitments: Mapping[str, Any] | sqlite3.Row,
     ) -> QualificationAttempt:
         try:
             attempt_id = payload["attempt_id"]
@@ -1195,6 +1255,13 @@ class EvidenceStore:
             suite_commitment_sha256=suite,
             scenario_hashes=scenarios,
         )
+        try:
+            payload_commitments = EvidenceStore._commitment_payload(payload)
+            expected_commitments = EvidenceStore._commitment_payload(commitments)
+        except ValidationError as exc:
+            raise IntegrityError("qualification commitments are invalid") from exc
+        if payload_commitments != expected_commitments:
+            raise IntegrityError("qualification commitments differ from the case")
         return QualificationAttempt(
             case_id=case_id,
             attempt_id=attempt_id,
@@ -1249,7 +1316,14 @@ class EvidenceStore:
         if row is None:
             raise IntegrityError("qualification reservation is missing")
         event = cls._event_from_row(row)
-        return cls._attempt_from_payload(case_id, state, event.payload)
+        case = connection.execute(
+            "SELECT * FROM cases WHERE case_id = ?", (case_id,)
+        ).fetchone()
+        if case is None:
+            raise CaseNotFoundError("case was not found")
+        return cls._attempt_from_payload(
+            case_id, state, event.payload, commitments=case
+        )
 
     @classmethod
     def _require_attempt(
@@ -1284,6 +1358,11 @@ class EvidenceStore:
         suite_commitment_sha256: str,
         scenario_hashes: Sequence[str],
         expected_head_revision_id: str,
+        source_asset_sha256: str,
+        controller_sha256: str,
+        public_contract_sha256: str,
+        runner_sha256: str,
+        holdout_commitment_sha256: str,
     ) -> QualificationAttempt:
         normalized = self._validate_qualification_identity(
             case_id=case_id,
@@ -1292,6 +1371,15 @@ class EvidenceStore:
             suite_commitment_sha256=suite_commitment_sha256,
             scenario_hashes=scenario_hashes,
         )
+        supplied_commitments = self._commitment_payload(
+            {
+                "source_asset_sha256": source_asset_sha256,
+                "controller_sha256": controller_sha256,
+                "public_contract_sha256": public_contract_sha256,
+                "runner_sha256": runner_sha256,
+                "holdout_commitment_sha256": holdout_commitment_sha256,
+            }
+        )
         _id(expected_head_revision_id, "expected_head_revision_id")
         with self._transaction() as connection:
             case = connection.execute(
@@ -1299,6 +1387,11 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            case_commitments = self._commitment_payload(case)
+            if supplied_commitments != case_commitments:
+                raise QualificationConflictError(
+                    "qualification commitments differ from the case"
+                )
             if case["qualification_result"] is not None:
                 if case["qualification_result"] == "RUNNING":
                     existing = self._latest_attempt_from_connection(connection, case_id, "RUNNING")
@@ -1319,6 +1412,7 @@ class EvidenceStore:
                 revision_id=revision_id,
                 suite_commitment_sha256=suite_commitment_sha256,
                 scenario_hashes=normalized,
+                commitments=case_commitments,
             )
             timestamp = _timestamp(None)
             try:
@@ -1377,6 +1471,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            case_commitments = self._commitment_payload(case)
             if case["qualification_result"] != "RUNNING":
                 raise QualificationConflictError("qualification is not running")
             self._require_attempt(
@@ -1404,6 +1499,7 @@ class EvidenceStore:
                         revision_id=revision_id,
                         suite_commitment_sha256=suite_commitment_sha256,
                         scenario_hashes=scenario_hashes,
+                        commitments=case_commitments,
                     ),
                     request_id=_new_id("req"),
                 ),
@@ -1439,6 +1535,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            case_commitments = self._commitment_payload(case)
             if case["qualification_result"] != "RECOVERING":
                 raise QualificationConflictError("qualification is not recovering")
             self._require_attempt(
@@ -1466,6 +1563,7 @@ class EvidenceStore:
                         revision_id=revision_id,
                         suite_commitment_sha256=suite_commitment_sha256,
                         scenario_hashes=normalized,
+                        commitments=case_commitments,
                     ),
                     request_id=_new_id("req"),
                 ),
@@ -1508,6 +1606,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            case_commitments = self._commitment_payload(case)
             if case["qualification_result"] in {"PASSED", "FAILED"}:
                 existing = self._latest_attempt_from_connection(
                     connection, case_id, case["qualification_result"]
@@ -1525,7 +1624,10 @@ class EvidenceStore:
                     raise IntegrityError("qualification terminal event is missing")
                 terminal_event = self._event_from_row(terminal_row)
                 terminal_attempt = self._attempt_from_payload(
-                    case_id, state, terminal_event.payload
+                    case_id,
+                    state,
+                    terminal_event.payload,
+                    commitments=case_commitments,
                 )
                 if not self._identity_matches(
                     terminal_attempt,
@@ -1578,6 +1680,7 @@ class EvidenceStore:
                 revision_id=revision_id,
                 suite_commitment_sha256=suite_commitment_sha256,
                 scenario_hashes=normalized,
+                commitments=case_commitments,
             )
             payload["result"] = result_payload
             connection.execute(
@@ -1631,7 +1734,9 @@ class EvidenceStore:
                 if row is None:
                     raise IntegrityError("qualification terminal event is missing")
                 event = self._event_from_row(row)
-                terminal_attempt = self._attempt_from_payload(case_id, state, event.payload)
+                terminal_attempt = self._attempt_from_payload(
+                    case_id, state, event.payload, commitments=case
+                )
                 if not self._identity_matches(
                     terminal_attempt,
                     case_id=attempt.case_id,

@@ -16,6 +16,7 @@ from asset_autopsy.storage import (
     LedgerEventRecord,
     ObjectStore,
     ObjectIntegrityError,
+    QualificationConflictError,
     RevisionConflictError,
     RevisionRecord,
     RunRecord,
@@ -99,6 +100,7 @@ def qualify(store: EvidenceStore) -> None:
         suite_commitment_sha256="4" * 64,
         scenario_hashes=("5" * 64, "6" * 64, "7" * 64),
         expected_head_revision_id="r001",
+        **COMMITMENTS,
     )
 
 
@@ -682,7 +684,9 @@ def test_restore_rejects_materialized_state_that_differs_from_ledger(
         connection.execute(f"UPDATE cases SET {field} = ? WHERE case_id = ?", (value, "case-1"))
         connection.commit()
 
-    with pytest.raises(IntegrityError, match="materialized case state"):
+    with pytest.raises(
+        IntegrityError, match="materialized case state|qualification commitments"
+    ):
         store.restore_state("case-1")
 
 
@@ -705,6 +709,55 @@ def test_restore_uses_one_snapshot_during_concurrent_commit(
 
     assert restored.head_revision_id == "r000"
     assert store.get_case("case-1").head_revision_id == "r001"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("DELETE FROM revisions WHERE revision_id = 'r001'", "revision event state"),
+        ("UPDATE revisions SET ordinal = 9 WHERE revision_id = 'r001'", "revision event state"),
+        ("DELETE FROM runs WHERE run_id = 'run-probe-1'", "causal citations"),
+    ],
+)
+def test_restore_rejects_missing_or_invalid_child_revision_state(
+    tmp_path: Path, mutation: str, error: str
+) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(mutation)
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match=error):
+        store.restore_state("case-1")
+
+
+def test_qualification_reservation_requires_exact_case_commitments(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    mismatched = {**COMMITMENTS, "controller_sha256": "f" * 64}
+    parameters = inspect.signature(store.reserve_qualification).parameters
+    assert all(
+        parameters[field].kind is inspect.Parameter.KEYWORD_ONLY
+        and parameters[field].default is inspect.Parameter.empty
+        for field in COMMITMENTS
+    )
+
+    with pytest.raises(QualificationConflictError, match="commitments differ"):
+        store.reserve_qualification(
+            case_id="case-1",
+            revision_id="r001",
+            attempt_id="attempt-1",
+            suite_commitment_sha256="4" * 64,
+            scenario_hashes=("5" * 64,),
+            expected_head_revision_id="r001",
+            **mismatched,
+        )
+
+    assert store.get_case("case-1").qualification_state == "unused"
 
 
 def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:
@@ -748,6 +801,21 @@ def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_pat
     assert store.get_case("case-1").qualification_state == "passed"
     assert store.get_qualification("case-1").result == terminal.result
     assert store.record_qualification_terminal(**identity, state="PASSED").result == terminal.result
+    qualification_events = tuple(
+        event
+        for event in store.ledger_events("case-1")
+        if event.event_type.startswith("QUALIFICATION_")
+    )
+    assert [event.event_type for event in qualification_events] == [
+        "QUALIFICATION_RESERVED",
+        "QUALIFICATION_RECOVERING",
+        "QUALIFICATION_RECOVERED",
+        "QUALIFICATION_PASSED",
+    ]
+    assert all(
+        {field: event.payload[field] for field in COMMITMENTS} == COMMITMENTS
+        for event in qualification_events
+    )
     with pytest.raises(Exception):
         store.record_qualification_terminal(**identity, state="FAILED")
     with pytest.raises(Exception):
@@ -764,6 +832,7 @@ def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_pat
             suite_commitment_sha256="a" * 64,
             scenario_hashes=("b" * 64,),
             expected_head_revision_id="r001",
+            **COMMITMENTS,
         )
 
 
