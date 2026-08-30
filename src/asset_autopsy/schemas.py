@@ -501,6 +501,9 @@ class MetricObservation(StrictModel):
     def validate_nullable_value(self) -> MetricObservation:
         if self.value is None and self.metric != "settling_time_s":
             raise ValueError("only settling_time_s may have a null value")
+        if self.metric in {"joint_limit_violation_count", "non_finite_count"}:
+            if self.value is None or self.value < 0.0 or not self.value.is_integer():
+                raise ValueError("count observations must be nonnegative integers")
         return self
 
 
@@ -613,14 +616,14 @@ class RunTaskOutput(CommonOutput):
         return self
 
     @model_validator(mode="after")
-    def validate_pass_result(self) -> RunTaskOutput:
-        if self.result != "pass":
-            return self
+    def validate_result_against_contract(self) -> RunTaskOutput:
         values = {observation.metric: observation.value for observation in self.observations}
-        for metric, limit in _PASS_METRIC_LIMITS.items():
-            value = values[metric]
-            if value is None or value > limit:
-                raise ValueError(f"passing task violates the fixed {metric} clause")
+        contract_passed = all(
+            values[metric] is not None and values[metric] <= limit
+            for metric, limit in _PASS_METRIC_LIMITS.items()
+        )
+        if (self.result == "pass") != contract_passed:
+            raise ValueError("task result must match the fixed contract clauses")
         return self
 
     @model_validator(mode="after")
@@ -815,6 +818,19 @@ class VerifyRevisionOutput(CommonOutput):
 class PublishRevisionOutput(CommonOutput):
     revision_id: RevisionId
     status: Literal["published", "already_published"]
+
+    @model_validator(mode="after")
+    def validate_publication_artifacts(self) -> PublishRevisionOutput:
+        required_kinds = {
+            "repaired_mjcf",
+            "patch_manifest",
+            "evidence_ledger",
+            "qualification",
+        }
+        kinds = [artifact.kind for artifact in self.artifacts]
+        if len(kinds) != len(required_kinds) or set(kinds) != required_kinds:
+            raise ValueError("publication must return exactly one required artifact of each kind")
+        return self
 
 
 class InspectAssetOutput(CommonOutput):

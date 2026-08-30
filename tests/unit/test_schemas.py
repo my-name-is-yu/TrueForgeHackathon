@@ -12,6 +12,7 @@ from asset_autopsy.schemas import (
     OpenCaseOutput,
     OpenCaseInput,
     PatchPolicy,
+    PublishRevisionOutput,
     PublicEventSummary,
     RunTaskOutput,
     ScalarPatch,
@@ -417,7 +418,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
             "revision_id": "r001",
             "scenario_id": "public_center",
             "result": "pass",
-            "observations": _run_task_observations(),
+            "observations": _run_task_observations(hold_error_p95_m=0.02),
             "behavior_diff": {
                 "changed": False,
                 "metric_deltas": [
@@ -528,10 +529,12 @@ def test_run_task_output_rejects_changed_public_pass_verdict_on_failure() -> Non
         RunTaskOutput.model_validate(payload)
 
 
-def _run_task_observations(*, settling_time_s: float | None = 1.5) -> list[dict[str, object]]:
+def _run_task_observations(
+    *, settling_time_s: float | None = 1.5, hold_error_p95_m: float = 0.04
+) -> list[dict[str, object]]:
     return [
         {"metric": "final_target_error_m", "value": 0.01},
-        {"metric": "hold_error_p95_m", "value": 0.02},
+        {"metric": "hold_error_p95_m", "value": hold_error_p95_m},
         {"metric": "joint_speed_rms_rad_s", "value": 0.03},
         {"metric": "settling_time_s", "value": settling_time_s},
         {"metric": "peak_energy_j", "value": 0.04},
@@ -668,7 +671,7 @@ def test_run_task_output_rejects_passes_that_violate_fixed_clauses(
 ) -> None:
     observations = [
         {**observation, "value": value} if observation["metric"] == metric else observation
-        for observation in _run_task_observations()
+        for observation in _run_task_observations(hold_error_p95_m=0.02)
     ]
     with pytest.raises(ValidationError):
         RunTaskOutput.model_validate(
@@ -810,6 +813,79 @@ def test_public_outputs_cover_case_commitments_and_evidence_ledger() -> None:
         }
     )
     assert artifact.kind == "evidence_ledger"
+
+
+def _publication_artifact(kind: str, index: int) -> dict[str, object]:
+    return {
+        "artifact_id": f"art_{index}",
+        "kind": kind,
+        "uri": f"autopsy://case_demo/art_{index}",
+        "media_type": "application/json",
+        "sha256": str(index) * 64,
+        "bytes": 42,
+    }
+
+
+def test_publish_revision_requires_the_complete_artifact_set() -> None:
+    base = {
+        "schema_version": "asset-autopsy/v1",
+        "request_id": "req_demo",
+        "case_id": "case_demo",
+        "revision_id": "r001",
+        "status": "published",
+    }
+    artifacts = [
+        _publication_artifact(kind, index)
+        for index, kind in enumerate(
+            ("repaired_mjcf", "patch_manifest", "evidence_ledger", "qualification"),
+            start=1,
+        )
+    ]
+    PublishRevisionOutput.model_validate({**base, "artifacts": artifacts})
+
+    with pytest.raises(ValidationError):
+        PublishRevisionOutput.model_validate({**base, "artifacts": artifacts[:-1]})
+    with pytest.raises(ValidationError):
+        PublishRevisionOutput.model_validate(
+            {**base, "artifacts": [*artifacts[:-1], artifacts[0]]}
+        )
+
+
+@pytest.mark.parametrize("value", [-1.0, 0.5])
+def test_run_task_count_observations_are_nonnegative_integers(value: float) -> None:
+    observations = [
+        {**observation, "value": value}
+        if observation["metric"] == "non_finite_count"
+        else observation
+        for observation in _run_task_observations()
+    ]
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(
+            {
+                "schema_version": "asset-autopsy/v1",
+                "request_id": "req_demo",
+                "case_id": "case_demo",
+                "revision_id": "r000",
+                "scenario_id": "public_center",
+                "result": "fail",
+                "observations": observations,
+            }
+        )
+
+
+def test_run_task_output_rejects_failure_when_all_contract_clauses_pass() -> None:
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(
+            {
+                "schema_version": "asset-autopsy/v1",
+                "request_id": "req_demo",
+                "case_id": "case_demo",
+                "revision_id": "r000",
+                "scenario_id": "public_center",
+                "result": "fail",
+                "observations": _run_task_observations(hold_error_p95_m=0.02),
+            }
+        )
 
 
 def test_axis_is_normalized_and_family_ranges_are_enforced() -> None:
