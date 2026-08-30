@@ -689,6 +689,41 @@ def test_nonfinite_body_position_reaches_the_domain_runner() -> None:
     asyncio.run(check())
 
 
+def test_nonfinite_state_skips_later_segments_and_render() -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client(
+            invalid_body_xpos="nonfinite"
+        )
+        record = await DeterministicRunner(
+            PinnedMujocoClient(
+                transport_factory=lambda _parameters: transport,
+                session_factory=make_session,
+            )
+        ).run(
+            RunConfiguration(
+                xml_string='<mujoco model="synthetic"/>',
+                segments=(
+                    ConstantSegment(ctrl=(), n_steps=1, label="bad"),
+                    ConstantSegment(ctrl=(), n_steps=1, label="must-not-run"),
+                ),
+                track=("body_xpos:world",),
+                render=True,
+            )
+        )
+
+        assert len(record.segments) == 1
+        assert record.image_png is None
+        assert record.render_fallback is False
+        assert [name for name, _arguments in get_session().calls] == [
+            "sim_load",
+            "sim_reset",
+            "sim_set_state",
+            "run_and_analyze",
+        ]
+
+    asyncio.run(check())
+
+
 def test_load_rejects_response_for_a_different_simulation_name() -> None:
     async def check() -> None:
         transport, make_session, _get_session = _fake_client(wrong_load_name=True)
