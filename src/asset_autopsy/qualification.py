@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from .fixture import CompoundArmFixture, PublicScenario, clean_end_effector_position
-from .metrics import PASS_LIMITS, TaskEvaluation, evaluate_task
+from .metrics import evaluate_task
 from .runner import ConstantSegment, DeterministicRunner, RunConfiguration
 from .schemas import AggregateResult, CanonicalDiffEntry, PromotionTicket
 from .storage import canonical_json_bytes
+from .task_evaluation import PASS_LIMITS
 
 
 _PRIVATE_SCENARIO_QPOS = (
@@ -112,29 +113,12 @@ class HiddenVerifier:
             if evaluation.passed:
                 passed += 1
             else:
-                violated.update(_violated_clauses(evaluation))
+                violated.update(evaluation.violated_clause_ids)
         return HiddenVerificationResult(
             passed=passed,
             total=len(self._scenario_payloads),
             violated_clause_ids=tuple(sorted(violated)),
         )
-
-
-def _violated_clauses(evaluation: TaskEvaluation) -> tuple[str, ...]:
-    values = evaluation.values
-    metric_to_clause = {
-        "hold_error_p95_m": "reach_error",
-        "joint_speed_rms_rad_s": "stable_hold",
-        "settling_time_s": "settling",
-        "non_finite_count": "finite_state",
-        "joint_limit_violation_count": "joint_limits",
-    }
-    return tuple(
-        clause
-        for metric, clause in metric_to_clause.items()
-        if values[metric] is None or values[metric] > PASS_LIMITS[metric]
-    )
-
 
 def build_promotion_ticket(
     *,

@@ -4,7 +4,6 @@ import math
 
 from asset_autopsy.fixture import load_compound_arm_fixture
 from asset_autopsy.metrics import (
-    behavior_diff,
     evaluate_task,
     resample_experiment_trace,
 )
@@ -13,8 +12,10 @@ from asset_autopsy.schemas import (
     BodyPositionObservable,
     ContactCountObservable,
     QposObservable,
+    RunTaskOutput,
     validate_experiment_trace_contract,
 )
+from asset_autopsy.task_evaluation import TASK_METRIC_ORDER
 
 
 def make_record(*, error: float, speed: float, steps: int = 2_000) -> RunRecord:
@@ -39,14 +40,44 @@ def make_record(*, error: float, speed: float, steps: int = 2_000) -> RunRecord:
     )
 
 
-def test_task_metrics_and_behavior_diff_match_the_fixed_contract() -> None:
+def test_task_evaluation_derives_every_fixed_contract_view() -> None:
     fixture = load_compound_arm_fixture()
     before = evaluate_task(make_record(error=0.1, speed=0.1), fixture.public_scenario)
     after = evaluate_task(make_record(error=0.0, speed=0.0), fixture.public_scenario)
-    diff = behavior_diff(before, after)
+    diff = after.behavior_diff_from(before)
+    output = RunTaskOutput.from_evaluation(
+        request_id="req_metrics",
+        case_id="case_metrics",
+        event_ids=[],
+        warnings=[],
+        artifacts=[],
+        revision_id="r001",
+        evaluation=after,
+        parent_evaluation=before,
+    )
 
     assert before.passed is False
     assert after.passed is True
+    assert after.result == output.result == "pass"
+    assert tuple(after.values) == TASK_METRIC_ORDER
+    assert {item.metric: item.value for item in output.observations} == after.values
+    assert {item.metric: item.after for item in diff.metric_deltas} == after.values
+    before_clauses = {clause.clause_id: clause.passed for clause in before.clauses}
+    after_clauses = {clause.clause_id: clause.passed for clause in after.clauses}
+    expected_outcomes = {
+        clause_id: (
+            "improved"
+            if not before_clauses[clause_id] and passed
+            else "regressed"
+            if before_clauses[clause_id] and not passed
+            else "unchanged"
+        )
+        for clause_id, passed in after_clauses.items()
+    }
+    assert {item.clause_id: item.outcome for item in diff.clause_outcomes} == (
+        expected_outcomes
+    )
+    assert output.behavior_diff == diff
     assert after.values["hold_error_p95_m"] == 0.0
     assert after.values["joint_speed_rms_rad_s"] == 0.0
     assert diff.verdict == "public_pass"

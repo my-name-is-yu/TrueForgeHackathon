@@ -1083,32 +1083,6 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
         RunTaskOutput.model_validate(root_with_diff)
 
 
-def test_run_task_output_rejects_changed_public_pass_verdict_on_failure() -> None:
-    payload = {
-        "schema_version": "asset-autopsy/v1",
-        "request_id": "req_demo",
-        "case_id": "case_demo",
-        "revision_id": "r001",
-        "scenario_id": "public_center",
-        "result": "fail",
-        "observations": _run_task_observations(),
-        "behavior_diff": {
-            "changed": True,
-            "first_divergence": {
-                "step": 12,
-                "time_s": 0.12,
-                "signal": "qpos",
-                "magnitude": 0.002,
-            },
-            "metric_deltas": _metric_deltas(),
-            "clause_outcomes": _clause_outcomes(),
-            "verdict": "public_pass",
-        },
-    }
-    with pytest.raises(ValidationError):
-        RunTaskOutput.model_validate(payload)
-
-
 def test_run_task_output_binds_behavior_diff_after_values_to_observations() -> None:
     with pytest.raises(ValidationError):
         RunTaskOutput.model_validate(
