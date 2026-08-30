@@ -1667,19 +1667,6 @@ class EvidenceStore:
         attempt = self._attempt_from_event(
             case_id, state, event, commitments=commitments
         )
-        case = connection.execute(
-            """
-            SELECT qualification_attempt_id, qualification_revision_id
-            FROM cases WHERE case_id = ?
-            """,
-            (case_id,),
-        ).fetchone()
-        if (
-            case is None
-            or case["qualification_attempt_id"] != attempt.attempt_id
-            or case["qualification_revision_id"] != attempt.revision_id
-        ):
-            raise IntegrityError("qualification reservation differs from the case")
         return attempt
 
     def _require_attempt(
