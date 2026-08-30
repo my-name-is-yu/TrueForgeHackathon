@@ -798,6 +798,63 @@ def test_cancelled_upstream_call_poisoned_slot_and_closes_child() -> None:
     asyncio.run(check())
 
 
+def test_cancelled_upstream_call_preserves_cancellation_when_cleanup_fails() -> None:
+    async def check() -> None:
+        transport = _FailingCloseTransport()
+        session: _FakeSession | None = None
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        def make_session(read: object, write: object) -> _FakeSession:
+            nonlocal session
+            session = _FakeSession(read, write, block_on_run=True)
+            return session
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        async with client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            task = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
+            assert session is not None
+            await session.run_started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert slot.state is SlotState.POISONED
+            assert client.ready is False
+            assert session.closed is True
+
+    asyncio.run(check())
+
+
+def test_timeout_preserves_timeout_code_when_cleanup_fails() -> None:
+    async def check() -> None:
+        transport = _FailingCloseTransport()
+        session: _FakeSession | None = None
+        from asset_autopsy.mujoco_client import PinnedMujocoClient, UPSTREAM_TIMEOUT
+
+        def make_session(read: object, write: object) -> _FakeSession:
+            nonlocal session
+            session = _FakeSession(read, write, timeout_on_reset=True)
+            return session
+
+        client = PinnedMujocoClient(
+            call_timeout=0.01,
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        async with client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.reset(slot)
+            assert caught.value.code == UPSTREAM_TIMEOUT
+            assert client.ready is False
+            assert session is not None and session.closed is True
+
+    asyncio.run(check())
+
+
 @pytest.mark.phase0_upstream
 def test_real_client_runner_returns_requested_steps() -> None:
     from asset_autopsy.mujoco_client import PinnedMujocoClient
@@ -982,6 +1039,33 @@ def test_cancelled_partial_startup_closes_entered_resources() -> None:
         assert client.ready is False
         assert transport.closed is True
         assert session.closed is True
+
+    asyncio.run(check())
+
+
+def test_startup_cleanup_preserves_caller_cancellation() -> None:
+    async def check() -> None:
+        transport = _BlockingCloseTransport()
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        class InvalidSchemaSession(_FakeSession):
+            async def list_tools(self) -> SimpleNamespace:
+                return SimpleNamespace(tools=[])
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=InvalidSchemaSession,
+        )
+        task = asyncio.create_task(client.__aenter__())
+        await transport.close_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert task.done() is False
+        transport.allow_close.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert transport.closed is True
+        assert client.ready is False
 
     asyncio.run(check())
 

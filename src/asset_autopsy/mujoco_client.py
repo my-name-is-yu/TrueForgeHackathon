@@ -301,7 +301,7 @@ async def _finish_resource_task(task: asyncio.Task[None]) -> None:
 async def _discard_resource_task_failure(task: asyncio.Task[None]) -> None:
     try:
         await _finish_resource_task(task)
-    except (asyncio.CancelledError, Exception):
+    except Exception:
         pass
 
 
@@ -692,6 +692,12 @@ class PinnedMujocoClient:
             self._context_owners = 0
             await self._shutdown_child_locked(poison=poison)
 
+    async def _shutdown_child_preserving_primary_error(self) -> None:
+        try:
+            await self._shutdown_child()
+        except UpstreamToolError:
+            pass
+
     async def _shutdown_child_locked(self, *, poison: bool) -> None:
         resource_task, self._resource_task = self._resource_task, None
         stop, self._stop_resources = self._stop_resources, None
@@ -777,12 +783,12 @@ class PinnedMujocoClient:
         except asyncio.CancelledError:
             if slot is not None:
                 slot.state = SlotState.POISONED
-            await self._shutdown_child()
+            await self._shutdown_child_preserving_primary_error()
             raise
         except (TimeoutError, asyncio.TimeoutError):
             if slot is not None:
                 slot.state = SlotState.POISONED
-            await self._shutdown_child()
+            await self._shutdown_child_preserving_primary_error()
             raise UpstreamToolError(
                 UPSTREAM_TIMEOUT,
                 SAFE_TIMEOUT_MESSAGE,
@@ -792,7 +798,7 @@ class PinnedMujocoClient:
         except Exception:
             if slot is not None:
                 slot.state = SlotState.POISONED
-            await self._shutdown_child()
+            await self._shutdown_child_preserving_primary_error()
             raise UpstreamToolError(
                 UPSTREAM_UNAVAILABLE,
                 SAFE_MESSAGE,
