@@ -86,21 +86,18 @@ Operating rules:
      `git fetch origin "$refspec"`, passing the complete refspec as one quoted argument,
      then create/switch the local branch from that exact remote-tracking ref. Verify the resulting
      local HEAD equals the recorded SHA before changing the index or worktree. Then use the Codex
-     GitHub connector to verify that the PR is open and its base/head match. A mismatch is `Blocked`;
-     never guess or duplicate.
+     GitHub connector to verify that the PR is open, its base/head match, and its base is exactly
+     `main`. A mismatch is `Blocked`; never guess or duplicate.
    - Otherwise create one `yu/` branch, focused commits, and one PR against `main`. Record its URL,
      branch, base, and exact 40-character head SHA in the Workpad immediately.
 6. Local Git owns fetch, branch, checkout, commit, and push. The Codex GitHub connector owns PR,
    checks, review, and comment inspection. If that connector is unavailable, move to `Blocked`;
    do not substitute GitHub CLI or reimplement either review generator.
-7. Run the most relevant repository checks and record exact commands/results and omissions. For
-   code changes, run `$no-comments` on the complete diff once before the first push and apply only
-   verified in-scope fixes. This is implementation self-review, not the external review gate.
+7. Run the most relevant repository checks and record exact commands/results and omissions.
 8. After pushing a ready, non-draft PR, record its current head SHA and increment `Reviewed heads`.
-   At most ten distinct heads for the same PR may be reviewed, including external or bot pushes and
-   Luna rework heads. `Rework round` increments only for Luna rework, so it may be lower than
-   `Reviewed heads - 1`. This is not a Qodo or per-reviewer quota. Move the issue
-   to `Auto Review` and execute the review protocol below.
+   `Rework round` increments only for Luna rework, so it may be lower than `Reviewed heads - 1`.
+   Both are informational counters, not quotas or stopping conditions. Move the issue to
+   `Auto Review` and execute the review protocol below.
 9. Review protocol, always scoped to the recorded head SHA:
    - Re-read the PR's reviews and top-level comments before requesting anything. Derive reviewer
      coverage from GitHub every time; do not store it in the Workpad. Coverage means at least one
@@ -182,16 +179,40 @@ Operating rules:
      record its URL before proceeding; never mix it into current-PR rework.
    - If any result is `fix_now`, move to `Rework`, apply only those instructions with Luna on the same
      PR branch, run relevant checks, commit/push, increment the rework round, update the Workpad, and
-     return to step 8. If this is already reviewed head 10 or rework round 9, move to `Blocked`
-     instead of requesting another automatic review.
+     return to step 8.
    - If no result is `fix_now`, run the merge-ready gate in step 11. Never merge automatically.
-11. Merge-ready gate must be freshly proven on the latest remote head: the PR is open and ready;
-   head/base still match the Workpad; PR history contains at least one completed Codex review and one
-   completed Qodo review; at least one completed current-head review and all its late comments were
-   included; `fix_now` findings are zero; required checks/tests passed; the working tree is clean;
-   and the branch satisfies the repository's base-synchronization rule. Every `backlog` disposition
-   must already have a created-or-deduplicated candidate recorded in the Workpad. Re-read the PR once after the gate.
-   Record every proof in the Workpad, then move to `Merge Ready`. Only a human may merge or mark Done.
+11. Finalization and merge-ready gate:
+   - First prove the latest remote head satisfies the repository's base-synchronization rule. If it
+     does not, synchronize non-destructively, run the required checks/tests, commit/push when the
+     branch changes, update the Workpad, and return to step 8. Do not run finalization review on an
+     obsolete base.
+   - After an exact current-head review has produced zero `fix_now` findings, require a clean working
+     tree and run `$no-comments` as a mandatory review of the complete `origin/main...HEAD` final
+     candidate. This is once per finalization attempt, not once per PR: any tracked-file fix creates
+     a new candidate that must first return through external review and then finalization again.
+   - Use the controller's exact absolute workspace from `pwd -P`. Generate the target list with
+     `/usr/bin/git -C "$workspace" diff --name-status --no-ext-diff origin/main...HEAD` and compute
+     the candidate digest, with shell pipe-failure propagation enabled, using
+     `/usr/bin/git -C "$workspace" diff --binary --full-index --no-ext-diff --no-textconv
+     origin/main...HEAD | /usr/bin/shasum -a 256`. Record the explicit target list and complete
+     64-character SHA-256.
+     The No Comments reviewer must inspect that same absolute workspace and target list and recompute
+     the digest with the identical command. The controller recomputes it immediately before and after
+     review and accepts the result only when all three digests match and the working tree remains clean.
+   - A digest mismatch invalidates the review. Rebuild the target list and digest from the same
+     workspace and retry No Comments once. A second mismatch is an observable execution failure and
+     may move to `Blocked`; never apply findings from a mismatched review.
+   - Apply only verified in-scope No Comments fixes. If any tracked candidate file changes, run
+     required checks/tests, commit/push, update the Workpad, and return to step 8. Otherwise freshly
+     prove on the latest remote head that the PR is open and ready; head/base still match the Workpad;
+     PR history contains at least one completed Codex review and one completed Qodo review; at
+     least one completed current-head review and all its late comments were included; `fix_now`
+     findings are zero;
+     required checks/tests passed; the working tree is clean; and base synchronization remains
+     satisfied. An empty GitHub checks/status list is not a failure unless repository configuration
+     identifies required checks. Every `backlog` disposition must already have a created-or-deduplicated
+     candidate recorded in the Workpad. Re-read the PR once after the gate, record every proof in the
+     Workpad, then move to `Merge Ready`. Only a human may merge or mark Done.
 12. Automatically create a separate Backlog candidate when work reveals a concrete, evidenced,
    out-of-scope improvement. Through `linear_graphql`, query existing candidates first, then create
    one only when no issue has the same source identifier and normalized title. Create only in
@@ -202,7 +223,11 @@ Operating rules:
    adjudication. Reserve `Blocked` for observable execution failures: missing credentials or
    permissions, unavailable connectors, absent or contradictory authoritative acceptance criteria,
    malformed or failed Sol execution, a test failure that cannot be corrected in scope, review
-   timeout, or safety-limit exhaustion. Preserve the branch/PR and record one concrete next action.
+   timeout, or a repeated finalization digest mismatch. Never move to terminal `Blocked` while
+   intentional work exists only as uncommitted workspace changes: keep the issue in `Rework`, record
+   the exact recovery action, and preserve the workspace. Before any terminal `Blocked` transition,
+   require a clean working tree or prove that remaining files are disposable review artifacts, remove
+   those artifacts, preserve the branch/PR, and record one concrete next action.
 14. `Todo` remains the sole human activation gate for new work. `Merge Ready` requests only the
    final human merge decision. Never merge, close a PR, force-push, mark Done, or auto-run a newly
    created Backlog candidate.

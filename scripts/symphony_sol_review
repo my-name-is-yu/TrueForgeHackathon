@@ -32,9 +32,9 @@ fi
 }
 head_sha=$(sed -n '2s/^Head SHA: \([0-9a-f]\{40\}\)$/\1/p' "$packet")
 [ -n "$head_sha" ] || { echo "Packet line 2 must contain the head SHA." >&2; exit 1; }
-review_head=$(sed -En '3s/^Review head number: ([1-9]|10)$/\1/p' "$packet")
+review_head=$(sed -En '3s/^Review head number: ([1-9][0-9]*)$/\1/p' "$packet")
 [ -n "$review_head" ] || { echo "Packet line 3 must contain the review head number." >&2; exit 1; }
-rework_round=$(sed -n '4s/^Rework round: \([0-9]\)$/\1/p' "$packet")
+rework_round=$(sed -En '4s/^Rework round: (0|[1-9][0-9]*)$/\1/p' "$packet")
 [ -n "$rework_round" ] || { echo "Packet line 4 must contain the rework round." >&2; exit 1; }
 current_reviewer=$(sed -En '5s/^Current reviewer: (codex|qodo|both)$/\1/p' "$packet")
 [ -n "$current_reviewer" ] || { echo "Packet line 5 must contain the current reviewer." >&2; exit 1; }

@@ -155,6 +155,7 @@ def test_review_protocol_requests_each_missing_source_once_per_head() -> None:
 
 def test_review_protocol_uses_pr_coverage_then_one_current_reviewer() -> None:
     template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+    normalized = " ".join(template.split())
 
     assert "Derive reviewer\n     coverage from GitHub every time; do not store it in the Workpad" in template
     assert "request only the missing source or both missing sources in\n     parallel" in template
@@ -162,8 +163,8 @@ def test_review_protocol_uses_pr_coverage_then_one_current_reviewer() -> None:
     assert "one-time exact-head fallback" in template
     assert "a timeout from a missing source cannot be replaced" in template
     assert "Current reviewer: codex|qodo|both" in template
-    assert "PR history contains at least one completed Codex review and one\n   completed Qodo review" in template
-    assert "at least one completed current-head review" in template
+    assert "PR history contains at least one completed Codex review and one completed Qodo review" in normalized
+    assert "at least one completed current-head review" in normalized
 
 
 def test_review_packet_uses_authoritative_contract_context_and_separates_resolved_findings() -> None:
@@ -185,6 +186,52 @@ def test_sol_decision_is_exact_head_and_uses_only_three_dispositions() -> None:
     assert "`fix_now`, `backlog`, or `reject`" in template
     assert "cannot request human\n   adjudication" in template
     assert "without re-adjudicating its meaning" in template
+
+
+def test_no_comments_is_a_hash_bound_finalization_gate() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    implementation_step = template.split("8. After pushing", 1)[0]
+    finalization = template.split("11. Finalization and merge-ready gate:", 1)[1]
+    normalized = " ".join(finalization.split())
+    assert "$no-comments" not in implementation_step
+    assert "once per finalization attempt, not once per PR" in finalization
+    assert "exact absolute workspace from `pwd -P`" in finalization
+    assert "diff --name-status --no-ext-diff origin/main...HEAD" in finalization
+    assert "diff --binary --full-index --no-ext-diff --no-textconv" in finalization
+    assert "shell pipe-failure propagation enabled" in finalization
+    assert "complete 64-character SHA-256" in normalized
+    assert "retry No Comments once" in finalization
+    assert "any tracked-file fix creates" in finalization
+    assert "If any tracked candidate file changes" in finalization
+    assert "return to step 8" in finalization
+
+
+def test_existing_pr_must_target_main() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    existing_pr_path = template.split("- Continue an existing PR", 1)[1].split(
+        "- Otherwise create one", 1
+    )[0]
+    assert "its base is exactly\n     `main`" in existing_pr_path
+    assert "A mismatch is `Blocked`" in existing_pr_path
+
+
+def test_review_counters_do_not_stop_rework() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    assert "informational counters, not quotas or stopping conditions" in template
+    assert "reviewed head 10" not in template
+    assert "rework round 9" not in template
+    assert "safety-limit exhaustion" not in template
+
+
+def test_merge_ready_allows_absent_optional_checks_and_preserves_dirty_rework() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    assert "empty GitHub checks/status list is not a failure unless repository configuration" in template
+    assert "Never move to terminal `Blocked` while\n   intentional work exists only as uncommitted" in template
+    assert "keep the issue in `Rework`" in template
 
 
 def test_workpad_keeps_contract_content_in_authoritative_linear_sources() -> None:

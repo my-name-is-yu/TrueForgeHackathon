@@ -31,6 +31,10 @@ def test_workpad_template_has_all_required_sections() -> None:
 
     symphony_linear.validate_workpad(body, "YU-123")
     assert body.count(symphony_linear.WORKPAD_MARKER) == 1
+    assert "Rework round: 0\n" in body
+    assert "Reviewed heads: 0\n" in body
+    assert "Rework round: 0 /" not in body
+    assert "Reviewed heads: 0 /" not in body
 
 
 def test_find_workpad_refuses_ambiguous_comments() -> None:

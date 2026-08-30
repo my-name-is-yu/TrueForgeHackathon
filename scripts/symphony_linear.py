@@ -167,8 +167,8 @@ def workpad_template(identifier: str) -> str:
 ## Plan and next action
 - Current phase: implementation
 - Next action:
-- Rework round: 0 / 9
-- Reviewed heads: 0 / 10
+- Rework round: 0
+- Reviewed heads: 0
 
 ## Pull request and current head
 - PR: not created

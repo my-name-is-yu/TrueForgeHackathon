@@ -16,7 +16,7 @@ The Linear team must contain these exact state names before this workflow is ren
 | `Auto Review` | Luna + Sol | Wait for Codex and Qodo, then adjudicate the current head. |
 | `Rework` | Luna | Apply only `fix_now` findings from Sol to the same PR. |
 | `Merge Ready` | Human | All automated gates passed; human may decide whether to merge. |
-| `Blocked` | Human | Observable execution failure or exhausted safety limit. |
+| `Blocked` | Human | Observable execution failure that cannot safely continue automatically. |
 | `Done` | Human | Human-owned post-merge terminal state. |
 
 `Auto Review` and `Rework` remain active Symphony states so a process restart can resume from the
@@ -80,17 +80,27 @@ rationale. A required current change is `fix_now`; an evidenced later-owned impr
 `backlog`; unsupported, resolved, or design-conflicting advice is `reject`. Sol has no human or
 conflict escape disposition.
 
-There are at most nine automatic rework rounds and ten distinct reviewed heads for the same PR.
-This is a review-loop head cap, not a Qodo quota. A new push changes the head and forces one
-exact-head review and all gates to be evaluated again. `fix_now` findings that remain at the cap move the
-issue to `Blocked`; the cap never authorizes merge.
+`Rework round` and `Reviewed heads` are informational counters, not quotas. A new push changes the
+head and forces one exact-head review and all gates to be evaluated again. A finding is never waived
+or sent to `Blocked` merely because the PR has used many review heads.
 
 ## Merge-ready and Backlog safety
 
+After external review reaches zero `fix_now` findings and base synchronization is current, the final
+candidate must pass `$no-comments`. Controller and reviewer use the same absolute workspace, explicit
+changed-file list, and full SHA-256 of the binary full-index diff. The controller verifies the digest
+before and after review. A mismatch invalidates the result and is retried once; a second mismatch is
+an execution failure. Any No Comments fix that changes a tracked candidate file is pushed and
+returned to exact-head external review before finalization runs again.
+
 `Merge Ready` requires a fresh connector read proving that the recorded head is still current, PR
 history contains both reviewer sources, at least one current-head review and its late comments were
-processed, `fix_now` findings are zero, required verification passed, the tree is clean, and base
-synchronization is satisfied. The workflow never merges.
+processed, `fix_now` findings are zero, required verification passed, the tree is clean, finalization
+passed, and base synchronization is satisfied. An empty checks/status list is allowed unless the
+repository identifies required checks. The workflow never merges.
+
+Terminal `Blocked` is forbidden while intentional work exists only as uncommitted changes. Such an
+issue remains in `Rework` with an explicit recovery action so Symphony does not discard its workspace.
 
 Out-of-scope improvements are created in `Backlog`, never `Todo`. Agents query and mutate them
 through `linear_graphql`. For human-operated diagnostics, the helper derives a stable source/title
