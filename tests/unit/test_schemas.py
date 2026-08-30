@@ -1208,6 +1208,14 @@ def test_publish_revision_requires_the_complete_artifact_set() -> None:
             {**base, "artifacts": [*artifacts[:-1], artifacts[0]]}
         )
 
+    for duplicate_field in ("artifact_id", "uri"):
+        duplicate_artifacts = [artifact.copy() for artifact in artifacts]
+        duplicate_artifacts[1][duplicate_field] = duplicate_artifacts[0][duplicate_field]
+        with pytest.raises(ValidationError):
+            PublishRevisionOutput.model_validate(
+                {**base, "artifacts": duplicate_artifacts}
+            )
+
 
 @pytest.mark.parametrize("value", [-1.0, 0.5])
 def test_run_task_count_observations_are_nonnegative_integers(value: float) -> None:

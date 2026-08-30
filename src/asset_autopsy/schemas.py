@@ -1010,6 +1010,12 @@ class PublishRevisionOutput(CommonOutput):
         kinds = [artifact.kind for artifact in self.artifacts]
         if len(kinds) != len(required_kinds) or set(kinds) != required_kinds:
             raise ValueError("publication must return exactly one required artifact of each kind")
+        if len({artifact.artifact_id for artifact in self.artifacts}) != len(
+            self.artifacts
+        ):
+            raise ValueError("publication artifact IDs must be unique")
+        if len({artifact.uri for artifact in self.artifacts}) != len(self.artifacts):
+            raise ValueError("publication artifact URIs must be unique")
         return self
 
 

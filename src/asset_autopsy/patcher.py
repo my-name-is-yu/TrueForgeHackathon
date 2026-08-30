@@ -88,7 +88,7 @@ def _node_kind(tag: object) -> str:
         return "<comment>"
     if tag is ET.ProcessingInstruction:
         return "<processing-instruction>"
-    return _local_name(tag)
+    return tag if isinstance(tag, str) else ""
 
 
 def _reject_external_features(source: bytes) -> None:
@@ -218,8 +218,8 @@ def _compare_nodes(
             CanonicalChange(before_path, "<element>", before_kind, after_kind)
         )
         return
-    before_attrs = {_local_name(k): v for k, v in before.attrib.items()}
-    after_attrs = {_local_name(k): v for k, v in after.attrib.items()}
+    before_attrs = dict(before.attrib)
+    after_attrs = dict(after.attrib)
     for attribute in sorted(set(before_attrs) | set(after_attrs)):
         if before_attrs.get(attribute) != after_attrs.get(attribute):
             changes.append(

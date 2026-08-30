@@ -122,6 +122,23 @@ def test_patch_preserves_prolog_and_epilog_nodes() -> None:
     assert any(change.attribute == "<text>" for change in changes)
 
 
+def test_document_diff_preserves_namespace_identity() -> None:
+    before = (
+        b'<mujoco xmlns="urn:before"><worldbody><body name="arm">'
+        b'<joint name="elbow" damping="0.3"/></body></worldbody></mujoco>'
+    )
+    after = (
+        b'<mujoco xmlns="urn:after"><worldbody><body name="arm">'
+        b'<joint name="elbow" damping="0.5"/></body></worldbody></mujoco>'
+    )
+
+    changes = canonical_document_diff(before, after)
+
+    assert changes[0].attribute == "<element>"
+    assert changes[0].before == "{urn:before}mujoco"
+    assert changes[0].after == "{urn:after}mujoco"
+
+
 def test_fixture_allows_urls_in_comments_and_processing_instructions() -> None:
     xml = b'''<!-- license: https://www.apache.org/licenses/LICENSE-2.0 -->
 <?documentation href="https://example.invalid/fixture"?>
