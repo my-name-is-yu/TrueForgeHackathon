@@ -830,8 +830,6 @@ def test_revision_commit_validates_artifact_before_mutation(
         "CASE_CREATED",
         "REVISION_CREATED",
         "QUALIFICATION_RESERVED",
-        "QUALIFICATION_RECOVERING",
-        "QUALIFICATION_RECOVERED",
         "QUALIFICATION_PASSED",
         "QUALIFICATION_FAILED",
     ],
@@ -1535,7 +1533,7 @@ def test_terminal_case_still_rejects_result_on_reservation(tmp_path: Path) -> No
         store.get_qualification("case-1")
 
 
-def test_restore_rejects_illegal_qualification_transition(tmp_path: Path) -> None:
+def test_restore_rejects_terminal_qualification_without_reservation(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
     add_child(store)
@@ -1543,14 +1541,14 @@ def test_restore_rejects_illegal_qualification_transition(tmp_path: Path) -> Non
     with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
         connection.execute(
             """
-            UPDATE ledger_events SET event_type = 'QUALIFICATION_RECOVERED'
+            UPDATE ledger_events SET event_type = 'QUALIFICATION_PASSED'
             WHERE event_type = 'QUALIFICATION_RESERVED'
             """
         )
         connection.commit()
     replace_event_payload(
         tmp_path / "ledger.sqlite",
-        "QUALIFICATION_RECOVERED",
+        "QUALIFICATION_PASSED",
         {
             "attempt_id": "attempt-1",
             "revision_id": "r001",
@@ -1566,7 +1564,7 @@ def test_restore_rejects_illegal_qualification_transition(tmp_path: Path) -> Non
         store.get_qualification("case-1")
 
 
-def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:
+def test_qualification_reserve_terminal_preserves_exact_identity(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
     add_child(store)
@@ -1581,22 +1579,12 @@ def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_pat
 
     assert store.get_case("case-1").qualification_state == "running"
     assert store.get_qualification("case-1").state == "RUNNING"
-    with pytest.raises(Exception):
-        store.mark_qualification_recovering(**{**identity, "attempt_id": "other"})
+    with pytest.raises(QualificationConflictError):
+        store.record_qualification_terminal(
+            **{**identity, "attempt_id": "other"}, state="PASSED"
+        )
     assert store.get_case("case-1").qualification_state == "running"
 
-    recovering = store.mark_qualification_recovering(**identity)
-    assert recovering.state == "RECOVERING"
-    assert store.get_case("case-1").qualification_attempt_id == "attempt-1"
-    with pytest.raises(Exception):
-        store.record_qualification_terminal(**identity, state="PASSED")
-    assert store.get_case("case-1").qualification_state == "recovering"
-    with pytest.raises(Exception):
-        store.recover_qualification(**{**identity, "scenario_hashes": ("8" * 64,)})
-    assert store.get_case("case-1").qualification_state == "recovering"
-
-    recovered = store.recover_qualification(**identity)
-    assert recovered.state == "RUNNING"
     terminal = store.record_qualification_terminal(
         **identity,
         state="PASSED",
@@ -1630,23 +1618,21 @@ def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_pat
     )
     assert [event.event_type for event in qualification_events] == [
         "QUALIFICATION_RESERVED",
-        "QUALIFICATION_RECOVERING",
-        "QUALIFICATION_RECOVERED",
         "QUALIFICATION_PASSED",
     ]
     assert all(
         {field: event.payload[field] for field in COMMITMENTS} == COMMITMENTS
         for event in qualification_events
     )
-    with pytest.raises(Exception):
+    with pytest.raises(QualificationConflictError):
         store.record_qualification_terminal(**identity, state="FAILED")
-    with pytest.raises(Exception):
+    with pytest.raises(QualificationConflictError):
         store.record_qualification_terminal(
             **identity,
             state="PASSED",
             result={"qualified_core_sha256": "0" * 64, "passed": 999},
         )
-    with pytest.raises(Exception):
+    with pytest.raises(QualificationConflictError):
         store.reserve_qualification(
             case_id="case-1",
             revision_id="r001",
@@ -1774,7 +1760,7 @@ def _add_child_evidence(store: EvidenceStore) -> None:
     )
 
 
-@pytest.mark.parametrize("sealed_state", ["RUNNING", "RECOVERING", "PASSED", "FAILED"])
+@pytest.mark.parametrize("sealed_state", ["RUNNING", "PASSED", "FAILED"])
 def test_new_child_revision_is_rejected_after_lifecycle_seal(
     tmp_path: Path, sealed_state: str
 ) -> None:
@@ -1791,9 +1777,6 @@ def test_new_child_revision_is_rejected_after_lifecycle_seal(
     }
     if sealed_state == "RUNNING":
         qualify(store)
-    elif sealed_state == "RECOVERING":
-        qualify(store)
-        store.mark_qualification_recovering(**identity)
     elif sealed_state in {"PASSED", "FAILED"}:
         qualify(store)
         store.record_qualification_terminal(**identity, state=sealed_state)

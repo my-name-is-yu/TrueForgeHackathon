@@ -1554,6 +1554,11 @@ def test_open_case_output_binds_fixed_contract_and_lifecycle() -> None:
     with pytest.raises(ValidationError):
         OpenCaseOutput.model_validate(inconsistent_budget)
 
+    removed_recovery_state = _open_case_payload()
+    removed_recovery_state["qualification_state"] = "recovering"
+    with pytest.raises(ValidationError):
+        OpenCaseOutput.model_validate(removed_recovery_state)
+
 
 @pytest.mark.parametrize("value", [-1.0, 0.5])
 def test_run_task_count_observations_are_nonnegative_integers(value: float) -> None:

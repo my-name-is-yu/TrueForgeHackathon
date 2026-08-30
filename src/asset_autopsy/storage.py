@@ -50,8 +50,6 @@ TRANSACTIONAL_EVENT_TYPES = {
     "CASE_CREATED",
     "REVISION_CREATED",
     "QUALIFICATION_RESERVED",
-    "QUALIFICATION_RECOVERING",
-    "QUALIFICATION_RECOVERED",
     "QUALIFICATION_PASSED",
     "QUALIFICATION_FAILED",
 }
@@ -67,9 +65,6 @@ class ValidationError(StorageError):
 
 class IntegrityError(StorageError):
     """Raised when persisted evidence does not match its integrity proof."""
-
-
-StorageIntegrityError = IntegrityError
 
 
 class CaseNotFoundError(StorageError):
@@ -116,7 +111,6 @@ class CaseRecord:
         return {
             None: "unused",
             "RUNNING": "running",
-            "RECOVERING": "recovering",
             "PASSED": "passed",
             "FAILED": "failed",
         }[self.qualification_result]
@@ -543,7 +537,7 @@ class EvidenceStore:
     @staticmethod
     def _case_from_row(row: sqlite3.Row) -> CaseRecord:
         values = dict(row)
-        if values["qualification_result"] not in {None, "RUNNING", "RECOVERING", "PASSED", "FAILED"}:
+        if values["qualification_result"] not in {None, "RUNNING", "PASSED", "FAILED"}:
             raise IntegrityError("qualification state is invalid")
         return CaseRecord(**values)
 
@@ -1030,8 +1024,6 @@ class EvidenceStore:
             raise IntegrityError("materialized case state does not match the ledger")
         return case
 
-    restore_case_state = restore_state
-
     def get_revision(self, case_id: str, revision_id: str) -> RevisionRecord:
         _id(case_id, "case_id")
         _id(revision_id, "revision_id")
@@ -1084,8 +1076,6 @@ class EvidenceStore:
                 raise RevisionNotFoundError("revision was not found")
             self._validate_artifact_objects(prepared.artifact_refs)
             return self._append_event(connection, prepared)
-
-    append_ledger_event = append_event
 
     @staticmethod
     def _validate_generic_event_type(event_type: str) -> None:
@@ -1276,8 +1266,6 @@ class EvidenceStore:
             ).fetchone()
             assert row is not None
             return self._revision_from_row(row)
-
-    commit_revision_and_event = commit_revision_with_event
 
     @staticmethod
     def _validate_run(run: RunRecord) -> str:
@@ -1539,24 +1527,14 @@ class EvidenceStore:
                 qualification_result = "RUNNING"
                 qualification_identity = (attempt.revision_id, attempt.attempt_id)
             elif event.event_type in {
-                "QUALIFICATION_RECOVERING",
-                "QUALIFICATION_RECOVERED",
                 "QUALIFICATION_PASSED",
                 "QUALIFICATION_FAILED",
             }:
                 state = {
-                    "QUALIFICATION_RECOVERING": "RECOVERING",
-                    "QUALIFICATION_RECOVERED": "RUNNING",
                     "QUALIFICATION_PASSED": "PASSED",
                     "QUALIFICATION_FAILED": "FAILED",
                 }[event.event_type]
-                required_previous = {
-                    "QUALIFICATION_RECOVERING": "RUNNING",
-                    "QUALIFICATION_RECOVERED": "RECOVERING",
-                    "QUALIFICATION_PASSED": "RUNNING",
-                    "QUALIFICATION_FAILED": "RUNNING",
-                }[event.event_type]
-                if qualification_result != required_previous:
+                if qualification_result != "RUNNING":
                     raise IntegrityError("qualification lifecycle transition is invalid")
                 attempt = cls._attempt_from_event(
                     case.case_id, state, event, commitments=commitments
@@ -1844,138 +1822,6 @@ class EvidenceStore:
                 state="RUNNING",
             )
 
-    def mark_qualification_recovering(
-        self,
-        *,
-        case_id: str,
-        attempt_id: str,
-        revision_id: str,
-        suite_commitment_sha256: str,
-        scenario_hashes: Sequence[str],
-    ) -> QualificationAttempt:
-        self._validate_qualification_identity(
-            case_id=case_id,
-            attempt_id=attempt_id,
-            revision_id=revision_id,
-            suite_commitment_sha256=suite_commitment_sha256,
-            scenario_hashes=scenario_hashes,
-        )
-        with self._transaction() as connection:
-            case = connection.execute(
-                "SELECT * FROM cases WHERE case_id = ?", (case_id,)
-            ).fetchone()
-            if case is None:
-                raise CaseNotFoundError("case was not found")
-            self._validate_case_lifecycle_from_connection(connection, case_id)
-            case_commitments = self._stored_commitment_payload(case)
-            if case["qualification_result"] != "RUNNING":
-                raise QualificationConflictError("qualification is not running")
-            self._require_attempt(
-                connection,
-                case_id=case_id,
-                attempt_id=attempt_id,
-                revision_id=revision_id,
-                suite_commitment_sha256=suite_commitment_sha256,
-                scenario_hashes=scenario_hashes,
-                state="RUNNING",
-                commitments=case_commitments,
-            )
-            connection.execute(
-                "UPDATE cases SET qualification_result = 'RECOVERING' WHERE case_id = ?",
-                (case_id,),
-            )
-            self._append_event_record(
-                connection,
-                LedgerEventRecord(
-                    event_id=_new_id("evt"),
-                    case_id=case_id,
-                    revision_id=revision_id,
-                    event_type="QUALIFICATION_RECOVERING",
-                    payload=self._identity_payload(
-                        attempt_id=attempt_id,
-                        revision_id=revision_id,
-                        suite_commitment_sha256=suite_commitment_sha256,
-                        scenario_hashes=scenario_hashes,
-                        commitments=case_commitments,
-                    ),
-                    request_id=_new_id("req"),
-                ),
-            )
-            return QualificationAttempt(
-                case_id=case_id,
-                attempt_id=attempt_id,
-                revision_id=revision_id,
-                suite_commitment_sha256=suite_commitment_sha256,
-                scenario_hashes=tuple(scenario_hashes),
-                state="RECOVERING",
-            )
-
-    def recover_qualification(
-        self,
-        *,
-        case_id: str,
-        attempt_id: str,
-        revision_id: str,
-        suite_commitment_sha256: str,
-        scenario_hashes: Sequence[str],
-    ) -> QualificationAttempt:
-        normalized = self._validate_qualification_identity(
-            case_id=case_id,
-            attempt_id=attempt_id,
-            revision_id=revision_id,
-            suite_commitment_sha256=suite_commitment_sha256,
-            scenario_hashes=scenario_hashes,
-        )
-        with self._transaction() as connection:
-            case = connection.execute(
-                "SELECT * FROM cases WHERE case_id = ?", (case_id,)
-            ).fetchone()
-            if case is None:
-                raise CaseNotFoundError("case was not found")
-            self._validate_case_lifecycle_from_connection(connection, case_id)
-            case_commitments = self._stored_commitment_payload(case)
-            if case["qualification_result"] != "RECOVERING":
-                raise QualificationConflictError("qualification is not recovering")
-            self._require_attempt(
-                connection,
-                case_id=case_id,
-                attempt_id=attempt_id,
-                revision_id=revision_id,
-                suite_commitment_sha256=suite_commitment_sha256,
-                scenario_hashes=normalized,
-                state="RECOVERING",
-                commitments=case_commitments,
-            )
-            connection.execute(
-                "UPDATE cases SET qualification_result = 'RUNNING' WHERE case_id = ?",
-                (case_id,),
-            )
-            self._append_event_record(
-                connection,
-                LedgerEventRecord(
-                    event_id=_new_id("evt"),
-                    case_id=case_id,
-                    revision_id=revision_id,
-                    event_type="QUALIFICATION_RECOVERED",
-                    payload=self._identity_payload(
-                        attempt_id=attempt_id,
-                        revision_id=revision_id,
-                        suite_commitment_sha256=suite_commitment_sha256,
-                        scenario_hashes=normalized,
-                        commitments=case_commitments,
-                    ),
-                    request_id=_new_id("req"),
-                ),
-            )
-            return QualificationAttempt(
-                case_id=case_id,
-                attempt_id=attempt_id,
-                revision_id=revision_id,
-                suite_commitment_sha256=suite_commitment_sha256,
-                scenario_hashes=normalized,
-                state="RUNNING",
-            )
-
     def record_qualification_terminal(
         self,
         *,
@@ -2109,8 +1955,6 @@ class EvidenceStore:
                 result=result_payload,
             )
 
-    complete_qualification = record_qualification_terminal
-
     def get_qualification(self, case_id: str) -> QualificationAttempt | None:
         _id(case_id, "case_id")
         with self._read_transaction() as connection:
@@ -2229,7 +2073,3 @@ class EvidenceStore:
 
     def __exit__(self, *_args: object) -> None:
         self.close()
-
-
-SQLiteEvidenceStore = EvidenceStore
-Storage = EvidenceStore
