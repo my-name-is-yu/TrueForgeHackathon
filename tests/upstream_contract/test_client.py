@@ -365,7 +365,7 @@ def _fake_client(
 
 def test_child_environment_is_allowlisted_and_pinned() -> None:
     parameters = server_parameters()
-    assert parameters.args == ["-P", "-m", "mujoco_mcp", "--transport", "stdio"]
+    assert parameters.args == ["-s", "-P", "-m", "mujoco_mcp", "--transport", "stdio"]
     assert parameters.env is not None
     assert parameters.env["MUJOCO_GL"] == "cgl"
     assert parameters.env["MUJOCO_MCP_MAX_WORKERS"] == "1"
@@ -1499,6 +1499,35 @@ def test_old_session_failure_does_not_close_the_restarted_child() -> None:
         assert caught.value.code == UPSTREAM_UNAVAILABLE
         assert client.ready is True
         assert sessions[1].closed is False
+        await client.__aexit__(None, None, None)
+        await client.__aexit__(None, None, None)
+
+    asyncio.run(check())
+
+
+def test_queued_load_cannot_cross_into_a_restarted_session() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client()
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        await client.__aenter__()
+        await client._operation_lock.acquire()
+        queued = asyncio.create_task(client.load("<mujoco model=\"queued\"/>"))
+        while not client._slots:
+            await asyncio.sleep(0)
+        stale_slot = client._slots[-1]
+        await client._shutdown_child()
+        await client.__aenter__()
+        client._operation_lock.release()
+        with pytest.raises(UpstreamToolError) as caught:
+            await queued
+        assert caught.value.code == "SLOT_POISONED"
+        assert stale_slot.state is SlotState.POISONED
+        assert client.ready is True
         await client.__aexit__(None, None, None)
         await client.__aexit__(None, None, None)
 

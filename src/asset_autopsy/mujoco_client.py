@@ -226,7 +226,7 @@ def server_parameters(*, no_render: bool = False) -> StdioServerParameters:
         environment["MUJOCO_MCP_NO_RENDER"] = "1"
     return StdioServerParameters(
         command=sys.executable,
-        args=["-P", "-m", "mujoco_mcp", "--transport", "stdio"],
+        args=["-s", "-P", "-m", "mujoco_mcp", "--transport", "stdio"],
         env=environment,
     )
 
@@ -793,8 +793,22 @@ class PinnedMujocoClient:
         if tool_name not in REQUIRED_TOOL_NAMES:
             raise ValueError("upstream operation is not permitted")
         async with self._operation_lock:
-            if slot is not None and tool_name != "sim_load":
-                self._require_ready_slot(slot)
+            if slot is not None:
+                if tool_name == "sim_load":
+                    if (
+                        slot.state is not SlotState.PENDING
+                        or self._session_token is None
+                        or slot._session_token is not self._session_token
+                        or slot not in self._slots
+                    ):
+                        raise UpstreamToolError(
+                            SLOT_POISONED,
+                            SAFE_MESSAGE,
+                            True,
+                            SAFE_SLOT_ACTION,
+                        )
+                else:
+                    self._require_ready_slot(slot)
             session = self._session
             session_token = self._session_token
             if session is None:
