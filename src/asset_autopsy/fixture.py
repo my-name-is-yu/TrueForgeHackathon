@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Final
 
 from .storage import canonical_json_bytes
+from .task_evaluation import public_contract_limits
 
 
 CASE_ID: Final = "case_compound-arm-01"
@@ -103,13 +104,7 @@ class CompoundArmFixture:
                 "target_body_position": scenario.target_body_position,
                 "duration_steps": scenario.duration_steps,
                 "hold_steps": scenario.hold_steps,
-                "limits": {
-                    "hold_error_p95_m": 0.03,
-                    "joint_speed_rms_rad_s": 0.05,
-                    "settling_time_s": 2.0,
-                    "joint_limit_violation_count": 0,
-                    "non_finite_count": 0,
-                },
+                "limits": public_contract_limits(),
             }
         )
 
