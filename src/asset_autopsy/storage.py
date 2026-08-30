@@ -878,15 +878,6 @@ class EvidenceStore:
         events_by_id = {event.event_id: event for event in case_events}
         revisions_by_id = {row["revision_id"]: row for row in revision_rows}
         runs_by_id = {row["run_id"]: row for row in run_rows}
-        created = tuple(event for event in case_events if event.event_type == "CASE_CREATED")
-        if len(created) != 1 or created[0].payload.get("root_revision_id") != case.root_revision_id:
-            raise IntegrityError("case creation state does not match the ledger")
-        try:
-            created_commitments = self._commitment_payload(created[0].payload)
-        except ValidationError as exc:
-            raise IntegrityError("case creation commitments are invalid") from exc
-        if created_commitments != case_commitments:
-            raise IntegrityError("case commitments do not match the ledger")
         if (
             root_revision is None
             or root_revision["parent_revision_id"] is not None
@@ -1398,6 +1389,18 @@ class EvidenceStore:
         events: Sequence[LedgerEvent],
         commitments: Mapping[str, str],
     ) -> tuple[str | None, str | None, str | None, str | None]:
+        created = tuple(event for event in events if event.event_type == "CASE_CREATED")
+        if (
+            len(created) != 1
+            or created[0].payload.get("root_revision_id") != case.root_revision_id
+        ):
+            raise IntegrityError("case creation state does not match the ledger")
+        try:
+            created_commitments = cls._commitment_payload(created[0].payload)
+        except ValidationError as exc:
+            raise IntegrityError("case creation commitments are invalid") from exc
+        if created_commitments != dict(commitments):
+            raise IntegrityError("case commitments do not match the ledger")
         qualification_revision_id: str | None = None
         qualification_attempt_id: str | None = None
         qualification_result: str | None = None
