@@ -4,6 +4,12 @@ Status: Linear synchronized; implementation proceeds through ordinary Codex pull
 Human controls: `YU-19` (plan synchronization) and `YU-29` (final evidence, links, and submission).
 Product contract: `docs/asset-autopsy-mvp-design.md`.
 
+## 0. SC1 direction and stack
+
+SC1 is the tools-first direction slice. Its named stack is `main -> direction -> PR #15 -> PR #13 -> PR #14 -> final PR`; each later implementation PR is reviewed against the aggregate result of the earlier stack before it is considered ready. The direction slice makes Asset Autopsy a TrueForge-facing Streamable HTTP MCP with a bounded generic `run_experiment` contract. Fixed BehaviorDiff remains on `run_task`; the historical Phase 0 `run_probe` selector is not a public alias.
+
+The following are explicitly outside SC1: the Skill, product CLI, TrueForge fork, arbitrary 3D formats, and advanced recovery. They remain later backlog scope and must not be smuggled into the direction PR.
+
 ## 1. Why this plan exists
 
 The MVP scope and behavior are unchanged. This document defines dependency-safe issue boundaries for ordinary Codex pull requests; the companion design receives only the review-proven export-name and destination-parent-fsync errata recorded by YU-19. The previous 12 implementation issues placed several independent unknowns into AA-00, AA-06, AA-09, and AA-10. Those four became non-executable umbrella parents. Review then separated AA-05's shared exact-byte commitment primitive from causal-service behavior, and split AA-12's three independently falsifiable release-harness seams into evidence-provenance, Git-binding, and manifest-CLI children.
@@ -166,7 +172,7 @@ The graph is acyclic. AA-07 and AA-08 deliberately have three direct blockers ea
 
 ## 7. Ownership and integration rules
 
-- One issue owns one branch and one PR, always based on current `main`. Stacked PRs are not part of this workflow.
+- Ordinary work uses one issue per branch and PR based on current `main`. The explicitly approved SC1 exception is the named stack `main -> direction -> PR #15 -> PR #13 -> PR #14 -> final PR`; each stacked slice must be base-aware and the aggregate must be reviewed against `main`.
 - Dependency ownership is a serial Phase 0 handoff: AA-00A creates the initial `pyproject.toml` and `uv.lock`; after AA-00A merges, AA-00B exclusively owns those two files while closing the real TrueForge seam. AA-00B must preserve AA-00A's direct upstream pins and rerun the upstream 4/4 suite under the final lockfile. The dependency files freeze only after that regression and AA-00B's 5/5 gate pass and merge. Every later dependency change is a blocker, not an opportunistic edit.
 - `tests/conftest.py` belongs only to AA-00A. AA-00B keeps its helpers inside `tests/phase0/trueforge/**`.
 - AA-00A and AA-00B have disjoint spike, test, and evidence directories.
@@ -353,7 +359,7 @@ Acceptance:
 - [ ] Revision plus ledger event commits atomically
 - [ ] One keyword-only `create_preprovisioned_case` transaction atomically inserts the case and root revision with `root_revision_id == head_revision_id`, null qualification/promotion state, and exactly the five named lowercase-64-hex fields `source_asset_sha256`, `controller_sha256`, `public_contract_sha256`, `runner_sha256`, and `holdout_commitment_sha256`
 - [ ] Case creation rejects a missing, extra, malformed, or existing identity; it never upserts, hashes artifact bytes, renames a commitment field, or exposes an API that later updates any of the five stored commitments
-- [ ] Every non-root child revision persists exactly one hypothesis event and one probe run citation; the pre-provisioned root revision has both citation fields null
+- [ ] Every non-root child revision persists exactly one hypothesis event and one experiment run citation; the pre-provisioned root revision has both citation fields null
 - [ ] Event-chain mutation is detected
 - [ ] Linear head, qualification attempt, and promotion state can be restored
 - [ ] RUNNING and RECOVERING qualification states persist exact attempt identity
@@ -398,7 +404,7 @@ Acceptance:
 - [ ] Exactly seven tool input/output models are frozen
 - [ ] Unknown fields and non-finite inputs are rejected
 - [ ] Patch is one object, never an array
-- [ ] create_revision accepts exactly one basis_probe_run_id, never an array
+- [ ] create_revision accepts exactly one basis_experiment_run_id, never an array
 - [ ] Only joint axis, damping, armature, and frictionloss are editable
 - [ ] Base hash and expected-old-value guards are enforced
 - [ ] Axis normalization and family-level safety ranges are enforced
@@ -541,21 +547,21 @@ Protected surfaces:
 
 Acceptance:
 
-- [ ] open_case, inspect_asset, run_task, run_probe, and create_revision are implemented
+- [ ] open_case, inspect_asset, run_task, run_experiment, and create_revision are implemented
 - [ ] open_case performs a fresh read of an already pre-provisioned case; a missing case returns typed `CASE_NOT_FOUND`
 - [ ] open_case does not create or mutate a case row, commitment, revision, run, budget, ledger event, or object-store artifact; repeated calls leave that complete logical storage state unchanged
 - [ ] For its five commitment fields, open_case copies only the stored values and never imports commitments.py, computes or renames a digest, or reads hidden-manifest or nonce bytes; the response still contains every contract, budget, revision, topology, patch-policy, and sanitized event-tail field required by the frozen design
 - [ ] A pre-provisioned case missing any required commitment fails with a bounded typed precondition error rather than inventing or repairing identity
-- [ ] Probe without a baseline is rejected
+- [ ] Experiment without a baseline is rejected
 - [ ] Hypothesis, alternative, prediction, and falsifier are committed before engine execution
-- [ ] Output contains observations and predicate matches, not a root-cause diagnosis
-- [ ] Cited probe completed on the same base revision
+- [ ] Output contains condition/execution hashes, segment boundaries, and resampled observations but no predicate-matched booleans or root-cause diagnosis
+- [ ] Cited experiment completed on the same base revision
 - [ ] Patch target appears in the cited hypothesis or alternative
 - [ ] Only the current linear head may be patched
 - [ ] One revision changes one attribute
 - [ ] Child run_task returns same-condition BehaviorDiff against its parent
 - [ ] Budget accounting matches the design
-- [ ] Table-driven budget tests enforce invalid request equals 0, pre-physics upstream failure equals 0, completed task or probe including domain failure equals 1, partial run records failed event plus 1, policy-valid compile rejection equals one patch attempt, and identical revision equals 0
+- [ ] Table-driven budget tests enforce invalid request equals 0, pre-physics upstream failure equals 0, completed task or experiment including domain failure equals 1, partial run records failed event plus 1, policy-valid compile rejection equals one patch attempt, and identical revision equals 0
 
 Required verification:
 
@@ -843,7 +849,7 @@ Acceptance:
 - [ ] A recordable run starts only through AA-09A's isolated named-Git-snapshot entry, captures `execution_code_git_sha` before launch and the initialized `component_build_sha256` before the first agent call, and refuses dirty, shadowed, injected, or changed runtime code as valid evidence
 - [ ] Run A uses real denial and leaves zero exports
 - [ ] After reset, fresh Run B completes r000 to r001 to r002 from one prompt
-- [ ] Exactly two hypothesis/probe/one-attribute-patch cycles occur with zero human re-prompts
+- [ ] Exactly two hypothesis/experiment/one-attribute-patch cycles occur with zero human re-prompts
 - [ ] Public gates and hidden qualification pass 3/3
 - [ ] A real TrueForge approval pause occurs only for publish_revision
 - [ ] The approval surface displays the complete human-readable ticket before the human acts
@@ -895,7 +901,7 @@ Acceptance:
 
 - [ ] Arbitrary path or XML input is rejected
 - [ ] A two-attribute patch is rejected
-- [ ] Failure injection proves hypothesis-before-probe ordering
+- [ ] Failure injection proves hypothesis-before-experiment ordering
 - [ ] All seven tool results, MCP isError envelopes, public event tails, LTR-visible payloads, and logs pass sentinel scans for golden data, holdout values, nonce, host path, secret, and traceback; intentional canonical diff values are explicitly scoped
 - [ ] Any production fix is limited to the five explicitly allowed modules and a reproduced failing test
 - [ ] Any validated out-of-allowlist root cause creates a dedicated follow-on fix leaf with exact ownership and blocker links; AA-10A remains incomplete until that fix merges and this regression passes
@@ -977,7 +983,7 @@ Protected surfaces:
 
 Acceptance:
 
-- [ ] One NO_RENDER restart after rendering failure preserves the numeric probe and repair loop
+- [ ] One NO_RENDER restart after rendering failure preserves the numeric experiment and repair loop
 - [ ] A stdio death makes the current call retryable, discards the poisoned slot, and lets a later separate call use a new slot
 - [ ] With identical XML, controller, scenario, seed, timestep, initial state, upstream commit, and architecture, two fresh-process metric sets differ by no more than 1e-8
 - [ ] Qualification and public metrics remain independent of rendered pixels

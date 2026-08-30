@@ -1,6 +1,6 @@
 # TrueForgeHackathon
 
-Project workspace for the [Agent Harness Hackathon](https://www.wemakedevs.org/hackathons/trueforge), running August 24–30, 2026.
+Project workspace for the [Agent Harness Hackathon](https://www.wemakedevs.org/hackathons/trueforge), running August 24–30, 2026. Asset Autopsy's SC1 direction is a TrueForge-facing Streamable HTTP MCP with seven bounded domain tools; the agent selects a bounded generic experiment through `run_experiment`, while fixed BehaviorDiff remains part of `run_task`.
 
 ## Local harness
 
