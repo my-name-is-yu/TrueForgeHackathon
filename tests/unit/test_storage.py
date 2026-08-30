@@ -649,6 +649,7 @@ def test_event_chain_detects_tail_deletion(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        ("source_asset_sha256", "f" * 64),
         ("head_revision_id", "r000"),
         ("qualification_attempt_id", "attempt-corrupted"),
         ("qualification_result", "FAILED"),

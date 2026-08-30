@@ -777,6 +777,13 @@ class EvidenceStore:
             if row is None:
                 raise CaseNotFoundError("case was not found")
             case = self._case_from_row(row)
+            root_revision = connection.execute(
+                """
+                SELECT asset_sha256 FROM revisions
+                WHERE case_id = ? AND revision_id = ?
+                """,
+                (case_id, case.root_revision_id),
+            ).fetchone()
         case_events = tuple(event for event in events if event.case_id == case_id)
         created = tuple(event for event in case_events if event.event_type == "CASE_CREATED")
         if len(created) != 1 or created[0].payload.get("root_revision_id") != case.root_revision_id:
@@ -822,6 +829,8 @@ class EvidenceStore:
 
         if (
             case.head_revision_id != head_revision_id
+            or root_revision is None
+            or root_revision["asset_sha256"] != case.source_asset_sha256
             or case.qualification_revision_id != qualification_revision_id
             or case.qualification_attempt_id != qualification_attempt_id
             or case.qualification_result != qualification_result
