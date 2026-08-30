@@ -338,7 +338,7 @@ def _fake_client(
 
 def test_child_environment_is_allowlisted_and_pinned() -> None:
     parameters = server_parameters()
-    assert parameters.args == ["-m", "mujoco_mcp", "--transport", "stdio"]
+    assert parameters.args == ["-P", "-m", "mujoco_mcp", "--transport", "stdio"]
     assert parameters.env is not None
     assert parameters.env["MUJOCO_GL"] == "cgl"
     assert parameters.env["MUJOCO_MCP_MAX_WORKERS"] == "1"

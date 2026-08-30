@@ -223,7 +223,7 @@ def server_parameters(*, no_render: bool = False) -> StdioServerParameters:
         environment["MUJOCO_MCP_NO_RENDER"] = "1"
     return StdioServerParameters(
         command=sys.executable,
-        args=["-m", "mujoco_mcp", "--transport", "stdio"],
+        args=["-P", "-m", "mujoco_mcp", "--transport", "stdio"],
         env=environment,
     )
 
