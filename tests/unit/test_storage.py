@@ -216,8 +216,12 @@ def test_schema_has_exactly_the_four_design_tables(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
             )
         }
+        case_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(cases)")
+        }
 
     assert tables == {"cases", "revisions", "runs", "ledger_events"}
+    assert "promoted_revision_id" not in case_columns
     assert store.objects.hash_root == tmp_path / "objects" / "sha256"
 
 
@@ -244,7 +248,6 @@ def test_preprovisioning_is_keyword_only_exact_and_create_once(tmp_path: Path) -
     )
     assert case.root_revision_id == case.head_revision_id == "r000"
     assert case.qualification_result is None
-    assert case.promoted_revision_id is None
     assert {key: getattr(case, key) for key in COMMITMENTS} == COMMITMENTS
     root = store.get_revision("case-1", "r000")
     assert root.parent_revision_id is None
@@ -831,7 +834,6 @@ def test_revision_commit_validates_artifact_before_mutation(
         "QUALIFICATION_RECOVERED",
         "QUALIFICATION_PASSED",
         "QUALIFICATION_FAILED",
-        "PROMOTED",
     ],
 )
 def test_generic_append_rejects_transaction_owned_events(
@@ -1205,7 +1207,6 @@ def test_event_chain_detects_tail_deletion(tmp_path: Path) -> None:
         ("head_revision_id", "r000"),
         ("qualification_attempt_id", "attempt-corrupted"),
         ("qualification_result", "FAILED"),
-        ("promoted_revision_id", None),
     ],
 )
 def test_restore_rejects_materialized_state_that_differs_from_ledger(
@@ -1223,12 +1224,6 @@ def test_restore_rejects_materialized_state_that_differs_from_ledger(
         "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
     }
     store.record_qualification_terminal(**identity, state="PASSED")
-    store.record_promotion_receipt(
-        case_id="case-1",
-        revision_id="r001",
-        ticket_id="ticket-1",
-        manifest_sha256="8" * 64,
-    )
 
     with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
         connection.execute(f"UPDATE cases SET {field} = ? WHERE case_id = ?", (value, "case-1"))
@@ -1731,177 +1726,6 @@ def test_malformed_stored_terminal_result_is_an_integrity_error(tmp_path: Path) 
         store.restore_state("case-1")
 
 
-def test_promotion_receipt_is_atomic_and_reconcilable(tmp_path: Path) -> None:
-    store = make_store(tmp_path)
-    add_probe_evidence(store)
-    add_child(store)
-    qualify(store)
-    identity = {
-        "case_id": "case-1",
-        "attempt_id": "attempt-1",
-        "revision_id": "r001",
-        "suite_commitment_sha256": "4" * 64,
-        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
-    }
-    store.record_qualification_terminal(**identity, state="PASSED")
-
-    receipt = store.record_promotion_receipt(
-        case_id="case-1",
-        revision_id="r001",
-        ticket_id="ticket-1",
-        manifest_sha256="8" * 64,
-        receipt={"export_name": "synthetic", "members": ("a", "b")},
-    )
-    assert receipt.receipt == {"export_name": "synthetic", "members": ["a", "b"]}
-    assert store.get_case("case-1").promotion_state == "promoted"
-    assert store.reconcile_promotion(case_id="case-1", revision_id="r001") == receipt
-    assert store.record_promotion_receipt(
-        case_id="case-1",
-        revision_id="r001",
-        ticket_id="ticket-1",
-        manifest_sha256="8" * 64,
-        receipt={"export_name": "synthetic", "members": ("a", "b")},
-    ) == receipt
-    with pytest.raises(Exception):
-        store.record_promotion_receipt(
-            case_id="case-1",
-            revision_id="r001",
-            ticket_id="ticket-2",
-            manifest_sha256="8" * 64,
-        )
-
-
-def test_promotion_reads_verify_the_ledger_chain(tmp_path: Path) -> None:
-    store = make_store(tmp_path)
-    add_probe_evidence(store)
-    add_child(store)
-    qualify(store)
-    identity = {
-        "case_id": "case-1",
-        "attempt_id": "attempt-1",
-        "revision_id": "r001",
-        "suite_commitment_sha256": "4" * 64,
-        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
-    }
-    store.record_qualification_terminal(**identity, state="PASSED")
-    store.record_promotion_receipt(
-        case_id="case-1",
-        revision_id="r001",
-        ticket_id="ticket-1",
-        manifest_sha256="8" * 64,
-    )
-
-    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
-        connection.execute(
-            """
-            UPDATE ledger_events SET payload_json = ?
-            WHERE event_type = 'PROMOTED'
-            """,
-            (
-                json.dumps(
-                    {
-                        "ticket_id": "forged-ticket",
-                        "revision_id": "r001",
-                        "manifest_sha256": "8" * 64,
-                        "receipt": {},
-                    }
-                ),
-            ),
-        )
-        connection.commit()
-
-    with pytest.raises(IntegrityError, match="ledger event hash mismatch"):
-        store.reconcile_promotion(case_id="case-1", revision_id="r001")
-
-
-def test_malformed_stored_promotion_identity_is_an_integrity_error(
-    tmp_path: Path,
-) -> None:
-    store = make_store(tmp_path)
-    add_probe_evidence(store)
-    add_child(store)
-    qualify(store)
-    identity = {
-        "case_id": "case-1",
-        "attempt_id": "attempt-1",
-        "revision_id": "r001",
-        "suite_commitment_sha256": "4" * 64,
-        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
-    }
-    store.record_qualification_terminal(**identity, state="PASSED")
-    store.record_promotion_receipt(
-        case_id="case-1",
-        revision_id="r001",
-        ticket_id="ticket-1",
-        manifest_sha256="8" * 64,
-    )
-    replace_event_payload(
-        tmp_path / "ledger.sqlite",
-        "PROMOTED",
-        {
-            "ticket_id": "",
-            "revision_id": "r001",
-            "manifest_sha256": "8" * 64,
-            "receipt": {},
-        },
-    )
-
-    with pytest.raises(IntegrityError, match="promotion receipt identity is invalid"):
-        store.reconcile_promotion(case_id="case-1", revision_id="r001")
-    with pytest.raises(IntegrityError, match="promotion receipt identity is invalid"):
-        store.restore_state("case-1")
-
-
-def test_malformed_stored_promotion_revision_is_an_integrity_error(
-    tmp_path: Path,
-) -> None:
-    store = make_store(tmp_path)
-    add_probe_evidence(store)
-    add_child(store)
-    qualify(store)
-    identity = {
-        "case_id": "case-1",
-        "attempt_id": "attempt-1",
-        "revision_id": "r001",
-        "suite_commitment_sha256": "4" * 64,
-        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
-    }
-    store.record_qualification_terminal(**identity, state="PASSED")
-    store.record_promotion_receipt(
-        case_id="case-1",
-        revision_id="r001",
-        ticket_id="ticket-1",
-        manifest_sha256="8" * 64,
-    )
-    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
-        connection.execute(
-            "UPDATE ledger_events SET revision_id = '' WHERE event_type = 'PROMOTED'"
-        )
-        connection.execute(
-            "UPDATE cases SET promoted_revision_id = '' WHERE case_id = 'case-1'"
-        )
-        connection.commit()
-    replace_event_payload(
-        tmp_path / "ledger.sqlite",
-        "PROMOTED",
-        {
-            "ticket_id": "ticket-1",
-            "revision_id": "",
-            "manifest_sha256": "8" * 64,
-            "receipt": {},
-        },
-    )
-
-    with pytest.raises(
-        IntegrityError,
-        match=(
-            "promotion receipt identity is invalid|stored ledger event is invalid|"
-            "missing storage identity"
-        ),
-    ):
-        store.reconcile_promotion(case_id="case-1")
-
-
 def test_uncited_run_cannot_reference_a_missing_revision(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     store.record_run(
@@ -1924,20 +1748,6 @@ def test_uncited_run_cannot_reference_a_missing_revision(tmp_path: Path) -> None
 
     with pytest.raises(IntegrityError, match="stored run references missing revision"):
         store.get_run("run-uncited")
-
-
-def test_unqualified_promotion_does_not_mutate_case_or_ledger(tmp_path: Path) -> None:
-    store = make_store(tmp_path)
-    before = len(store.ledger_events())
-    with pytest.raises(Exception):
-        store.record_promotion_receipt(
-            case_id="case-1",
-            revision_id="r000",
-            ticket_id="ticket-1",
-            manifest_sha256="8" * 64,
-        )
-    assert len(store.ledger_events()) == before
-    assert store.get_case("case-1").promoted_revision_id is None
 
 
 def _add_child_evidence(store: EvidenceStore) -> None:
@@ -1964,7 +1774,7 @@ def _add_child_evidence(store: EvidenceStore) -> None:
     )
 
 
-@pytest.mark.parametrize("sealed_state", ["RUNNING", "RECOVERING", "PASSED", "FAILED", "PROMOTED"])
+@pytest.mark.parametrize("sealed_state", ["RUNNING", "RECOVERING", "PASSED", "FAILED"])
 def test_new_child_revision_is_rejected_after_lifecycle_seal(
     tmp_path: Path, sealed_state: str
 ) -> None:
@@ -1987,16 +1797,6 @@ def test_new_child_revision_is_rejected_after_lifecycle_seal(
     elif sealed_state in {"PASSED", "FAILED"}:
         qualify(store)
         store.record_qualification_terminal(**identity, state=sealed_state)
-    else:
-        qualify(store)
-        store.record_qualification_terminal(**identity, state="PASSED")
-        store.record_promotion_receipt(
-            case_id="case-1",
-            revision_id="r001",
-            ticket_id="ticket-1",
-            manifest_sha256="8" * 64,
-        )
-
     persisted = next(
         event for event in store.ledger_events("case-1") if event.event_id == "evt-revision-r001"
     )

@@ -16,7 +16,7 @@ real approval pause.
 
 ## Consequence
 
-The repository currently contains post-approval materialization and promotion-persistence code.
-That surface is outside the accepted contract and will be removed in a separate implementation
-pull request. Broad legacy-document alignment remains tracked by
+Post-approval materialization and promotion persistence have been removed. An approved direct
+server call now fails closed with `PUBLICATION_DEFERRED` before any storage or filesystem access.
+Broad legacy-document alignment remains tracked by
 [#41](https://github.com/my-name-is-yu/TrueForgeHackathon/issues/41).

@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from asset_autopsy.storage import CaseRecord  # noqa: E402
 from run_sc1_e2e import (  # noqa: E402
     _EvidenceGateFailure,
-    _case_is_qualified_and_unpublished,
+    _case_is_qualified,
     _commit_sha,
     _raw_events_are_clear,
     _runtime_state_gates,
@@ -60,7 +60,7 @@ def test_raw_event_gate_rejects_private_boundary_material() -> None:
         )
 
 
-def test_qualified_case_remains_unpublished_while_promotion_is_open() -> None:
+def test_case_qualification_gate_uses_only_the_qualification_lifecycle() -> None:
     case = CaseRecord(
         case_id="case_compound-arm-01",
         root_revision_id="r000",
@@ -68,7 +68,6 @@ def test_qualified_case_remains_unpublished_while_promotion_is_open() -> None:
         qualification_revision_id="r002",
         qualification_attempt_id="qualify-1",
         qualification_result="PASSED",
-        promoted_revision_id=None,
         source_asset_sha256="a" * 64,
         controller_sha256="b" * 64,
         public_contract_sha256="c" * 64,
@@ -77,11 +76,8 @@ def test_qualified_case_remains_unpublished_while_promotion_is_open() -> None:
         created_at="2026-08-30T00:00:00+00:00",
     )
 
-    assert case.promotion_state == "open"
-    assert _case_is_qualified_and_unpublished(case)
-    assert not _case_is_qualified_and_unpublished(
-        replace(case, promoted_revision_id="r002")
-    )
+    assert _case_is_qualified(case)
+    assert not _case_is_qualified(replace(case, qualification_result="FAILED"))
 
 
 def test_commit_sha_rejects_dirty_or_untracked_execution_source(monkeypatch) -> None:

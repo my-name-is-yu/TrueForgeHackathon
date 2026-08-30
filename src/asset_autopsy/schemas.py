@@ -403,10 +403,7 @@ class ArtifactRef(StrictModel):
     kind: Literal[
         "trace_json",
         "filmstrip",
-        "repaired_mjcf",
-        "patch_manifest",
         "qualification",
-        "evidence_ledger",
     ]
     uri: Annotated[
         str,
@@ -578,13 +575,11 @@ class PublicEventSummary(StrictModel):
         "REVISION_REJECTED",
         "QUALIFICATION_PASSED",
         "QUALIFICATION_FAILED",
-        "PROMOTED",
     ]
     summary: SafeText
 
 
 class OpenCaseOutput(CommonOutput):
-    promotion_state: Literal["open", "promoted"]
     qualification_state: Literal["unused", "running", "recovering", "passed", "failed"]
     original_revision_id: RevisionId
     original_asset_sha256: AssetHash
@@ -615,8 +610,6 @@ class OpenCaseOutput(CommonOutput):
             raise ValueError("observable metric names must be unique")
         if not _RUN_TASK_METRICS.issubset(self.observable_metric_names):
             raise ValueError("observable metrics must include every fixed task metric")
-        if self.promotion_state == "promoted" and self.qualification_state != "passed":
-            raise ValueError("promoted case must have passed qualification")
         expected_qualification_budget = 1 if self.qualification_state == "unused" else 0
         if self.remaining_budgets.qualification_remaining != expected_qualification_budget:
             raise ValueError("qualification budget must match qualification lifecycle")
@@ -1217,30 +1210,6 @@ class VerifyRevisionOutput(CommonOutput):
         return self
 
 
-class PublishRevisionOutput(CommonOutput):
-    revision_id: RevisionId
-    status: Literal["published", "already_published"]
-
-    @model_validator(mode="after")
-    def validate_publication_artifacts(self) -> PublishRevisionOutput:
-        required_kinds = {
-            "repaired_mjcf",
-            "patch_manifest",
-            "evidence_ledger",
-            "qualification",
-        }
-        kinds = [artifact.kind for artifact in self.artifacts]
-        if len(kinds) != len(required_kinds) or set(kinds) != required_kinds:
-            raise ValueError("publication must return exactly one required artifact of each kind")
-        if len({artifact.artifact_id for artifact in self.artifacts}) != len(
-            self.artifacts
-        ):
-            raise ValueError("publication artifact IDs must be unique")
-        if len({artifact.uri for artifact in self.artifacts}) != len(self.artifacts):
-            raise ValueError("publication artifact URIs must be unique")
-        return self
-
-
 class InspectAssetOutput(CommonOutput):
     revision_id: RevisionId
     asset_sha256: AssetHash
@@ -1267,7 +1236,6 @@ TOOL_OUTPUT_MODELS = (
     RunExperimentOutput,
     CreateRevisionOutput,
     VerifyRevisionOutput,
-    PublishRevisionOutput,
 )
 
 
@@ -1277,7 +1245,6 @@ RunTaskOutput.model_rebuild()
 RunExperimentOutput.model_rebuild()
 CreateRevisionOutput.model_rebuild()
 VerifyRevisionOutput.model_rebuild()
-PublishRevisionOutput.model_rebuild()
 
 
 __all__ = [
@@ -1295,7 +1262,6 @@ __all__ = [
     "OpenCaseInput",
     "OpenCaseOutput",
     "PublishRevisionInput",
-    "PublishRevisionOutput",
     "RunExperimentInput",
     "RunExperimentOutput",
     "RunTaskInput",

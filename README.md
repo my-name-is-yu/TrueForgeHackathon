@@ -29,7 +29,7 @@ Asset Autopsy MCP facade (127.0.0.1:8712/mcp)
     v
 AssetAutopsyService
     |-- immutable compound-arm-01 fixture
-    |-- evidence store, metrics, one-attribute patcher, hidden verifier, publisher
+    |-- evidence store, metrics, one-attribute patcher, hidden verifier
     |
     | private child process; no public TCP port
     v
@@ -59,11 +59,11 @@ The saved agent can resolve exactly these seven Asset Autopsy tools:
 | `run_experiment` | Preregister a claim, competing explanation, prediction, and falsifier, then run one bounded agent-defined experiment. |
 | `create_revision` | Create one immutable child from a completed experiment by changing one allowed joint attribute. |
 | `verify_revision` | Run the public gate and the one-shot three-scenario hidden qualification, returning aggregates and a promotion ticket only. |
-| `publish_revision` | Request publication of the exact qualified revision. This remains the only destructive and approval-gated tool; accepted SC1 stops at TrueForge's approval request before the server call. |
+| `publish_revision` | Request human approval for the exact qualified revision. This remains the only destructive and approval-gated tool; accepted SC1 stops at TrueForge's approval request before the server call. |
 
-The repository currently contains a post-approval materializer and promotion-persistence path.
-They are not demonstrated or claimed SC1 behavior and are scheduled for removal in a separate
-implementation pull request.
+Post-approval materialization and promotion persistence have been removed. If an approved request
+reaches the domain boundary, it fails closed with the sanitized, non-retryable
+`PUBLICATION_DEFERRED` error and performs no storage or filesystem mutation.
 
 The demo fixture has budgets of 10 total runs, 5 experiments, 2 child revisions, and 1 hidden
 qualification. `run_experiment` accepts named joint positions, one to sixteen constant-control
@@ -86,8 +86,8 @@ prediction or falsifier was satisfied.
 - The AgentSpec uses high reasoning effort, disables parallel tool calls, limits the run to 30
   iterations, enables Sandbox file downloads and Large Tool Response, preloads the MCP, and
   requires approval only for `publish_revision`.
-- The accepted demonstration stops at `tool.approval_required`. No `publish_revision` response,
-  domain invocation, publication receipt, bundle, or public artifact may exist at that point.
+- The accepted demonstration stops at `tool.approval_required`. No `publish_revision` response or
+  domain invocation may exist at that point, and post-approval materialization is not implemented.
   Do not approve the call during the submission run.
 - If hidden qualification is interrupted, the case fails closed. SC1 does not retry it; start a
   fresh case for another evidence run.
@@ -168,12 +168,12 @@ sanitization:
 5. The final public task passes and its `BehaviorDiff` says `public_pass` with a real change.
 6. Qualification reports public `1/1` and hidden `3/3` without hidden details.
 7. The qualified `publish_revision` request produces the matching approval-required event and no
-   tool response; the facade publish count and all publication/receipt/artifact counts remain zero.
+   tool response; the facade and domain publish invocation counts remain zero.
 8. No bearer, private path, fixture XML, hidden target, or hidden trace leaked into the event or
    Sandbox boundary.
 
 Only a sanitized artifact that records the cited run and hypothesis hashes, observed tool sequence,
-Sandbox executions, approval event, zero-publication counters, and exact Git commit can support a
+Sandbox executions, approval event, zero publish-call counters, and exact Git commit can support a
 PASS claim. If the driver or evidence artifact is absent, or any check fails, report SC1 as
 draft/blocked.
 
