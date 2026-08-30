@@ -25,7 +25,13 @@ def _tools() -> list[dict[str, Any]]:
                 "readOnlyHint": name in {"open_case", "inspect_asset"},
                 "destructiveHint": name == "publish_revision",
                 "idempotentHint": name
-                in {"open_case", "inspect_asset", "create_revision", "verify_revision", "publish_revision"},
+                in {
+                    "open_case",
+                    "inspect_asset",
+                    "create_revision",
+                    "verify_revision",
+                    "publish_revision",
+                },
                 "openWorldHint": False,
             },
         }

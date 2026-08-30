@@ -60,6 +60,35 @@ def test_raw_event_gate_rejects_private_boundary_material() -> None:
         )
 
 
+def test_raw_event_gate_detects_private_integer_scalars_with_token_boundaries() -> None:
+    private = ({"duration_steps": 2_000, "private_flag": True},)
+
+    for content in (
+        2_000,
+        json.dumps({"unrelated_name": 2_000}),
+        "measured duration=2000 steps",
+    ):
+        assert not _raw_events_are_clear(
+            [{"event": {"type": "tool.response", "content": content}}],
+            bearer="secret-bearer-value",
+            data_root=Path("/private/tmp/sc1-private"),
+            private_payloads=private,
+        )
+
+    for content in (
+        20_000,
+        json.dumps({"unrelated_name": 20_000}),
+        "measured duration=20000 steps",
+        True,
+    ):
+        assert _raw_events_are_clear(
+            [{"event": {"type": "tool.response", "content": content}}],
+            bearer="secret-bearer-value",
+            data_root=Path("/private/tmp/sc1-private"),
+            private_payloads=private,
+        )
+
+
 def test_case_qualification_gate_uses_only_the_qualification_lifecycle() -> None:
     case = CaseRecord(
         case_id="case_compound-arm-01",
@@ -84,9 +113,7 @@ def test_commit_sha_rejects_dirty_or_untracked_execution_source(monkeypatch) -> 
     monkeypatch.setattr(
         e2e_runner.subprocess,
         "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            stdout="?? scripts/run_sc1_e2e.py\n"
-        ),
+        lambda *args, **kwargs: SimpleNamespace(stdout="?? scripts/run_sc1_e2e.py\n"),
     )
 
     with pytest.raises(RuntimeError, match="not clean at HEAD"):
@@ -113,6 +140,95 @@ def test_commit_sha_allows_only_generated_evidence_outputs(monkeypatch) -> None:
     )
 
     assert _commit_sha() == "a" * 40
+
+
+def test_startup_commit_failure_removes_stale_evidence_and_records_null_sha(
+    monkeypatch, tmp_path
+) -> None:
+    evidence_path = tmp_path / "sc1-evidence.json"
+    blocker_path = tmp_path / "sc1-blocker.json"
+    evidence_path.write_text('{"status":"passed"}\n', encoding="utf-8")
+
+    def fail_commit_sha() -> str:
+        raise RuntimeError("secret checkout failure at /private/repository")
+
+    monkeypatch.setattr(e2e_runner, "EVIDENCE_PATH", evidence_path)
+    monkeypatch.setattr(e2e_runner, "BLOCKER_PATH", blocker_path)
+    monkeypatch.setattr(e2e_runner, "_commit_sha", fail_commit_sha)
+
+    with pytest.raises(RuntimeError) as caught:
+        e2e_runner.run()
+
+    blocker = json.loads(blocker_path.read_text(encoding="utf-8"))
+    rendered = json.dumps(blocker, sort_keys=True)
+    assert (
+        str(caught.value) == "The SC1 evidence run did not complete its required gate."
+    )
+    assert not evidence_path.exists()
+    assert blocker["stage"] == "startup"
+    assert blocker["commit_sha"] is None
+    assert "secret checkout failure" not in rendered
+    assert "/private/repository" not in rendered
+
+
+def test_startup_bearer_failure_records_the_available_commit(
+    monkeypatch, tmp_path
+) -> None:
+    evidence_path = tmp_path / "sc1-evidence.json"
+    blocker_path = tmp_path / "sc1-blocker.json"
+    evidence_path.write_text('{"status":"passed"}\n', encoding="utf-8")
+
+    def fail_bearer(_length: int) -> str:
+        raise RuntimeError("secret entropy failure at /private/random")
+
+    monkeypatch.setattr(e2e_runner, "EVIDENCE_PATH", evidence_path)
+    monkeypatch.setattr(e2e_runner, "BLOCKER_PATH", blocker_path)
+    monkeypatch.setattr(e2e_runner, "_commit_sha", lambda: "a" * 40)
+    monkeypatch.setattr(e2e_runner.secrets, "token_urlsafe", fail_bearer)
+
+    with pytest.raises(RuntimeError) as caught:
+        e2e_runner.run()
+
+    blocker = json.loads(blocker_path.read_text(encoding="utf-8"))
+    rendered = json.dumps(blocker, sort_keys=True)
+    assert (
+        str(caught.value) == "The SC1 evidence run did not complete its required gate."
+    )
+    assert not evidence_path.exists()
+    assert blocker["stage"] == "startup"
+    assert blocker["commit_sha"] == "a" * 40
+    assert "secret entropy failure" not in rendered
+    assert "/private/random" not in rendered
+
+
+def test_stale_evidence_is_removed_before_a_blocker_write_failure(
+    monkeypatch, tmp_path
+) -> None:
+    evidence_path = tmp_path / "sc1-evidence.json"
+    blocker_path = tmp_path / "sc1-blocker.json"
+    evidence_path.write_text('{"status":"passed"}\n', encoding="utf-8")
+
+    def fail_commit_sha() -> str:
+        raise RuntimeError("secret checkout failure at /private/repository")
+
+    def fail_blocker_write(path, payload) -> None:
+        assert path == blocker_path
+        assert payload["commit_sha"] is None
+        assert not evidence_path.exists()
+        raise OSError("secret blocker path at /private/blocker")
+
+    monkeypatch.setattr(e2e_runner, "EVIDENCE_PATH", evidence_path)
+    monkeypatch.setattr(e2e_runner, "BLOCKER_PATH", blocker_path)
+    monkeypatch.setattr(e2e_runner, "_commit_sha", fail_commit_sha)
+    monkeypatch.setattr(e2e_runner, "_write_json", fail_blocker_write)
+
+    with pytest.raises(RuntimeError) as caught:
+        e2e_runner.run()
+
+    assert (
+        str(caught.value) == "The SC1 evidence run did not complete its required gate."
+    )
+    assert not evidence_path.exists()
 
 
 def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -> None:
@@ -218,16 +334,16 @@ def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -
 
     assert all(gates.values())
     evidence["sandbox"]["runs"][1]["run_id_hash"] = "mismatch"
-    assert not _runtime_state_gates(
-        evidence, facade=facade, service=service
-    )["ledger_experiment_evidence_matches"]
-    evidence["sandbox"]["runs"][1]["run_id_hash"] = e2e_runner._sha256_text(
-        run_ids[1]
-    )[:12]
+    assert not _runtime_state_gates(evidence, facade=facade, service=service)[
+        "ledger_experiment_evidence_matches"
+    ]
+    evidence["sandbox"]["runs"][1]["run_id_hash"] = e2e_runner._sha256_text(run_ids[1])[
+        :12
+    ]
     trace_hashes[run_ids[1]] = None
-    assert not _runtime_state_gates(
-        evidence, facade=facade, service=service
-    )["ledger_experiment_evidence_matches"]
+    assert not _runtime_state_gates(evidence, facade=facade, service=service)[
+        "ledger_experiment_evidence_matches"
+    ]
 
 
 def test_blocker_redacts_untrusted_exception_text() -> None:

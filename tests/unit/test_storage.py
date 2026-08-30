@@ -108,9 +108,12 @@ def test_case_creation_rejects_an_invalid_existing_ledger(tmp_path: Path) -> Non
             **COMMITMENTS,
         )
     with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
-        assert connection.execute(
-            "SELECT 1 FROM cases WHERE case_id = 'case-2'"
-        ).fetchone() is None
+        assert (
+            connection.execute(
+                "SELECT 1 FROM cases WHERE case_id = 'case-2'"
+            ).fetchone()
+            is None
+        )
 
 
 @pytest.mark.parametrize(
@@ -173,7 +176,8 @@ def replace_event_payload(
         )
         previous_hash = target["prev_hash"]
         for (seq,) in connection.execute(
-            "SELECT seq FROM ledger_events WHERE seq >= ? ORDER BY seq", (target["seq"],)
+            "SELECT seq FROM ledger_events WHERE seq >= ? ORDER BY seq",
+            (target["seq"],),
         ):
             connection.execute(
                 "UPDATE ledger_events SET prev_hash = ? WHERE seq = ?",
@@ -278,12 +282,17 @@ def test_schema_has_exactly_the_four_design_tables(tmp_path: Path) -> None:
 def test_preprovisioning_is_keyword_only_exact_and_create_once(tmp_path: Path) -> None:
     store = EvidenceStore(tmp_path / "ledger.sqlite", tmp_path / "objects")
     signature = inspect.signature(store.create_preprovisioned_case)
-    assert all(parameter.kind is parameter.KEYWORD_ONLY for parameter in signature.parameters.values())
+    assert all(
+        parameter.kind is parameter.KEYWORD_ONLY
+        for parameter in signature.parameters.values()
+    )
 
     with pytest.raises(TypeError):
         store.create_preprovisioned_case("case-1", "r000", **COMMITMENTS)
     with pytest.raises(TypeError):
-        store.create_preprovisioned_case(case_id="case-1", root_revision_id="r000", **COMMITMENTS, extra="x")
+        store.create_preprovisioned_case(
+            case_id="case-1", root_revision_id="r000", **COMMITMENTS, extra="x"
+        )
     with pytest.raises(ValidationError):
         store.create_preprovisioned_case(
             case_id="case-1",
@@ -332,7 +341,8 @@ def test_object_store_hashes_external_payload_atomically(tmp_path: Path) -> None
     with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
         assert connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 0
         assert payload.decode() not in "".join(
-            str(row) for row in connection.execute("SELECT name, sql FROM sqlite_master")
+            str(row)
+            for row in connection.execute("SELECT name, sql FROM sqlite_master")
         )
 
     with pytest.raises(ObjectIntegrityError):
@@ -546,9 +556,7 @@ def test_new_object_syncs_ancestors_even_when_they_already_exist(
     object_store.put_bytes(payload, expected_sha256=digest)
 
     hash_root = tmp_path / "objects" / "sha256"
-    assert synchronized == directory_chain_to(
-        hash_root / digest[:2], object_store.root
-    )
+    assert synchronized == directory_chain_to(hash_root / digest[:2], object_store.root)
 
 
 def test_existing_object_removes_temporary_before_directory_sync(
@@ -710,9 +718,7 @@ def test_event_artifact_reference_snapshot_survives_mutation_during_and_after_ca
     expected = dict(reference)
     original_verify = store.objects.verify
 
-    def mutate_during_verification(
-        digest: str, *, expected_size: int | None = None
-    ):
+    def mutate_during_verification(digest: str, *, expected_size: int | None = None):
         verified = original_verify(digest, expected_size=expected_size)
         reference.update(
             sha256=replacement.sha256,
@@ -1045,11 +1051,14 @@ def test_revision_commit_validates_artifact_before_mutation(
     before = store.ledger_events("case-1")
 
     if artifact_exists:
-        assert store.commit_revision_with_event(
-            revision=revision,
-            event=event,
-            expected_head_revision_id="r000",
-        ).revision_id == "r001"
+        assert (
+            store.commit_revision_with_event(
+                revision=revision,
+                event=event,
+                expected_head_revision_id="r000",
+            ).revision_id
+            == "r001"
+        )
         assert store.ledger_events("case-1")[-1].artifact_refs == (reference,)
     else:
         with pytest.raises(ObjectIntegrityError):
@@ -1215,7 +1224,9 @@ def test_revision_retry_rejects_changed_ledger_event(
     add_child(store)
     child = store.get_revision("case-1", "r001")
     persisted = next(
-        event for event in store.ledger_events("case-1") if event.event_id == "evt-revision-r001"
+        event
+        for event in store.ledger_events("case-1")
+        if event.event_id == "evt-revision-r001"
     )
 
     supplied = {
@@ -1245,23 +1256,28 @@ def test_revision_retry_rejects_changed_ledger_event(
     assert store.ledger_events("case-1")[-1].event_id == persisted.event_id
 
 
-def test_revision_retry_accepts_omitted_generated_event_metadata(tmp_path: Path) -> None:
+def test_revision_retry_accepts_omitted_generated_event_metadata(
+    tmp_path: Path,
+) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
     add_child(store)
     child = store.get_revision("case-1", "r001")
 
-    assert store.commit_revision_with_event(
-        revision=child,
-        event=LedgerEventRecord(
-            event_id="evt-revision-r001",
-            case_id="case-1",
-            revision_id="r001",
-            event_type="REVISION_CREATED",
-            payload=revision_event_payload(child, store.get_run("run-probe-1")),
-        ),
-        expected_head_revision_id="r001",
-    ) == child
+    assert (
+        store.commit_revision_with_event(
+            revision=child,
+            event=LedgerEventRecord(
+                event_id="evt-revision-r001",
+                case_id="case-1",
+                revision_id="r001",
+                event_type="REVISION_CREATED",
+                payload=revision_event_payload(child, store.get_run("run-probe-1")),
+            ),
+            expected_head_revision_id="r001",
+        )
+        == child
+    )
 
 
 def test_revision_retry_rejects_changed_explicit_timestamp(tmp_path: Path) -> None:
@@ -1464,7 +1480,9 @@ def test_restore_rejects_materialized_state_that_differs_from_ledger(
     store.record_qualification_terminal(**identity, state="PASSED")
 
     with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
-        connection.execute(f"UPDATE cases SET {field} = ? WHERE case_id = ?", (value, "case-1"))
+        connection.execute(
+            f"UPDATE cases SET {field} = ? WHERE case_id = ?", (value, "case-1")
+        )
         connection.commit()
 
     with pytest.raises(
@@ -1531,7 +1549,10 @@ def test_restore_rejects_unqualified_case_commitment_corruption(
             "DELETE FROM revisions WHERE revision_id = 'r001'",
             "revision event state|missing storage identity",
         ),
-        ("UPDATE revisions SET ordinal = 9 WHERE revision_id = 'r001'", "revision event state"),
+        (
+            "UPDATE revisions SET ordinal = 9 WHERE revision_id = 'r001'",
+            "revision event state",
+        ),
         (
             f"UPDATE revisions SET asset_sha256 = '{'f' * 64}' WHERE revision_id = 'r001'",
             "does not match its ledger event",
@@ -1570,7 +1591,9 @@ def test_restore_rejects_missing_or_invalid_child_revision_state(
         store.restore_state("case-1")
 
 
-def test_qualification_reservation_requires_exact_case_commitments(tmp_path: Path) -> None:
+def test_qualification_reservation_requires_exact_case_commitments(
+    tmp_path: Path,
+) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
     add_child(store)
@@ -1773,7 +1796,9 @@ def test_terminal_case_still_rejects_result_on_reservation(tmp_path: Path) -> No
         store.get_qualification("case-1")
 
 
-def test_restore_rejects_terminal_qualification_without_reservation(tmp_path: Path) -> None:
+def test_restore_rejects_terminal_qualification_without_reservation(
+    tmp_path: Path,
+) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
     add_child(store)
@@ -1804,7 +1829,9 @@ def test_restore_rejects_terminal_qualification_without_reservation(tmp_path: Pa
         store.get_qualification("case-1")
 
 
-def test_qualification_reserve_terminal_preserves_exact_identity(tmp_path: Path) -> None:
+def test_qualification_reserve_terminal_preserves_exact_identity(
+    tmp_path: Path,
+) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
     add_child(store)
@@ -1842,15 +1869,18 @@ def test_qualification_reserve_terminal_preserves_exact_identity(tmp_path: Path)
     }
     assert store.get_case("case-1").qualification_state == "passed"
     assert store.get_qualification("case-1").result == terminal.result
-    assert store.record_qualification_terminal(
-        **identity,
-        state="PASSED",
-        result={
-            "qualified_core_sha256": "9" * 64,
-            "passed": 3,
-            "members": ("a", "b"),
-        },
-    ).result == terminal.result
+    assert (
+        store.record_qualification_terminal(
+            **identity,
+            state="PASSED",
+            result={
+                "qualified_core_sha256": "9" * 64,
+                "passed": 3,
+                "members": ("a", "b"),
+            },
+        ).result
+        == terminal.result
+    )
     qualification_events = tuple(
         event
         for event in store.ledger_events("case-1")
@@ -1946,9 +1976,13 @@ def test_malformed_stored_terminal_result_is_an_integrity_error(tmp_path: Path) 
         },
     )
 
-    with pytest.raises(IntegrityError, match="qualification terminal result is invalid"):
+    with pytest.raises(
+        IntegrityError, match="qualification terminal result is invalid"
+    ):
         store.get_qualification("case-1")
-    with pytest.raises(IntegrityError, match="qualification terminal result is invalid"):
+    with pytest.raises(
+        IntegrityError, match="qualification terminal result is invalid"
+    ):
         store.restore_state("case-1")
 
 
@@ -2021,22 +2055,27 @@ def test_new_child_revision_is_rejected_after_lifecycle_seal(
         qualify(store)
         store.record_qualification_terminal(**identity, state=sealed_state)
     persisted = next(
-        event for event in store.ledger_events("case-1") if event.event_id == "evt-revision-r001"
+        event
+        for event in store.ledger_events("case-1")
+        if event.event_id == "evt-revision-r001"
     )
-    assert store.commit_revision_with_event(
-        revision=store.get_revision("case-1", "r001"),
-        event=LedgerEventRecord(
-            event_id=persisted.event_id,
-            case_id=persisted.case_id,
-            revision_id=persisted.revision_id,
-            event_type=persisted.event_type,
-            payload=persisted.payload,
-            artifact_refs=persisted.artifact_refs,
-            request_id=persisted.request_id,
-            created_at=persisted.created_at,
-        ),
-        expected_head_revision_id="r001",
-    ).revision_id == "r001"
+    assert (
+        store.commit_revision_with_event(
+            revision=store.get_revision("case-1", "r001"),
+            event=LedgerEventRecord(
+                event_id=persisted.event_id,
+                case_id=persisted.case_id,
+                revision_id=persisted.revision_id,
+                event_type=persisted.event_type,
+                payload=persisted.payload,
+                artifact_refs=persisted.artifact_refs,
+                request_id=persisted.request_id,
+                created_at=persisted.created_at,
+            ),
+            expected_head_revision_id="r001",
+        ).revision_id
+        == "r001"
+    )
 
     with pytest.raises(RevisionConflictError):
         store.commit_revision_with_event(

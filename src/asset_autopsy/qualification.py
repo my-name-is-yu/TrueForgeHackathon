@@ -120,6 +120,7 @@ class HiddenVerifier:
             violated_clause_ids=tuple(sorted(violated)),
         )
 
+
 def build_promotion_ticket(
     *,
     ticket_id: str,

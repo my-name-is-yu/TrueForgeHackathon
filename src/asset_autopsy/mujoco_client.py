@@ -501,8 +501,8 @@ def _matches_validation(payload: dict[str, Any]) -> bool:
         return False
     if type(payload["valid"]) is not bool:
         return False
-    for field in ("errors", "warnings"):
-        diagnostics = payload[field]
+    for field_name in ("errors", "warnings"):
+        diagnostics = payload[field_name]
         if type(diagnostics) is not list or len(diagnostics) > 256:
             return False
         if not all(
@@ -655,7 +655,9 @@ def _matches_run(
     if (
         not _state_equal(final_state["qpos"], last_row["qpos"])
         or not _state_equal(final_state["qvel"], last_row["qvel"])
-        or not _state_equal(final_state["energy"], [last_row["E_pot"], last_row["E_kin"]])
+        or not _state_equal(
+            final_state["energy"], [last_row["E_pot"], last_row["E_kin"]]
+        )
         or ("ncon" in last_row and final_state["n_contacts"] != last_row["ncon"])
     ):
         return False

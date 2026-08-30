@@ -129,8 +129,14 @@ uv sync --frozen
 uv run pytest tests/phase0/upstream -q
 uv run pytest tests/phase0/trueforge -q
 uv run pytest -q
+uv run ruff check .
+uv run ruff format --check .
 git diff --check
 ```
+
+GitHub CI runs the frozen install and full repository checks on a CGL-capable hosted macOS
+runner for pull requests and pushes to `main`. It does not load provider secrets or run the
+real-model evidence driver; that remains a post-merge exact-`main` gate.
 
 The Phase 0 TrueForge test exercises its original transport placeholder and historical measured
 boundary. The SC1 contract is the generic `run_experiment` flow implemented by the current

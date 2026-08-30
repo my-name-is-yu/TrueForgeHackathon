@@ -141,9 +141,7 @@ def test_experiment_resampling_is_uniform_and_uses_zoh_for_control_and_contacts(
             observables=(
                 QposObservable(kind="qpos"),
                 ContactCountObservable(kind="contact_count"),
-                BodyPositionObservable(
-                    kind="body_position", body_name="end_effector"
-                ),
+                BodyPositionObservable(kind="body_position", body_name="end_effector"),
             ),
             joint_names=("joint_a", "joint_b", "joint_c"),
             actuator_names=("motor_a", "motor_b", "motor_c"),

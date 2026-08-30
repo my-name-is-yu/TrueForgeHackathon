@@ -139,7 +139,9 @@ def _validate_tree(root: ET.Element) -> None:
         if element.tag in _UNSAFE_ELEMENT:
             raise PatcherError("UNSAFE_XML", "external MJCF features are not supported")
         if element.tag not in _SUPPORTED_ELEMENT:
-            raise PatcherError("INVALID_XML", "MJCF element is outside the fixture contract")
+            raise PatcherError(
+                "INVALID_XML", "MJCF element is outside the fixture contract"
+            )
         for name, value in element.attrib.items():
             if name.startswith("{"):
                 raise PatcherError("INVALID_XML", "XML namespaces are not supported")
@@ -281,11 +283,15 @@ def canonical_document_diff(
 def _parse_finite_values(value: str, expected_count: int) -> tuple[float, ...]:
     tokens = value.split()
     if len(tokens) != expected_count:
-        raise PatcherError("OLD_VALUE_MISMATCH", "stored attribute has an invalid shape")
+        raise PatcherError(
+            "OLD_VALUE_MISMATCH", "stored attribute has an invalid shape"
+        )
     try:
         parsed = tuple(float(token) for token in tokens)
     except ValueError:
-        raise PatcherError("OLD_VALUE_MISMATCH", "stored attribute is not numeric") from None
+        raise PatcherError(
+            "OLD_VALUE_MISMATCH", "stored attribute is not numeric"
+        ) from None
     if not all(math.isfinite(item) for item in parsed):
         raise PatcherError("OLD_VALUE_MISMATCH", "stored attribute is not finite")
     return parsed
@@ -316,11 +322,15 @@ def _format_axis(value: tuple[float, float, float]) -> str:
     return " ".join(_format_float(component) for component in value)
 
 
-def _validate_patch(patch: AttributePatch | Mapping[str, object]) -> AxisPatch | ScalarPatch:
+def _validate_patch(
+    patch: AttributePatch | Mapping[str, object],
+) -> AxisPatch | ScalarPatch:
     try:
         return TypeAdapter(AttributePatch).validate_python(patch)
     except ValidationError:
-        raise PatcherError("PATCH_NOT_ALLOWED", "patch does not match the frozen contract") from None
+        raise PatcherError(
+            "PATCH_NOT_ALLOWED", "patch does not match the frozen contract"
+        ) from None
 
 
 def apply_one_attribute_patch(
@@ -347,31 +357,45 @@ def apply_one_attribute_patch(
         if element.tag == "joint" and element.attrib.get("name") == target.name
     ]
     if len(matches) != 1:
-        raise PatcherError("SELECTOR_MISMATCH", "patch selector did not match exactly one joint")
+        raise PatcherError(
+            "SELECTOR_MISMATCH", "patch selector did not match exactly one joint"
+        )
     joint = matches[0]
     xml_attribute = validated_patch.attribute
     if xml_attribute not in joint.attrib:
-        raise PatcherError("OLD_VALUE_MISMATCH", "expected authored attribute is missing")
+        raise PatcherError(
+            "OLD_VALUE_MISMATCH", "expected authored attribute is missing"
+        )
     authored_value = joint.attrib[xml_attribute]
     if isinstance(validated_patch, AxisPatch):
         current_value = _normalize_axis(_parse_finite_values(authored_value, 3))
         if not _axis_matches(current_value, validated_patch.expected_old_value):
-            raise PatcherError("OLD_VALUE_MISMATCH", "expected authored value does not match")
+            raise PatcherError(
+                "OLD_VALUE_MISMATCH", "expected authored value does not match"
+            )
         if _axis_matches(current_value, validated_patch.new_value):
-            raise PatcherError("NO_CHANGE", "patch does not change the authored document")
+            raise PatcherError(
+                "NO_CHANGE", "patch does not change the authored document"
+            )
         replacement = _format_axis(validated_patch.new_value)
     else:
         current_value = _parse_finite_values(authored_value, 1)[0]
         if current_value != validated_patch.expected_old_value:
-            raise PatcherError("OLD_VALUE_MISMATCH", "expected authored value does not match")
+            raise PatcherError(
+                "OLD_VALUE_MISMATCH", "expected authored value does not match"
+            )
         if current_value == validated_patch.new_value:
-            raise PatcherError("NO_CHANGE", "patch does not change the authored document")
+            raise PatcherError(
+                "NO_CHANGE", "patch does not change the authored document"
+            )
         replacement = _format_float(validated_patch.new_value)
     joint.set(xml_attribute, replacement)
     changes: list[CanonicalChange] = []
     _compare_nodes(base_root, revised_root, "/mujoco", changes)
     if len(changes) != 1 or changes[0].attribute != xml_attribute:
-        raise PatcherError("UNDECLARED_EDIT", "candidate changes more than the declared attribute")
+        raise PatcherError(
+            "UNDECLARED_EDIT", "candidate changes more than the declared attribute"
+        )
     revised_xml = _serialize_document(revised_root)
     return PatchedArtifact(
         xml=revised_xml,

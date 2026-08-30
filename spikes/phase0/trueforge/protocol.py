@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import re
-import socket
 import struct
 import threading
 import zlib
@@ -41,7 +40,11 @@ def planned_tool_schemas() -> list[dict[str, Any]]:
         {
             "name": name,
             "description": "Synthetic Phase 0 schema selector; only inspect and publish are callable probes.",
-            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
             "annotations": {
                 "readOnlyHint": read_only,
                 "destructiveHint": destructive,
@@ -54,7 +57,12 @@ def planned_tool_schemas() -> list[dict[str, Any]]:
 
 
 def _png_chunk(kind: bytes, payload: bytes) -> bytes:
-    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+    return (
+        struct.pack(">I", len(payload))
+        + kind
+        + payload
+        + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+    )
 
 
 def make_png(width: int = 160, height: int = 120) -> bytes:
@@ -144,7 +152,11 @@ class DummyFacade:
                 if not auth_ok or not origin_ok:
                     request["response_status"] = 401 if not auth_ok else 403
                     owner.requests.append(request)
-                    _json_response(self, request["response_status"], {"error": "connection rejected"})
+                    _json_response(
+                        self,
+                        request["response_status"],
+                        {"error": "connection rejected"},
+                    )
                     return
                 try:
                     message = json.loads(raw)
@@ -171,12 +183,13 @@ class DummyFacade:
                     result: dict[str, Any] = {
                         "protocolVersion": "2025-06-18",
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "phase0-dummy-facade", "version": "0.0.0"},
+                        "serverInfo": {
+                            "name": "phase0-dummy-facade",
+                            "version": "0.0.0",
+                        },
                     }
                 elif method == "tools/list":
-                    result = {
-                        "tools": planned_tool_schemas()
-                    }
+                    result = {"tools": planned_tool_schemas()}
                 elif method == "tools/call":
                     tool_name = message.get("params", {}).get("name")
                     if tool_name == "inspect_asset":
@@ -184,11 +197,15 @@ class DummyFacade:
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": json.dumps(inspection_payload(), separators=(",", ":")),
+                                    "text": json.dumps(
+                                        inspection_payload(), separators=(",", ":")
+                                    ),
                                 },
                                 {
                                     "type": "image",
-                                    "data": base64.b64encode(owner.image).decode("ascii"),
+                                    "data": base64.b64encode(owner.image).decode(
+                                        "ascii"
+                                    ),
                                     "mimeType": "image/png",
                                 },
                             ],
@@ -196,17 +213,31 @@ class DummyFacade:
                         }
                     elif tool_name == "publish_revision":
                         result = {
-                            "content": [{"type": "text", "text": json.dumps({"published": True})}],
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps({"published": True}),
+                                }
+                            ],
                             "isError": False,
                         }
                     else:
-                        result = {"content": [{"type": "text", "text": "unknown synthetic tool"}], "isError": True}
+                        result = {
+                            "content": [
+                                {"type": "text", "text": "unknown synthetic tool"}
+                            ],
+                            "isError": True,
+                        }
                 else:
                     result = None
                 owner.results.append(result)
                 request["response_status"] = 200
                 owner.requests.append(request)
-                _json_response(self, 200, {"jsonrpc": "2.0", "id": message.get("id"), "result": result})
+                _json_response(
+                    self,
+                    200,
+                    {"jsonrpc": "2.0", "id": message.get("id"), "result": result},
+                )
 
             def log_message(self, _format: str, *_args: Any) -> None:
                 return
@@ -237,11 +268,17 @@ def _contains_image_content(value: Any, image_data: str | None = None) -> bool:
     if isinstance(value, dict):
         if value.get("type") in {"image", "image_url"}:
             return True
-        return any(_contains_image_content(child, image_data) for child in value.values())
+        return any(
+            _contains_image_content(child, image_data) for child in value.values()
+        )
     if isinstance(value, list):
         return any(_contains_image_content(child, image_data) for child in value)
     if isinstance(value, str):
-        if "data:image/" in value or "iVBORw0KGgo" in value or (image_data is not None and image_data in value):
+        if (
+            "data:image/" in value
+            or "iVBORw0KGgo" in value
+            or (image_data is not None and image_data in value)
+        ):
             return True
         try:
             parsed = json.loads(value)
@@ -273,7 +310,9 @@ class _ModelServerServer(ThreadingHTTPServer):
 
 class ModelServer:
     def __init__(self, image: bytes | None = None) -> None:
-        self.image_data = base64.b64encode(image).decode("ascii") if image is not None else None
+        self.image_data = (
+            base64.b64encode(image).decode("ascii") if image is not None else None
+        )
         self.request_count = 0
         self.saw_ltr_reference = False
         self.saw_sandbox_analysis = False
@@ -306,7 +345,9 @@ class ModelServer:
                 try:
                     body = json.loads(raw)
                 except json.JSONDecodeError:
-                    _json_response(self, 400, {"error": {"message": "invalid model request"}})
+                    _json_response(
+                        self, 400, {"error": {"message": "invalid model request"}}
+                    )
                     return
                 owner.request_bodies.append(body)
                 owner.saw_image_data |= _contains_image_content(body, owner.image_data)
@@ -317,11 +358,15 @@ class ModelServer:
                     owner.saw_ltr_reference = True
                 if "rows" in text and "256" in text and "analyzed" in text:
                     owner.saw_sandbox_analysis = True
-                if '"checkout_isolated"' in text and 'true' in text:
+                if '"checkout_isolated"' in text and "true" in text:
                     owner.saw_checkout_isolation = True
-                if '"private_runtime_isolated"' in text and 'true' in text:
+                if '"private_runtime_isolated"' in text and "true" in text:
                     owner.saw_private_runtime_isolation = True
-                if '"network_attempted"' in text and 'true' in text and '"network":"blocked"' in text:
+                if (
+                    '"network_attempted"' in text
+                    and "true" in text
+                    and '"network":"blocked"' in text
+                ):
                     owner.saw_network_measurement = True
                 analysis_seen = _contains_analysis(messages)
                 owner.saw_sandbox_analysis |= analysis_seen
@@ -337,7 +382,9 @@ class ModelServer:
                     sandbox_path = ltr_match.group(1).strip().rstrip(".")
                     try:
                         if owner._stage_boundary_helper is None:
-                            raise RuntimeError("boundary helper staging is not configured")
+                            raise RuntimeError(
+                                "boundary helper staging is not configured"
+                            )
                         owner._stage_boundary_helper(sandbox_path)
                         owner.boundary_helper_staged = True
                     except (OSError, RuntimeError, ValueError):
@@ -353,7 +400,9 @@ class ModelServer:
                     call_id = "phase0-inspect"
                 self._send_tool_call(name, arguments, call_id)
 
-            def _send_tool_call(self, name: str, arguments: dict[str, Any], call_id: str) -> None:
+            def _send_tool_call(
+                self, name: str, arguments: dict[str, Any], call_id: str
+            ) -> None:
                 now = 1_700_000_000
                 first = {
                     "id": "chatcmpl-phase0",
@@ -370,7 +419,12 @@ class ModelServer:
                                         "index": 0,
                                         "id": call_id,
                                         "type": "function",
-                                        "function": {"name": name, "arguments": json.dumps(arguments, separators=(",", ":"))},
+                                        "function": {
+                                            "name": name,
+                                            "arguments": json.dumps(
+                                                arguments, separators=(",", ":")
+                                            ),
+                                        },
                                     }
                                 ],
                             },
@@ -383,10 +437,20 @@ class ModelServer:
                     "object": "chat.completion.chunk",
                     "created": now,
                     "model": "phase0-model",
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
-                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": "tool_calls"}
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
                 }
-                payload = f"data: {json.dumps(first, separators=(',', ':'))}\n\n" + f"data: {json.dumps(last, separators=(',', ':'))}\n\n" + "data: [DONE]\n\n"
+                payload = (
+                    f"data: {json.dumps(first, separators=(',', ':'))}\n\n"
+                    + f"data: {json.dumps(last, separators=(',', ':'))}\n\n"
+                    + "data: [DONE]\n\n"
+                )
                 data = payload.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")

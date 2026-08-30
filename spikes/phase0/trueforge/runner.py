@@ -19,7 +19,14 @@ from spikes.phase0.upstream.adapter import normalize_json_result
 from spikes.phase0.upstream.contract import PRIMITIVE_XML, matches_sim_load_result
 from spikes.phase0.upstream.stdio import with_stdio_session
 
-from .protocol import DUMMY_TOOLS, PLANNED_TOOLS, DummyFacade, ModelServer, planned_tool_schemas, png_dimensions
+from .protocol import (
+    DUMMY_TOOLS,
+    PLANNED_TOOLS,
+    DummyFacade,
+    ModelServer,
+    planned_tool_schemas,
+    png_dimensions,
+)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -33,8 +40,14 @@ def _free_port() -> int:
         return int(probe.getsockname()[1])
 
 
-def _request(base_url: str, method: str, path: str, payload: Any | None = None) -> tuple[int, dict[str, Any]]:
-    body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
+def _request(
+    base_url: str, method: str, path: str, payload: Any | None = None
+) -> tuple[int, dict[str, Any]]:
+    body = (
+        None
+        if payload is None
+        else json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    )
     request = Request(f"{base_url}{path}", data=body, method=method)
     if body is not None:
         request.add_header("Content-Type", "application/json")
@@ -62,12 +75,18 @@ def _events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     value = _data(payload)
     if not isinstance(value, list):
         return []
-    return [entry.get("event", entry) if isinstance(entry, dict) else {} for entry in value]
+    return [
+        entry.get("event", entry) if isinstance(entry, dict) else {} for entry in value
+    ]
 
 
 def _sanitize_event(value: Any) -> Any:
     if isinstance(value, dict):
-        return {key: _sanitize_event(child) for key, child in value.items() if key != "sandbox_id"}
+        return {
+            key: _sanitize_event(child)
+            for key, child in value.items()
+            if key != "sandbox_id"
+        }
     if isinstance(value, list):
         return [_sanitize_event(child) for child in value]
     return value
@@ -89,7 +108,9 @@ def _sanitized_events_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _render_cgl_png() -> bytes:
     async def render() -> bytes:
         async def call(session) -> bytes:
-            loaded = await session.call_tool("sim_load", arguments={"name": "phase0", "xml_string": PRIMITIVE_XML})
+            loaded = await session.call_tool(
+                "sim_load", arguments={"name": "phase0", "xml_string": PRIMITIVE_XML}
+            )
             summary = normalize_json_result(loaded, matches_sim_load_result)
             if summary.get("has_renderer") is not True:
                 raise RuntimeError("CGL renderer unavailable")
@@ -101,7 +122,10 @@ def _render_cgl_png() -> bytes:
             if getattr(result, "isError", True) or len(blocks) != 2:
                 raise RuntimeError("CGL render response unavailable")
             image = blocks[0]
-            if getattr(image, "type", None) != "image" or getattr(image, "mimeType", None) != "image/png":
+            if (
+                getattr(image, "type", None) != "image"
+                or getattr(image, "mimeType", None) != "image/png"
+            ):
                 raise RuntimeError("CGL image block unavailable")
             return base64.b64decode(image.data)
 
@@ -185,7 +209,9 @@ class TrueForgeProcess:
                 self.home_alias_created = False
 
 
-def _save_mcp_connection(trueforge: TrueForgeProcess, facade: DummyFacade, bearer: str, origin: str) -> int:
+def _save_mcp_connection(
+    trueforge: TrueForgeProcess, facade: DummyFacade, bearer: str, origin: str
+) -> int:
     return _request(
         trueforge.base_url,
         "PUT",
@@ -196,7 +222,10 @@ def _save_mcp_connection(trueforge: TrueForgeProcess, facade: DummyFacade, beare
                 "name": "phase0-facade",
                 "url": facade.url,
                 "description": "Synthetic Phase 0 boundary probe",
-                "auth": {"type": "header", "headers": {"Authorization": f"Bearer {bearer}", "Origin": origin}},
+                "auth": {
+                    "type": "header",
+                    "headers": {"Authorization": f"Bearer {bearer}", "Origin": origin},
+                },
             }
         },
     )[0]
@@ -210,8 +239,14 @@ def _remote_tools_attempt(
 ) -> dict[str, Any]:
     request_start = len(facade.requests)
     saved_status = _save_mcp_connection(trueforge, facade, bearer, origin)
-    trueforge_status, payload = _request(trueforge.base_url, "GET", "/api/v1/mcp-servers/phase0-facade/tools")
-    requests = [request for request in facade.requests[request_start:] if request.get("path") == "/mcp"]
+    trueforge_status, payload = _request(
+        trueforge.base_url, "GET", "/api/v1/mcp-servers/phase0-facade/tools"
+    )
+    requests = [
+        request
+        for request in facade.requests[request_start:]
+        if request.get("path") == "/mcp"
+    ]
     return {
         "saved_status": saved_status,
         "trueforge_status": trueforge_status,
@@ -221,7 +256,9 @@ def _remote_tools_attempt(
     }
 
 
-def _rejection_matches(attempt: dict[str, Any], expected_status: int, auth_ok: bool, origin_ok: bool) -> bool:
+def _rejection_matches(
+    attempt: dict[str, Any], expected_status: int, auth_ok: bool, origin_ok: bool
+) -> bool:
     request = attempt.get("request")
     return (
         attempt.get("request_count") == 1
@@ -234,10 +271,16 @@ def _rejection_matches(attempt: dict[str, Any], expected_status: int, auth_ok: b
     )
 
 
-def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], bool]:
+def evaluate_phase0_gates(
+    evidence: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], bool]:
     http = evidence["http"]
-    wrong_bearer = _rejection_matches(http["wrong_bearer"], 401, auth_ok=False, origin_ok=True)
-    wrong_origin = _rejection_matches(http["wrong_origin"], 403, auth_ok=True, origin_ok=False)
+    wrong_bearer = _rejection_matches(
+        http["wrong_bearer"], 401, auth_ok=False, origin_ok=True
+    )
+    wrong_origin = _rejection_matches(
+        http["wrong_origin"], 403, auth_ok=True, origin_ok=False
+    )
     http_tools = http["streamable_http_tools"] is True
     http_saved = http["saved_connection"] is True
     http_result = http_saved and http_tools and wrong_bearer and wrong_origin
@@ -296,12 +339,16 @@ def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str,
             "wrong_bearer_rejected": wrong_bearer,
             "wrong_bearer_expected_status": 401,
             "wrong_bearer_observed_status": (
-                wrong_bearer_request.get("response_status") if isinstance(wrong_bearer_request, dict) else None
+                wrong_bearer_request.get("response_status")
+                if isinstance(wrong_bearer_request, dict)
+                else None
             ),
             "wrong_origin_rejected": wrong_origin,
             "wrong_origin_expected_status": 403,
             "wrong_origin_observed_status": (
-                wrong_origin_request.get("response_status") if isinstance(wrong_origin_request, dict) else None
+                wrong_origin_request.get("response_status")
+                if isinstance(wrong_origin_request, dict)
+                else None
             ),
         },
         "large_tool_response": {
@@ -325,9 +372,11 @@ def evaluate_phase0_gates(evidence: dict[str, Any]) -> tuple[dict[str, dict[str,
             "serial": evidence["exact_spec"] is True,
             "planned_tool_count": len(PLANNED_TOOLS),
             "dummy_tool_count": len(DUMMY_TOOLS),
-            "publish_approval_pause": approval.get("publish_approval_call_match") is True,
+            "publish_approval_pause": approval.get("publish_approval_call_match")
+            is True,
             "publish_calls": evidence["publish_calls"],
-            "turn_completed_successfully": evidence["turn_status"] in SUCCESSFUL_TURN_STATUSES,
+            "turn_completed_successfully": evidence["turn_status"]
+            in SUCCESSFUL_TURN_STATUSES,
         },
         "image_transport": {
             "result": "PASS" if image_result else "BLOCKED_HARD_GATE",
@@ -351,7 +400,13 @@ def _save_model_provider(trueforge: TrueForgeProcess, model: ModelServer) -> int
                 "type": "custom",
                 "name": "phase0",
                 "base_url": model.base_url,
-                "models": [{"model_id": "phase0-model", "name": "phase0-model", "properties": {}}],
+                "models": [
+                    {
+                        "model_id": "phase0-model",
+                        "name": "phase0-model",
+                        "properties": {},
+                    }
+                ],
             }
         },
     )[0]
@@ -363,14 +418,20 @@ def _tool_call_ids(payload: dict[str, Any], tool_name: str) -> list[str]:
         if event.get("type") != "model.message":
             continue
         for tool_call in event.get("tool_calls", []):
-            if not isinstance(tool_call, dict) or not isinstance(tool_call.get("function"), dict):
+            if not isinstance(tool_call, dict) or not isinstance(
+                tool_call.get("function"), dict
+            ):
                 continue
-            if tool_call["function"].get("name") == tool_name and isinstance(tool_call.get("id"), str):
+            if tool_call["function"].get("name") == tool_name and isinstance(
+                tool_call.get("id"), str
+            ):
                 ids.append(tool_call["id"])
     return ids
 
 
-def _approval_evidence(payload: dict[str, Any], publish_call_ids: list[str]) -> dict[str, Any]:
+def _approval_evidence(
+    payload: dict[str, Any], publish_call_ids: list[str]
+) -> dict[str, Any]:
     approval_call_ids: list[str] = []
     for event in _events(payload):
         if event.get("type") != "tool.approval_required":
@@ -378,7 +439,9 @@ def _approval_evidence(payload: dict[str, Any], publish_call_ids: list[str]) -> 
         for tool_call in event.get("tool_calls", []):
             if isinstance(tool_call, dict) and isinstance(tool_call.get("id"), str):
                 approval_call_ids.append(tool_call["id"])
-    matched = len(publish_call_ids) == 1 and approval_call_ids.count(publish_call_ids[0]) == 1
+    matched = (
+        len(publish_call_ids) == 1 and approval_call_ids.count(publish_call_ids[0]) == 1
+    )
     return {
         "approval_event_seen": bool(approval_call_ids),
         "publish_call_count": len(publish_call_ids),
@@ -386,12 +449,17 @@ def _approval_evidence(payload: dict[str, Any], publish_call_ids: list[str]) -> 
     }
 
 
-def _sandbox_analysis_evidence(payload: dict[str, Any], sandbox_call_id: str | None) -> dict[str, Any]:
+def _sandbox_analysis_evidence(
+    payload: dict[str, Any], sandbox_call_id: str | None
+) -> dict[str, Any]:
     matches: list[dict[str, Any]] = []
     if sandbox_call_id is None:
         return {"matching_response_count": 0}
     for event in _events(payload):
-        if event.get("type") != "tool.response" or event.get("tool_call_id") != sandbox_call_id:
+        if (
+            event.get("type") != "tool.response"
+            or event.get("tool_call_id") != sandbox_call_id
+        ):
             continue
         content = event.get("content")
         if not isinstance(content, str):
@@ -433,7 +501,8 @@ def _sandbox_analysis_evidence(payload: dict[str, Any], sandbox_call_id: str | N
         "rows": observation["rows"] == 256,
         "analyzed": observation["analyzed"] is True,
         "checkout_isolated": (
-            observation["checkout_metadata"] == "blocked" and observation["checkout_content"] == "blocked"
+            observation["checkout_metadata"] == "blocked"
+            and observation["checkout_content"] == "blocked"
         ),
         "private_runtime_isolated": (
             observation["private_runtime_metadata"] == "blocked"
@@ -460,14 +529,18 @@ def _turn_status(turn: dict[str, Any]) -> str:
     return str(value).lower()
 
 
-def _wait_for_turn(trueforge: TrueForgeProcess, session_id: str, initial: dict[str, Any]) -> dict[str, Any]:
+def _wait_for_turn(
+    trueforge: TrueForgeProcess, session_id: str, initial: dict[str, Any]
+) -> dict[str, Any]:
     turn = _turn_from(initial)
     status = _turn_status(turn)
     if status in {"done", "failed", "cancelled", "canceled"}:
         return turn
     deadline = time.monotonic() + 150
     while time.monotonic() < deadline:
-        _, payload = _request(trueforge.base_url, "GET", f"/api/v1/sessions/{session_id}/turns?limit=1")
+        _, payload = _request(
+            trueforge.base_url, "GET", f"/api/v1/sessions/{session_id}/turns?limit=1"
+        )
         candidate = _turn_from(payload)
         if candidate:
             turn = candidate
@@ -480,13 +553,19 @@ def _wait_for_turn(trueforge: TrueForgeProcess, session_id: str, initial: dict[s
 
 def _make_sentinel(directory: Path, prefix: str) -> tuple[Path, bytes]:
     value = os.urandom(32)
-    with tempfile.NamedTemporaryFile(mode="wb", dir=directory, prefix=prefix, delete=False) as handle:
+    with tempfile.NamedTemporaryFile(
+        mode="wb", dir=directory, prefix=prefix, delete=False
+    ) as handle:
         handle.write(value)
         return Path(handle.name), value
 
 
 def _trueforge_data_directory(home: Path) -> Path:
-    relative = Path("Library", "Application Support") if sys.platform == "darwin" else Path(".local", "share")
+    relative = (
+        Path("Library", "Application Support")
+        if sys.platform == "darwin"
+        else Path(".local", "share")
+    )
     return home / relative / "trueforge"
 
 
@@ -494,12 +573,17 @@ def _sentinels_intact(paths: list[Path], values: list[bytes]) -> bool:
     if len(paths) != len(values):
         return False
     try:
-        return all(path.is_file() and path.read_bytes() == value for path, value in zip(paths, values, strict=True))
+        return all(
+            path.is_file() and path.read_bytes() == value
+            for path, value in zip(paths, values, strict=True)
+        )
     except OSError:
         return False
 
 
-def _contains_prohibited_boundary_data(observed: Any, paths: list[Path], values: list[bytes]) -> bool:
+def _contains_prohibited_boundary_data(
+    observed: Any, paths: list[Path], values: list[bytes]
+) -> bool:
     text_needles = [str(path) for path in paths]
     for value in values:
         text_needles.extend((value.hex(), base64.b64encode(value).decode("ascii")))
@@ -518,8 +602,10 @@ def _contains_prohibited_boundary_data(observed: Any, paths: list[Path], values:
     return contains(observed)
 
 
-def _boundary_helper_source(ltr_path: str, checkout_sentinel: Path, private_sentinel: Path) -> str:
-    return f'''from __future__ import annotations
+def _boundary_helper_source(
+    ltr_path: str, checkout_sentinel: Path, private_sentinel: Path
+) -> str:
+    return f"""from __future__ import annotations
 
 import json
 import socket
@@ -579,7 +665,7 @@ def main() -> int:
 
 
 raise SystemExit(main())
-'''
+"""
 
 
 def _stage_boundary_helper(
@@ -592,7 +678,9 @@ def _stage_boundary_helper(
     if len(roots) != 1:
         raise RuntimeError("exact TrueForge sandbox root was unavailable")
     helper = roots[0] / ".phase0-boundary-probe.py"
-    helper.write_text(_boundary_helper_source(ltr_path, checkout_sentinel, private_sentinel))
+    helper.write_text(
+        _boundary_helper_source(ltr_path, checkout_sentinel, private_sentinel)
+    )
     helper.chmod(0o600)
     return helper
 
@@ -608,12 +696,20 @@ def _cleanup_live_probe(
 ) -> None:
     cleanup_error: Exception | None = None
     actions = (
-        lambda: boundary_helper.unlink(missing_ok=True) if boundary_helper is not None else None,
+        lambda: (
+            boundary_helper.unlink(missing_ok=True)
+            if boundary_helper is not None
+            else None
+        ),
         lambda: trueforge.stop() if trueforge is not None else None,
         lambda: model.close() if model is not None else None,
         lambda: facade.close() if facade is not None else None,
         lambda: home_alias.unlink(missing_ok=True) if home_alias is not None else None,
-        lambda: checkout_sentinel.unlink(missing_ok=True) if checkout_sentinel is not None else None,
+        lambda: (
+            checkout_sentinel.unlink(missing_ok=True)
+            if checkout_sentinel is not None
+            else None
+        ),
         lambda: shutil.rmtree(runtime_directory, ignore_errors=True),
     )
     for action in actions:
@@ -629,9 +725,18 @@ def _cleanup_live_probe(
 def run_live_probe() -> dict[str, Any]:
     package = json.loads((ROOT / "package.json").read_text())
     package_lock = json.loads((ROOT / "package-lock.json").read_text())
-    if package.get("dependencies", {}).get("@truefoundry/trueforge") != TRUEFORGE_VERSION:
+    if (
+        package.get("dependencies", {}).get("@truefoundry/trueforge")
+        != TRUEFORGE_VERSION
+    ):
         raise RuntimeError("TrueForge package pin is not 0.1.4")
-    if package_lock.get("packages", {}).get("", {}).get("dependencies", {}).get("@truefoundry/trueforge") != TRUEFORGE_VERSION:
+    if (
+        package_lock.get("packages", {})
+        .get("", {})
+        .get("dependencies", {})
+        .get("@truefoundry/trueforge")
+        != TRUEFORGE_VERSION
+    ):
         raise RuntimeError("TrueForge lockfile pin is not 0.1.4")
 
     runtime_directory = Path(tempfile.mkdtemp(prefix="tf0-", dir="/tmp"))
@@ -645,12 +750,16 @@ def run_live_probe() -> dict[str, Any]:
     facade: DummyFacade | None = None
     model: ModelServer | None = None
     try:
-        checkout_sentinel, checkout_value = _make_sentinel(ROOT, ".trueforge-phase0-checkout-")
+        checkout_sentinel, checkout_value = _make_sentinel(
+            ROOT, ".trueforge-phase0-checkout-"
+        )
         private_runtime = runtime_directory / "private-runtime"
         private_runtime.mkdir()
         private_sentinel, private_value = _make_sentinel(private_runtime, "sentinel-")
         image = _render_cgl_png()
-        home_alias = Path(tempfile.mkdtemp(prefix="tf0-home-", dir=tempfile.gettempdir()))
+        home_alias = Path(
+            tempfile.mkdtemp(prefix="tf0-home-", dir=tempfile.gettempdir())
+        )
         home_alias.rmdir()
         trueforge = TrueForgeProcess(_free_port(), runtime_directory, home_alias)
         allowed_origin = f"http://localhost:{trueforge.port}"
@@ -660,21 +769,37 @@ def run_live_probe() -> dict[str, Any]:
         model.start()
         trueforge.start()
 
-        wrong_bearer = _remote_tools_attempt(trueforge, facade, "wrong-bearer", allowed_origin)
-        wrong_origin = _remote_tools_attempt(trueforge, facade, "phase0-bearer", "http://localhost:1")
-        valid_connection = _remote_tools_attempt(trueforge, facade, "phase0-bearer", allowed_origin)
+        wrong_bearer = _remote_tools_attempt(
+            trueforge, facade, "wrong-bearer", allowed_origin
+        )
+        wrong_origin = _remote_tools_attempt(
+            trueforge, facade, "phase0-bearer", "http://localhost:1"
+        )
+        valid_connection = _remote_tools_attempt(
+            trueforge, facade, "phase0-bearer", allowed_origin
+        )
         tools = _data(valid_connection["payload"])
-        tool_names = [tool.get("name") for tool in tools] if isinstance(tools, list) else []
+        tool_names = (
+            [tool.get("name") for tool in tools] if isinstance(tools, list) else []
+        )
         expected_schemas = {tool["name"]: tool for tool in planned_tool_schemas()}
-        actual_schemas = {tool.get("name"): tool for tool in tools if isinstance(tool, dict)} if isinstance(tools, list) else {}
+        actual_schemas = (
+            {tool.get("name"): tool for tool in tools if isinstance(tool, dict)}
+            if isinstance(tools, list)
+            else {}
+        )
         normalized_schemas = {
             name: {key: value for key, value in tool.items() if key != "preload"}
             for name, tool in actual_schemas.items()
             if isinstance(tool, dict)
         }
-        exact_schemas = len(tools) == len(PLANNED_TOOLS) and normalized_schemas == expected_schemas
+        exact_schemas = (
+            len(tools) == len(PLANNED_TOOLS) and normalized_schemas == expected_schemas
+        )
         only_publish_destructive = {
-            name for name, tool in actual_schemas.items() if tool.get("annotations", {}).get("destructiveHint") is True
+            name
+            for name, tool in actual_schemas.items()
+            if tool.get("annotations", {}).get("destructiveHint") is True
         } == {"publish_revision"}
         http_evidence = {
             "saved_connection": valid_connection["saved_status"] == 200,
@@ -690,7 +815,10 @@ def run_live_probe() -> dict[str, Any]:
             raise RuntimeError("custom model provider was rejected")
 
         spec = {
-            "model": {"name": "phase0/phase0-model", "params": {"parallel_tool_calls": False}},
+            "model": {
+                "name": "phase0/phase0-model",
+                "params": {"parallel_tool_calls": False},
+            },
             "mcp_servers": [
                 {
                     "name": "phase0-facade",
@@ -707,16 +835,31 @@ def run_live_probe() -> dict[str, Any]:
                 "context_management": {"large_tool_response": {"enabled": True}},
             },
         }
-        session_status, session_payload = _request(trueforge.base_url, "POST", "/api/v1/sessions", {"agent": {"spec": spec}})
+        session_status, session_payload = _request(
+            trueforge.base_url, "POST", "/api/v1/sessions", {"agent": {"spec": spec}}
+        )
         if session_status not in {200, 201}:
             raise RuntimeError("TrueForge session creation was rejected")
         session = _data(session_payload)
-        stored_spec = session.get("agent", {}).get("spec", {}) if isinstance(session, dict) else {}
-        stored_servers = stored_spec.get("mcp_servers") if isinstance(stored_spec, dict) else None
-        stored_server = stored_servers[0] if isinstance(stored_servers, list) and len(stored_servers) == 1 else {}
+        stored_spec = (
+            session.get("agent", {}).get("spec", {})
+            if isinstance(session, dict)
+            else {}
+        )
+        stored_servers = (
+            stored_spec.get("mcp_servers") if isinstance(stored_spec, dict) else None
+        )
+        stored_server = (
+            stored_servers[0]
+            if isinstance(stored_servers, list) and len(stored_servers) == 1
+            else {}
+        )
         exact_spec = (
             stored_spec.get("model", {}).get("name") == "phase0/phase0-model"
-            and stored_spec.get("model", {}).get("params", {}).get("parallel_tool_calls") is False
+            and stored_spec.get("model", {})
+            .get("params", {})
+            .get("parallel_tool_calls")
+            is False
             and stored_server.get("name") == "phase0-facade"
             and stored_server.get("enable_tools") == list(PLANNED_TOOLS)
             and stored_server.get("disable_tools") == []
@@ -725,7 +868,11 @@ def run_live_probe() -> dict[str, Any]:
             and stored_server.get("preload") is True
             and stored_spec.get("config", {}).get("iteration_limit") == 30
             and stored_spec.get("config", {}).get("sandbox", {}).get("enabled") is True
-            and stored_spec.get("config", {}).get("context_management", {}).get("large_tool_response", {}).get("enabled") is True
+            and stored_spec.get("config", {})
+            .get("context_management", {})
+            .get("large_tool_response", {})
+            .get("enabled")
+            is True
         )
 
         image_environment = {
@@ -757,8 +904,14 @@ def run_live_probe() -> dict[str, Any]:
             [checkout_sentinel, private_sentinel],
             [checkout_value, private_value],
         ):
-            raise RuntimeError("boundary sentinels were unavailable before the sandbox attempt")
-        sandbox_parent = _trueforge_data_directory(runtime_directory / "home") / "sandboxes" / session["id"]
+            raise RuntimeError(
+                "boundary sentinels were unavailable before the sandbox attempt"
+            )
+        sandbox_parent = (
+            _trueforge_data_directory(runtime_directory / "home")
+            / "sandboxes"
+            / session["id"]
+        )
 
         def stage_helper(ltr_path: str) -> None:
             nonlocal boundary_helper
@@ -789,7 +942,9 @@ def run_live_probe() -> dict[str, Any]:
             turn = _wait_for_turn(trueforge, session["id"], turn_payload)
         turn_state = _turn_status(turn)
         _, raw_events_payload = _request(
-            trueforge.base_url, "GET", f"/api/v1/sessions/{session['id']}/events?limit=100"
+            trueforge.base_url,
+            "GET",
+            f"/api/v1/sessions/{session['id']}/events?limit=100",
         )
         sentinels_intact = _sentinels_intact(
             [checkout_sentinel, private_sentinel],

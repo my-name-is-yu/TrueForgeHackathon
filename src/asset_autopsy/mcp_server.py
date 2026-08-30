@@ -177,11 +177,17 @@ class AssetAutopsyServiceProtocol(Protocol):
 
     async def run_task(self, request: RunTaskInput) -> RunTaskOutput: ...
 
-    async def run_experiment(self, request: RunExperimentInput) -> RunExperimentOutput: ...
+    async def run_experiment(
+        self, request: RunExperimentInput
+    ) -> RunExperimentOutput: ...
 
-    async def create_revision(self, request: CreateRevisionInput) -> CreateRevisionOutput: ...
+    async def create_revision(
+        self, request: CreateRevisionInput
+    ) -> CreateRevisionOutput: ...
 
-    async def verify_revision(self, request: VerifyRevisionInput) -> VerifyRevisionOutput: ...
+    async def verify_revision(
+        self, request: VerifyRevisionInput
+    ) -> VerifyRevisionOutput: ...
 
     async def publish_revision(self, request: PublishRevisionInput) -> None: ...
 
@@ -374,7 +380,9 @@ def _safe_validation_path(location: tuple[Any, ...], *, unknown_field: bool) -> 
     return "".join(parts)[:_MAX_VALIDATION_PATH_LENGTH]
 
 
-def _safe_validation_feedback(error: PydanticValidationError) -> tuple[list[dict[str, str]], bool]:
+def _safe_validation_feedback(
+    error: PydanticValidationError,
+) -> tuple[list[dict[str, str]], bool]:
     raw_errors = error.errors(
         include_url=False,
         include_input=False,
@@ -412,7 +420,11 @@ def _safe_error(error: Exception) -> _SanitizedToolError:
     next_action = getattr(error, "next_action", None)
     request_id = getattr(error, "request_id", None)
     if not isinstance(code, str) or not code.isupper() or len(code) > 64:
-        code = "INVALID_REQUEST" if isinstance(error, PydanticValidationError) else "TOOL_EXECUTION_FAILED"
+        code = (
+            "INVALID_REQUEST"
+            if isinstance(error, PydanticValidationError)
+            else "TOOL_EXECUTION_FAILED"
+        )
     if not isinstance(safe_message, str) or not 1 <= len(safe_message) <= 240:
         safe_message = (
             "The request did not satisfy the public tool contract."
@@ -433,7 +445,9 @@ def _safe_error(error: Exception) -> _SanitizedToolError:
         "next_action": next_action,
     }
     if isinstance(error, PydanticValidationError):
-        validation_errors, validation_errors_truncated = _safe_validation_feedback(error)
+        validation_errors, validation_errors_truncated = _safe_validation_feedback(
+            error
+        )
         envelope["validation_errors"] = validation_errors
         envelope["validation_errors_truncated"] = validation_errors_truncated
     return _SanitizedToolError(
@@ -441,7 +455,9 @@ def _safe_error(error: Exception) -> _SanitizedToolError:
     )
 
 
-def _annotations(*, read_only: bool, destructive: bool, idempotent: bool) -> ToolAnnotations:
+def _annotations(
+    *, read_only: bool, destructive: bool, idempotent: bool
+) -> ToolAnnotations:
     return ToolAnnotations(
         readOnlyHint=read_only,
         destructiveHint=destructive,
@@ -514,7 +530,9 @@ async def create_mcp_facade(
     )
     async def open_case(case_id: CaseId) -> OpenCaseOutput:
         request = OpenCaseInput.model_validate({"case_id": case_id})
-        return cast(OpenCaseOutput, await invoke("open_case", request, service.open_case))
+        return cast(
+            OpenCaseOutput, await invoke("open_case", request, service.open_case)
+        )
 
     @mcp.tool(
         name="inspect_asset",

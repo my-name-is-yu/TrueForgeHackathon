@@ -183,9 +183,7 @@ class TaskEvaluation:
         )
 
 
-def _first_divergence(
-    before: Sequence[TracePoint], after: Sequence[TracePoint]
-):
+def _first_divergence(before: Sequence[TracePoint], after: Sequence[TracePoint]):
     from .schemas import FirstDivergence
 
     if len(before) != len(after) or not before:

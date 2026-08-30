@@ -310,8 +310,7 @@ class DeterministicRunner:
                     track=configuration.track,
                 )
                 rows = tuple(
-                    {**row, "ctrl": list(segment.ctrl)}
-                    for row in payload["timeseries"]
+                    {**row, "ctrl": list(segment.ctrl)} for row in payload["timeseries"]
                 )
                 if (
                     len(rows) != segment.n_steps
