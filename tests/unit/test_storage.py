@@ -228,6 +228,21 @@ def test_object_store_wraps_root_creation_failure(tmp_path: Path) -> None:
         store.put_bytes(b"payload")
 
 
+def test_object_store_verifies_and_returns_bytes_from_one_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ObjectStore(tmp_path / "objects")
+    payload = b"single descriptor object read"
+    digest = store.put_bytes(payload).sha256
+
+    def reject_second_path_read(_path: Path) -> bytes:
+        raise AssertionError("read_bytes must not reopen the canonical path")
+
+    monkeypatch.setattr(Path, "read_bytes", reject_second_path_read)
+
+    assert store.read_bytes(digest) == payload
+
+
 def test_object_store_syncs_new_shard_and_hash_root_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -301,18 +316,29 @@ def test_existing_object_removes_temporary_before_directory_sync(
     assert not list(object_store.hash_root.glob(".tmp-*"))
 
 
-def test_object_store_rejects_missing_parent_instead_of_recursive_creation(
-    tmp_path: Path,
+def test_object_store_creates_and_syncs_missing_parent_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     object_store = ObjectStore(tmp_path / "new" / "a" / "objects")
-
     payload = b"object root with multiple missing ancestors"
     digest = hashlib.sha256(payload).hexdigest()
+    synchronized: list[Path] = []
+    original_fsync = object_store._fsync_directory
 
-    with pytest.raises(ObjectIntegrityError, match="parent must already exist"):
-        object_store.put_bytes(payload, expected_sha256=digest)
+    def record_fsync(path: Path) -> None:
+        synchronized.append(path)
+        original_fsync(path)
 
-    assert not (tmp_path / "new").exists()
+    monkeypatch.setattr(object_store, "_fsync_directory", record_fsync)
+
+    reference = object_store.put_bytes(payload, expected_sha256=digest)
+
+    assert reference.sha256 == digest
+    assert reference.bytes == len(payload)
+    assert object_store.read_bytes(digest) == payload
+    assert tmp_path / "new" in synchronized
+    assert tmp_path / "new" / "a" in synchronized
+    assert tmp_path / "new" / "a" / "objects" in synchronized
 
 
 def test_concurrent_object_publication_syncs_existing_destination(
@@ -1054,6 +1080,40 @@ def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_pat
             scenario_hashes=("b" * 64,),
             expected_head_revision_id="r001",
             **COMMITMENTS,
+        )
+
+
+def test_qualification_terminal_reads_verify_the_ledger_chain(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    identity = {
+        "case_id": "case-1",
+        "attempt_id": "attempt-1",
+        "revision_id": "r001",
+        "suite_commitment_sha256": "4" * 64,
+        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
+    }
+    store.record_qualification_terminal(
+        **identity, state="PASSED", result={"passed": 3}
+    )
+
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            """
+            UPDATE ledger_events SET payload_json = ?
+            WHERE event_type = 'QUALIFICATION_PASSED'
+            """,
+            (json.dumps({"result": {"passed": 999}}),),
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="ledger event hash mismatch"):
+        store.get_qualification("case-1")
+    with pytest.raises(IntegrityError, match="ledger event hash mismatch"):
+        store.record_qualification_terminal(
+            **identity, state="PASSED", result={"passed": 3}
         )
 
 

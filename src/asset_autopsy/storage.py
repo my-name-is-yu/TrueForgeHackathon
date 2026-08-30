@@ -301,6 +301,19 @@ class ObjectStore:
         except OSError as exc:
             raise ObjectIntegrityError("object directory cannot be synchronized") from exc
 
+    def _ensure_directory(self, path: Path) -> None:
+        missing: list[Path] = []
+        current = path
+        while not current.exists():
+            missing.append(current)
+            current = current.parent
+        if not current.is_dir():
+            raise ObjectIntegrityError("object directory ancestor is not a directory")
+        for directory in reversed(missing):
+            directory.mkdir(exist_ok=True)
+            self._fsync_directory(directory)
+            self._fsync_directory(directory.parent)
+
     def put_bytes(self, data: bytes, *, expected_sha256: str | None = None) -> ObjectReference:
         if not isinstance(data, bytes):
             raise TypeError("data must be bytes")
@@ -318,8 +331,7 @@ class ObjectStore:
         digest = hashlib.sha256()
         size = 0
         try:
-            if not self.root.parent.is_dir():
-                raise ObjectIntegrityError("object root parent must already exist")
+            self._ensure_directory(self.root.parent)
             self.root.mkdir(exist_ok=True)
             self.hash_root.mkdir(exist_ok=True)
             with tempfile.NamedTemporaryFile(
@@ -375,13 +387,14 @@ class ObjectStore:
         path = self._path(sha256)
         if not path.is_file():
             raise ObjectIntegrityError("canonical object is missing")
-        actual, _ = self._digest_file(path)
-        if actual != sha256:
-            raise ObjectIntegrityError("canonical object failed hash verification")
         try:
-            return path.read_bytes()
+            with path.open("rb") as source:
+                data = source.read()
         except OSError as exc:
             raise ObjectIntegrityError("canonical object cannot be read") from exc
+        if hashlib.sha256(data).hexdigest() != sha256:
+            raise ObjectIntegrityError("canonical object failed hash verification")
+        return data
 
 
 class EvidenceStore:
@@ -1729,6 +1742,7 @@ class EvidenceStore:
                 raise CaseNotFoundError("case was not found")
             case_commitments = self._stored_commitment_payload(case)
             if case["qualification_result"] in {"PASSED", "FAILED"}:
+                self._verified_ledger_from_connection(connection)
                 existing = self._latest_attempt_from_connection(
                     connection,
                     case_id,
@@ -1837,7 +1851,7 @@ class EvidenceStore:
 
     def get_qualification(self, case_id: str) -> QualificationAttempt | None:
         _id(case_id, "case_id")
-        with self._read_connection() as connection:
+        with self._read_transaction() as connection:
             case = connection.execute(
                 "SELECT * FROM cases WHERE case_id = ?", (case_id,)
             ).fetchone()
@@ -1847,6 +1861,8 @@ class EvidenceStore:
                 return None
             state = case["qualification_result"]
             case_commitments = self._stored_commitment_payload(case)
+            if state in {"PASSED", "FAILED"}:
+                self._verified_ledger_from_connection(connection)
             attempt = self._latest_attempt_from_connection(
                 connection, case_id, state, case_commitments
             )
