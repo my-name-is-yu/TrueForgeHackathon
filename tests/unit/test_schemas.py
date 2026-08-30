@@ -13,6 +13,7 @@ from asset_autopsy.schemas import (
     OpenCaseOutput,
     OpenCaseInput,
     PatchPolicy,
+    PublishRevisionInput,
     PublishRevisionOutput,
     PublicEventSummary,
     RunTaskOutput,
@@ -918,6 +919,34 @@ def _promotion_ticket_payload() -> dict[str, object]:
     }
 
 
+def test_publish_input_requires_a_successful_same_case_ticket() -> None:
+    ticket = _promotion_ticket_payload()
+    PublishRevisionInput.model_validate(
+        {"case_id": "case_demo", "promotion_ticket": ticket}
+    )
+
+    with pytest.raises(ValidationError):
+        PublishRevisionInput.model_validate(
+            {"case_id": "case_other", "promotion_ticket": ticket}
+        )
+
+    failed_ticket = _promotion_ticket_payload()
+    failed_ticket["public_result"] = {
+        "passed": 0,
+        "total": 1,
+        "violated_clause_ids": ["reach_error"],
+    }
+    failed_ticket["holdout_result"] = {
+        "passed": 2,
+        "total": 3,
+        "violated_clause_ids": ["reach_error"],
+    }
+    with pytest.raises(ValidationError):
+        PublishRevisionInput.model_validate(
+            {"case_id": "case_demo", "promotion_ticket": failed_ticket}
+        )
+
+
 def test_verify_revision_requires_successful_bound_promotion_ticket() -> None:
     payload = _verify_revision_payload()
     payload["promotion_ticket"] = _promotion_ticket_payload()
@@ -1008,6 +1037,99 @@ def test_public_outputs_cover_case_commitments_and_evidence_ledger() -> None:
         }
     )
     assert artifact.kind == "evidence_ledger"
+
+
+def _open_case_payload() -> dict[str, object]:
+    metrics = [
+        "final_target_error_m",
+        "hold_error_p95_m",
+        "joint_speed_rms_rad_s",
+        "settling_time_s",
+        "peak_energy_j",
+        "joint_limit_violation_count",
+        "non_finite_count",
+    ]
+    return {
+        "schema_version": "asset-autopsy/v1",
+        "request_id": "req_demo",
+        "case_id": "case_demo",
+        "promotion_state": "open",
+        "qualification_state": "unused",
+        "original_revision_id": "r000",
+        "original_asset_sha256": "1" * 64,
+        "controller_sha256": "2" * 64,
+        "public_contract_sha256": "3" * 64,
+        "runner_sha256": "4" * 64,
+        "holdout_commitment_sha256": "5" * 64,
+        "public_scenarios": [
+            {"scenario_id": "public_center", "observable_metrics": metrics}
+        ],
+        "contract_clauses": [
+            {"clause_id": clause_id, "description": f"Fixed clause {clause_id}."}
+            for clause_id in (
+                "reach_error",
+                "stable_hold",
+                "settling",
+                "finite_state",
+                "joint_limits",
+            )
+        ],
+        "compiled_dimensions": {"nq": 1, "nv": 1, "nu": 1, "timestep_s": 0.01},
+        "joints": [
+            {
+                "name": "elbow",
+                "axis": (0.0, 0.0, 1.0),
+                "damping": 0.3,
+                "armature": 0.01,
+                "frictionloss": 0.0,
+                "body_parent": "arm",
+            }
+        ],
+        "bodies": [{"name": "arm"}],
+        "actuators": [{"name": "elbow_motor", "joint_name": "elbow"}],
+        "available_probe_kinds": ("joint_pulse", "pose_hold"),
+        "observable_metric_names": metrics,
+        "patch_policy": {
+            "editable_attributes": ("axis", "damping", "armature", "frictionloss"),
+            "axis_unit_vector": True,
+            "damping": {"minimum": 0.0, "maximum": 100.0},
+            "armature": {"minimum": 0.0, "maximum": 10.0},
+            "frictionloss": {"minimum": 0.0, "maximum": 100.0},
+        },
+        "remaining_budgets": {
+            "runs_remaining": 10,
+            "probes_remaining": 5,
+            "revisions_remaining": 2,
+            "qualification_remaining": 1,
+        },
+        "revision_history": [
+            {"revision_id": "r000", "asset_sha256": "1" * 64}
+        ],
+    }
+
+
+def test_open_case_output_binds_fixed_contract_and_lifecycle() -> None:
+    OpenCaseOutput.model_validate(_open_case_payload())
+
+    promoted_unused = _open_case_payload()
+    promoted_unused["promotion_state"] = "promoted"
+    with pytest.raises(ValidationError):
+        OpenCaseOutput.model_validate(promoted_unused)
+
+    missing_clause = _open_case_payload()
+    missing_clause["contract_clauses"] = missing_clause["contract_clauses"][:-1]
+    with pytest.raises(ValidationError):
+        OpenCaseOutput.model_validate(missing_clause)
+
+    duplicate_probe = _open_case_payload()
+    duplicate_probe["available_probe_kinds"] = ("joint_pulse", "joint_pulse")
+    with pytest.raises(ValidationError):
+        OpenCaseOutput.model_validate(duplicate_probe)
+
+    inconsistent_budget = _open_case_payload()
+    inconsistent_budget["qualification_state"] = "failed"
+    with pytest.raises(ValidationError):
+        OpenCaseOutput.model_validate(inconsistent_budget)
 
 
 def _publication_artifact(kind: str, index: int) -> dict[str, object]:

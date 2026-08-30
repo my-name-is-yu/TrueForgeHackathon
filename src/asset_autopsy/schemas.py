@@ -270,7 +270,7 @@ CaptureMode: TypeAlias = Literal["metrics_and_filmstrip", "analysis_trace"]
 
 
 class ExpectedEffect(StrictModel):
-    scenario_id: ElementName
+    scenario_id: Literal["public_center"]
     predicates: list[Predicate] = Field(min_length=1, max_length=16)
 
 
@@ -287,7 +287,7 @@ class InspectAssetInput(StrictModel):
 class RunTaskInput(StrictModel):
     case_id: CaseId
     revision_id: RevisionId
-    scenario_id: ElementName
+    scenario_id: Literal["public_center"]
     capture: Literal["metrics", "metrics_and_filmstrip"]
 
 
@@ -331,10 +331,29 @@ class PromotionTicket(StrictModel):
     qualified_core_sha256: AssetHash
     ticket_digest: AssetHash
 
+    @model_validator(mode="after")
+    def validate_qualification(self) -> PromotionTicket:
+        if (
+            self.public_result.passed != 1
+            or self.public_result.total != 1
+            or self.public_result.violated_clause_ids
+            or self.holdout_result.passed != 3
+            or self.holdout_result.total != 3
+            or self.holdout_result.violated_clause_ids
+        ):
+            raise ValueError("promotion ticket requires successful fixed-suite qualification")
+        return self
+
 
 class PublishRevisionInput(StrictModel):
     case_id: CaseId
     promotion_ticket: PromotionTicket
+
+    @model_validator(mode="after")
+    def validate_ticket_case(self) -> PublishRevisionInput:
+        if self.promotion_ticket.case_id != self.case_id:
+            raise ValueError("promotion ticket case must match publication case")
+        return self
 
 
 class ArtifactRef(StrictModel):
@@ -448,8 +467,17 @@ class ActuatorSummary(StrictModel):
 
 
 class ScenarioSummary(StrictModel):
-    scenario_id: ElementName
-    observable_metrics: list[MetricName] = Field(min_length=1, max_length=32)
+    scenario_id: Literal["public_center"]
+    observable_metrics: list[RunTaskMetricName] = Field(min_length=7, max_length=7)
+
+    @field_validator("observable_metrics")
+    @classmethod
+    def validate_metric_set(
+        cls, value: list[RunTaskMetricName]
+    ) -> list[RunTaskMetricName]:
+        if set(value) != _RUN_TASK_METRICS:
+            raise ValueError("public scenario must advertise each fixed metric exactly once")
+        return value
 
 
 class ContractClause(StrictModel):
@@ -516,6 +544,40 @@ class OpenCaseOutput(CommonOutput):
     remaining_budgets: "BudgetSummary"
     revision_history: list[RevisionSummary] = Field(min_length=1, max_length=32)
     event_tail: list[PublicEventSummary] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_fixed_contract_and_lifecycle(self) -> OpenCaseOutput:
+        if len(self.public_scenarios) != 1:
+            raise ValueError("open case must advertise the one fixed public scenario")
+        clause_ids = [clause.clause_id for clause in self.contract_clauses]
+        if len(clause_ids) != len(_CONTRACT_CLAUSE_IDS) or set(clause_ids) != _CONTRACT_CLAUSE_IDS:
+            raise ValueError("open case must advertise each fixed contract clause exactly once")
+        if set(self.available_probe_kinds) != {"joint_pulse", "pose_hold"} or len(
+            self.available_probe_kinds
+        ) != 2:
+            raise ValueError("open case must advertise both fixed probe kinds exactly once")
+        if len(self.observable_metric_names) != len(set(self.observable_metric_names)):
+            raise ValueError("observable metric names must be unique")
+        if not _RUN_TASK_METRICS.issubset(self.observable_metric_names):
+            raise ValueError("observable metrics must include every fixed task metric")
+        if self.promotion_state == "promoted" and self.qualification_state != "passed":
+            raise ValueError("promoted case must have passed qualification")
+        expected_qualification_budget = 1 if self.qualification_state == "unused" else 0
+        if self.remaining_budgets.qualification_remaining != expected_qualification_budget:
+            raise ValueError("qualification budget must match qualification lifecycle")
+        if self.original_revision_id != "r000":
+            raise ValueError("original revision must be r000")
+        if self.revision_history[0].revision_id != self.original_revision_id:
+            raise ValueError("revision history must begin with the original revision")
+        if self.revision_history[0].asset_sha256 != self.original_asset_sha256:
+            raise ValueError("original asset hash must match revision history")
+        revision_ids = [revision.revision_id for revision in self.revision_history]
+        if len(revision_ids) != len(set(revision_ids)):
+            raise ValueError("revision history IDs must be unique")
+        for parent, child in zip(self.revision_history, self.revision_history[1:]):
+            if child.parent_revision_id != parent.revision_id:
+                raise ValueError("revision history must form one linear chain")
+        return self
 
 
 class MetricObservation(StrictModel):
@@ -655,7 +717,7 @@ class BehaviorDiff(StrictModel):
 
 class RunTaskOutput(CommonOutput):
     revision_id: RevisionId
-    scenario_id: ElementName
+    scenario_id: Literal["public_center"]
     result: Literal["pass", "fail"]
     observations: list[MetricObservation] = Field(min_length=1, max_length=64)
     trace: list[TracePoint] = Field(default_factory=list, max_length=51)
