@@ -467,6 +467,7 @@ class ProbeObservation(StrictModel):
 
 class RunProbeOutput(CommonOutput):
     revision_id: RevisionId
+    hypothesis_id: HypothesisId
     run_id: RunId
     prediction_matched: StrictBool
     falsifier_triggered: StrictBool

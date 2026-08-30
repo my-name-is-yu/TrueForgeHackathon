@@ -9,6 +9,7 @@ from asset_autopsy.schemas import (
     CreateRevisionInput,
     OpenCaseInput,
     ScalarPatch,
+    RunProbeOutput,
     TOOL_INPUT_MODELS,
     TOOL_OUTPUT_MODELS,
 )
@@ -109,6 +110,50 @@ def test_patch_and_basis_probe_are_single_objects() -> None:
                 },
             }
         )
+
+
+def test_run_probe_output_supplies_both_revision_basis_identifiers() -> None:
+    run = RunProbeOutput.model_validate(
+        {
+            "schema_version": "asset-autopsy/v1",
+            "request_id": "req_demo",
+            "case_id": "case_demo",
+            "event_ids": [],
+            "warnings": [],
+            "artifacts": [],
+            "revision_id": "r000",
+            "hypothesis_id": "hyp_demo",
+            "run_id": "run_demo",
+            "prediction_matched": True,
+            "falsifier_triggered": False,
+            "inconclusive": False,
+            "conflicting": False,
+            "observations": [{"metric": "abs_ee_dz_m", "value": 0.0}],
+            "trace": [],
+        }
+    )
+    revision = CreateRevisionInput.model_validate(
+        {
+            "case_id": run.case_id,
+            "base_revision_id": run.revision_id,
+            "expected_base_sha256": "0" * 64,
+            "basis_hypothesis_id": run.hypothesis_id,
+            "basis_probe_run_id": run.run_id,
+            "patch": {
+                "target": {"kind": "joint", "name": "elbow"},
+                "attribute": "damping",
+                "expected_old_value": 0.3,
+                "new_value": 0.5,
+            },
+            "rationale": "The probe separates the proposed change.",
+            "expected_effect": {
+                "scenario_id": "public_center",
+                "predicates": [{"metric": "hold_error_p95_m", "op": "lte", "value": 0.03}],
+            },
+        }
+    )
+    assert revision.basis_hypothesis_id == "hyp_demo"
+    assert revision.basis_probe_run_id == "run_demo"
 
 
 def test_axis_is_normalized_and_family_ranges_are_enforced() -> None:

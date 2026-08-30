@@ -21,6 +21,8 @@ _UNSAFE_ELEMENT = re.compile(
 )
 _UNKNOWN_ENTITY = re.compile(r"&(?!(?:amp|lt|gt|quot|apos);)[A-Za-z_][A-Za-z0-9_.-]*;")
 _EXTERNAL_URI = re.compile(r"(?:data|file|ftp|https?):", re.IGNORECASE)
+_XML_DECLARATION = re.compile(rb"\A<\?xml(?:[ \t\r\n]+[^?]*)\?>")
+_DOCUMENT_TAG = "__asset_autopsy_document"
 _UNSAFE_ATTRIBUTE = {
     "contentdir",
     "file",
@@ -55,6 +57,13 @@ class PatchedArtifact:
     base_sha256: str
     asset_sha256: str
     canonical_diff: tuple[CanonicalChange, ...]
+
+
+@dataclass(frozen=True)
+class _ParsedDocument:
+    document_root: ET.Element
+    root: ET.Element
+    prefix: bytes
 
 
 def _as_xml_bytes(xml: bytes | str) -> bytes:
@@ -93,7 +102,27 @@ def _reject_external_features(source: bytes) -> None:
         raise PatcherError("UNSAFE_XML", "external XML references are not allowed")
 
 
-def _parse_safe(xml: bytes | str) -> ET.Element:
+def _document_element(document_root: ET.Element) -> ET.Element:
+    elements = [child for child in document_root if isinstance(child.tag, str)]
+    if len(elements) != 1:
+        raise PatcherError("INVALID_XML", "XML must contain one document element")
+    return elements[0]
+
+
+def _split_xml_prefix(source: bytes) -> tuple[bytes, bytes]:
+    prefix = b""
+    body = source
+    if body.startswith(b"\xef\xbb\xbf"):
+        prefix = body[:3]
+        body = body[3:]
+    declaration = _XML_DECLARATION.match(body)
+    if declaration is not None:
+        prefix += declaration.group(0)
+        body = body[declaration.end() :]
+    return prefix, body
+
+
+def _parse_safe(xml: bytes | str) -> _ParsedDocument:
     source = _as_xml_bytes(xml)
     try:
         _reject_external_features(source)
@@ -106,14 +135,39 @@ def _parse_safe(xml: bytes | str) -> ET.Element:
         raise PatcherError("INVALID_XML", "XML is not well formed") from None
     if _local_name(root.tag) != "mujoco":
         raise PatcherError("INVALID_XML", "XML root must be mujoco")
-    for element in root.iter():
+    prefix, body = _split_xml_prefix(source)
+    wrapped_source = (
+        f"<{_DOCUMENT_TAG}>".encode("ascii")
+        + body
+        + f"</{_DOCUMENT_TAG}>".encode("ascii")
+    )
+    try:
+        wrapper_parser = ET.XMLParser(
+            target=ET.TreeBuilder(insert_comments=True, insert_pis=True)
+        )
+        document_root = ET.fromstring(wrapped_source, parser=wrapper_parser)
+    except ET.ParseError:
+        raise PatcherError("INVALID_XML", "XML is not well formed") from None
+    document_element = _document_element(document_root)
+    if _local_name(document_element.tag) != "mujoco":
+        raise PatcherError("INVALID_XML", "XML root must be mujoco")
+    for element in document_element.iter():
         if _local_name(element.tag) in {"include", "plugin", "mesh", "texture", "hfield", "skin"}:
             raise PatcherError("UNSAFE_XML", "external XML features are not allowed")
         for name, value in element.attrib.items():
             local_name = _local_name(name).lower()
             if local_name in _UNSAFE_ATTRIBUTE or _EXTERNAL_URI.search(value):
                 raise PatcherError("UNSAFE_XML", "external XML references are not allowed")
-    return root
+    return _ParsedDocument(document_root, document_element, prefix)
+
+
+def _serialize_document(document_root: ET.Element, prefix: bytes) -> bytes:
+    serialized = ET.tostring(document_root, encoding="utf-8", short_empty_elements=True)
+    opening = f"<{_DOCUMENT_TAG}>".encode("ascii")
+    closing = f"</{_DOCUMENT_TAG}>".encode("ascii")
+    if not serialized.startswith(opening) or not serialized.endswith(closing):
+        raise PatcherError("INVALID_XML", "XML document could not be serialized")
+    return prefix + serialized[len(opening) : -len(closing)]
 
 
 def canonicalize_xml(xml: bytes | str) -> bytes:
@@ -195,10 +249,15 @@ def canonical_document_diff(
 ) -> tuple[CanonicalChange, ...]:
     before_source = _as_xml_bytes(before_xml)
     after_source = _as_xml_bytes(after_xml)
-    before_root = _parse_safe(before_source)
-    after_root = _parse_safe(after_source)
+    before_document = _parse_safe(before_source)
+    after_document = _parse_safe(after_source)
     changes: list[CanonicalChange] = []
-    _compare_nodes(before_root, after_root, "/mujoco", changes)
+    _compare_nodes(
+        before_document.document_root,
+        after_document.document_root,
+        "/document",
+        changes,
+    )
     if not changes and canonicalize_xml(before_source) != canonicalize_xml(after_source):
         changes.append(CanonicalChange("/mujoco", "<document>", "different", "different"))
     return tuple(changes)
@@ -262,8 +321,9 @@ def apply_one_attribute_patch(
     if actual_base_sha256 != expected_base_sha256:
         raise PatcherError("BASE_HASH_MISMATCH", "base hash does not match")
     validated_patch = _validate_patch(patch)
-    base_root = _parse_safe(source)
-    revised_root = copy.deepcopy(base_root)
+    base_document = _parse_safe(source)
+    revised_document_root = copy.deepcopy(base_document.document_root)
+    revised_root = _document_element(revised_document_root)
     target = validated_patch.target
     matches = [
         element
@@ -290,7 +350,7 @@ def apply_one_attribute_patch(
     if authored_value == replacement:
         raise PatcherError("NO_CHANGE", "patch does not change the authored document")
     joint.set(xml_attribute, replacement)
-    revised_xml = ET.tostring(revised_root, encoding="utf-8", short_empty_elements=True)
+    revised_xml = _serialize_document(revised_document_root, base_document.prefix)
     changes = canonical_document_diff(source, revised_xml)
     if len(changes) != 1 or changes[0].attribute != xml_attribute:
         raise PatcherError("UNDECLARED_EDIT", "candidate changes more than the declared attribute")

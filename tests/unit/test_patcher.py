@@ -91,6 +91,37 @@ def test_patch_preserves_comments_and_processing_instructions() -> None:
     assert result.canonical_diff[0].attribute == "damping"
 
 
+def test_patch_preserves_prolog_and_epilog_nodes() -> None:
+    xml = b'''<?xml version="1.0" encoding="UTF-8"?>
+<!-- license comment -->
+<?fixture before?>
+<mujoco><worldbody><body name="arm"><joint name="elbow" damping="0.3"/></body></worldbody></mujoco>
+<!-- footer comment -->
+<?fixture after?>'''
+    result = apply_one_attribute_patch(
+        base_xml=xml,
+        expected_base_sha256=hashlib.sha256(xml).hexdigest(),
+        patch={
+            "target": {"kind": "joint", "name": "elbow"},
+            "attribute": "damping",
+            "expected_old_value": 0.3,
+            "new_value": 0.5,
+        },
+    )
+
+    assert b'<?xml version="1.0" encoding="UTF-8"?>' in result.xml
+    assert b"<!-- license comment -->" in result.xml
+    assert b"<?fixture before?>" in result.xml
+    assert b"<!-- footer comment -->" in result.xml
+    assert b"<?fixture after?>" in result.xml
+    assert len(result.canonical_diff) == 1
+    assert result.canonical_diff[0].attribute == "damping"
+
+    undeclared = xml.replace(b"footer comment", b"changed footer")
+    changes = canonical_document_diff(xml, undeclared)
+    assert any(change.attribute == "<text>" for change in changes)
+
+
 def test_axis_expected_value_allows_only_normalization_roundoff() -> None:
     component = 1.0 / (2.0**0.5)
     xml = BASE_XML.replace(b'axis="0 0 2"', b'axis="1 1 0"')
