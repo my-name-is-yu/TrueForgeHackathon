@@ -869,6 +869,7 @@ class EvidenceStore:
             if row is None:
                 raise CaseNotFoundError("case was not found")
             case = self._case_from_row(row)
+            self._validate_case_lifecycle_from_connection(connection, case_id)
             case_commitments = self._stored_commitment_payload(row)
             root_revision = connection.execute(
                 """
@@ -1145,17 +1146,18 @@ class EvidenceStore:
             probe = connection.execute(
                 "SELECT * FROM runs WHERE run_id = ?", (revision.probe_run_id,)
             ).fetchone()
+            if probe is None:
+                raise RevisionConflictError("probe citation is invalid")
+            probe_record = self._validated_run_from_row(probe)
             if (
-                probe is None
-                or probe["case_id"] != revision.case_id
-                or probe["revision_id"] != revision.parent_revision_id
-                or probe["run_kind"] != "probe"
-                or probe["passed"] is None
+                probe_record.case_id != revision.case_id
+                or probe_record.revision_id != revision.parent_revision_id
+                or probe_record.run_kind != "probe"
             ):
                 raise RevisionConflictError("probe citation is invalid")
             if not self._payload_contains(
                 event.payload,
-                {"probe_run": self._run_event_payload(probe)},
+                {"probe_run": self._run_event_payload(probe_record)},
             ):
                 raise ValidationError("revision event does not bind the probe run")
             try:
@@ -1547,9 +1549,10 @@ class EvidenceStore:
             if (
                 revision["parent_revision_id"] != head_revision_id
                 or revision["ordinal"] != head_ordinal + 1
-                or not self._payload_contains(
-                    event.payload, self._revision_event_payload(revision)
-                )
+            ):
+                raise IntegrityError("revision event state is not linear")
+            if not self._payload_contains(
+                event.payload, self._revision_event_payload(revision)
             ):
                 raise IntegrityError("revision row does not match its ledger event")
             hypothesis = events_by_id.get(revision["hypothesis_event_id"])
@@ -1567,7 +1570,7 @@ class EvidenceStore:
             if not self._payload_contains(
                 event.payload, {"probe_run": self._run_event_payload(probe_record)}
             ):
-                raise IntegrityError("revision causal citations are invalid")
+                raise IntegrityError("probe run does not match its ledger event")
             head_revision_id = event.revision_id
             head_ordinal = revision["ordinal"]
             replayed_revision_ids.add(event.revision_id)
