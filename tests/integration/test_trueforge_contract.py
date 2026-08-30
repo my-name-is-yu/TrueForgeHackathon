@@ -122,16 +122,27 @@ def test_agent_spec_is_the_exact_serial_approval_contract() -> None:
     assert config["context_management"]["large_tool_response"]["enabled"] is True
     assert "skills" not in spec
     instructions = spec["instructions"]
-    assert '"revision_id":"REVISION_ID"' in instructions
-    assert "after create_revision use that latest child revision" in instructions
-    for prohibited_hint in (
-        "lone outlier",
-        "base rotation",
-        "downstream bend",
-        "geometry-consistent normalized axis",
-        "repeated peer values",
+    assert len(instructions) < 2_500
+    for required_boundary in (
+        "Use only public tool responses and public offloaded artifacts.",
+        "remaining budgets",
+        "allowed patch attributes",
+        "successful Sandbox analysis",
+        "public 1/1 and hidden 3/3",
+        "Stop at the publication approval request",
+        "Do not ask the user questions",
     ):
-        assert prohibited_hint not in instructions
+        assert required_boundary in instructions
+    for removed_procedure in (
+        "mandatory evidence loop",
+        "Use this exact run_experiment structure",
+        '"revision_id":"REVISION_ID"',
+        "python - <<'PY'",
+        "candidate_attribute",
+        "only two revisions are available",
+        "request publish_revision exactly once",
+    ):
+        assert removed_procedure not in instructions
 
 
 def test_provision_creates_only_dedicated_connector_and_agent() -> None:
