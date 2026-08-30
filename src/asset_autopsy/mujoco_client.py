@@ -371,6 +371,16 @@ def _strict_float(value: Any) -> bool:
         return False
 
 
+def _state_number(value: Any) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        float(value)
+    except OverflowError:
+        return False
+    return True
+
+
 def _numeric_tree(value: Any, depth: int = 0) -> bool:
     if depth > 3:
         return False
@@ -447,6 +457,29 @@ def _numeric_vector(value: Any, width: int) -> bool:
     )
 
 
+def _state_vector(value: Any, width: int) -> bool:
+    return (
+        type(value) is list
+        and len(value) == width
+        and all(_state_number(item) for item in value)
+    )
+
+
+def _state_equal(left: Any, right: Any) -> bool:
+    if _state_number(left) and _state_number(right):
+        left_number = float(left)
+        right_number = float(right)
+        return left_number == right_number or (
+            math.isnan(left_number) and math.isnan(right_number)
+        )
+    return (
+        type(left) is list
+        and type(right) is list
+        and len(left) == len(right)
+        and all(_state_equal(a, b) for a, b in zip(left, right, strict=True))
+    )
+
+
 def _validate_track(track: tuple[str, ...], bodies: list[str]) -> tuple[str, ...]:
     seen: set[str] = set()
     for selection in track:
@@ -502,13 +535,13 @@ def _matches_run(
     if set(final_state) != {"qpos", "qvel", "n_contacts", "energy"}:
         return False
     if (
-        not _numeric_vector(final_state["qpos"], qpos_width)
-        or not _numeric_vector(final_state["qvel"], qvel_width)
+        not _state_vector(final_state["qpos"], qpos_width)
+        or not _state_vector(final_state["qvel"], qvel_width)
         or type(final_state["energy"]) is not list
         or len(final_state["energy"]) != 2
         or type(final_state["n_contacts"]) is not int
         or final_state["n_contacts"] < 0
-        or not all(_strict_float(value) for value in final_state["energy"])
+        or not all(_state_number(value) for value in final_state["energy"])
     ):
         return False
     timeseries = payload["timeseries"]
@@ -524,12 +557,12 @@ def _matches_run(
         isinstance(row, dict)
         and set(row) == row_fields
         and _strict_float(row["t"])
-        and _strict_float(row["E_pot"])
-        and _strict_float(row["E_kin"])
+        and _state_number(row["E_pot"])
+        and _state_number(row["E_kin"])
         and ("ncon" not in row or (type(row["ncon"]) is int and row["ncon"] >= 0))
-        and _numeric_vector(row["qpos"], qpos_width)
-        and _numeric_vector(row["qvel"], qvel_width)
-        and all(_numeric_vector(row[field], 3) for field in body_fields)
+        and _state_vector(row["qpos"], qpos_width)
+        and _state_vector(row["qvel"], qvel_width)
+        and all(_state_vector(row[field], 3) for field in body_fields)
         for row in timeseries
     ):
         return False
@@ -537,9 +570,9 @@ def _matches_run(
         return False
     last_row = timeseries[-1]
     if (
-        final_state["qpos"] != last_row["qpos"]
-        or final_state["qvel"] != last_row["qvel"]
-        or final_state["energy"] != [last_row["E_pot"], last_row["E_kin"]]
+        not _state_equal(final_state["qpos"], last_row["qpos"])
+        or not _state_equal(final_state["qvel"], last_row["qvel"])
+        or not _state_equal(final_state["energy"], [last_row["E_pot"], last_row["E_kin"]])
         or ("ncon" in last_row and final_state["n_contacts"] != last_row["ncon"])
     ):
         return False
