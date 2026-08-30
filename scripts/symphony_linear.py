@@ -159,13 +159,10 @@ def workpad_template(identifier: str) -> str:
 # Symphony Workpad — {identifier}
 
 ## Objective and acceptance
-- Objective:
-- Acceptance criteria:
+- Authoritative source: current Linear issue description; do not copy it into this Workpad.
 
 ## Design, dependencies, and frozen contracts
-- Current design boundary:
-- Known prerequisite and follow-up issues:
-- Frozen contracts and decisions:
+- Authoritative source: linked Linear issues and project documents; do not copy them here.
 
 ## Plan and next action
 - Current phase: implementation
@@ -191,8 +188,7 @@ def workpad_template(identifier: str) -> str:
 - Late-comment recheck:
 
 ## Decisions and evidence
-- No review decisions yet. For each finding record acceptance necessity, dependency/contract
-  alignment, YAGNI risk, disposition, and rationale.
+- No review decision yet. Record only the packet head, Sol summary, and final dispositions.
 
 ## Follow-up candidates
 - None.

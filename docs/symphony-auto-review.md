@@ -14,9 +14,9 @@ The Linear team must contain these exact state names before this workflow is ren
 | `Todo` | Human | Sole activation gate for new work. |
 | `In Progress` | Luna | Initial implementation on one PR branch. |
 | `Auto Review` | Luna + Sol | Wait for Codex and Qodo, then adjudicate the current head. |
-| `Rework` | Luna | Apply only findings accepted by Sol to the same PR. |
+| `Rework` | Luna | Apply only `fix_now` findings from Sol to the same PR. |
 | `Merge Ready` | Human | All automated gates passed; human may decide whether to merge. |
-| `Blocked` | Human | Timeout, conflict, uncertainty, failed gate, or exhausted safety limit. |
+| `Blocked` | Human | Observable execution failure or exhausted safety limit. |
 | `Done` | Human | Human-owned post-merge terminal state. |
 
 `Auto Review` and `Rework` remain active Symphony states so a process restart can resume from the
@@ -26,12 +26,14 @@ terminal state only for backward compatibility with issues created under the pre
 ## Durable Workpad
 
 Every dispatched issue has exactly one Linear comment containing
-`<!-- symphony-workpad:v1 -->`. It records acceptance criteria, current phase and next action, PR
-identity, exact head SHA, checks, known follow-up/dependency context, frozen contracts,
-review-source evidence, Sol decisions, counters, and follow-up
-candidates. Symphony agents create or update it through the authenticated `linear_graphql` dynamic
-tool. Symphony intentionally keeps `LINEAR_API_KEY` out of the agent process; the repository helper
-below is only for human-operated diagnostics from an environment that already has that credential:
+`<!-- symphony-workpad:v1 -->`. It records only durable orchestration facts: current phase and next
+action, PR identity, last processed head, checks, review-request markers, counters, decision
+summaries, blockers, and created follow-up candidates. Acceptance criteria, follow-up descriptions,
+and frozen contracts remain authoritative in their Linear source sections and are re-read rather
+than copied into the Workpad. Symphony agents create or update it through the authenticated
+`linear_graphql` dynamic tool. Symphony intentionally keeps `LINEAR_API_KEY` out of the agent
+process; the repository helper below is only for human-operated diagnostics from an environment
+that already has that credential:
 
 ```sh
 python3 scripts/symphony_linear.py workpad get YU-123 > /tmp/YU-123-workpad.md
@@ -46,9 +48,12 @@ for code; the Workpad is the durable orchestration ledger.
 ## Two-review adjudication
 
 OpenAI's GitHub connector and Qodo continue to generate reviews. The workflow only consumes them.
-For each pushed head it waits for both sources (10-minute timeout per source), then a 60-second
-quiet period and one 30-second delayed recheck. Evidence for an older SHA is never counted as
-completion for the current head.
+It derives reviewer coverage from GitHub: each PR must receive at least one completed Codex review
+and one completed Qodo review across its history. Until that coverage is complete it requests only
+the missing source or sources. Afterward it requests Qodo alone for each new head and falls back once
+to Codex only when Qodo times out. Every reviewed head still receives at least one exact-head review,
+followed by a 60-second quiet period and one 30-second delayed recheck. Older-head evidence counts
+only toward PR-wide coverage, never as the current-head review.
 
 Luna writes a review packet and invokes:
 
@@ -56,36 +61,36 @@ Luna writes a review packet and invokes:
 scripts/symphony_sol_review /tmp/review-packet.md /tmp/decision.json
 ```
 
-The packet starts with a fixed seven-line trusted header containing version, head, counters, and
-the independently observed Codex/Qodo completion statuses. Review text begins only after an explicit
-header terminator. The wrapper parses control metadata only from those fixed lines and rejects any
-Sol output whose source statuses differ from the trusted header.
+The packet starts with a fixed six-line trusted header containing version, head, counters, and the
+current-head reviewer (`codex`, `qodo`, or `both`). Review text begins only after an explicit header
+terminator. The wrapper binds the invocation to those fixed control facts. Sol does not repeat them
+in its output, and the workflow re-reads the GitHub head before applying the decision. PR-wide
+reviewer coverage is checked directly from GitHub and is not copied into the packet or Workpad.
 
 The wrapper strips common Linear/GitHub credentials, refuses likely secrets in the packet, and runs
 an ephemeral, read-only GPT-5.6 Sol/xhigh adjudication with only the packet as its task input. It
-requires schema-valid JSON. A second deterministic validator enforces the safety invariants:
-timeouts, conflicting or
-human findings block; accepted findings require rework; completed reviews with no accepted finding
-may proceed to the merge-ready gate. Sol is instructed to judge only the packet and cannot modify
-the checkout.
+requires schema-valid JSON and does not second-guess Sol with a semantic validator. Sol returns only
+packet finding IDs, `fix_now`/`backlog`/`reject` dispositions, rationales, and disposition-specific
+instructions or titles. It is instructed to judge only the packet and cannot modify the checkout.
 It also refuses packets above 4,000 lines or 1 MiB instead of silently truncating review evidence.
 
-For each finding, Sol must state whether it is required by the current acceptance criteria, whether
-it aligns with known later issues/dependencies/frozen contracts, and whether implementing it now
-would create unnecessary abstraction, freeze future choices, or duplicate later work. High-YAGNI
-or explicitly later-owned work cannot enter rework: it is rejected or becomes a deduplicated
-Backlog candidate. A requirement needed for the current issue cannot be deferred this way.
+For each finding, Sol reasons from current acceptance criteria, known later
+issues/dependencies/frozen contracts, and YAGNI risk, but emits only its final disposition and
+rationale. A required current change is `fix_now`; an evidenced later-owned improvement is
+`backlog`; unsupported, resolved, or design-conflicting advice is `reject`. Sol has no human or
+conflict escape disposition.
 
 There are at most nine automatic rework rounds and ten distinct reviewed heads for the same PR.
-This is a review-loop head cap, not a Qodo quota. A new push changes the head and forces both
-reviews and all gates to be evaluated again. Accepted findings that remain at the cap move the
+This is a review-loop head cap, not a Qodo quota. A new push changes the head and forces one
+exact-head review and all gates to be evaluated again. `fix_now` findings that remain at the cap move the
 issue to `Blocked`; the cap never authorizes merge.
 
 ## Merge-ready and Backlog safety
 
-`Merge Ready` requires a fresh connector read proving that the recorded head is still current, both
-review sources and late comments were processed, accepted findings are zero, required verification
-passed, the tree is clean, and base synchronization is satisfied. The workflow never merges.
+`Merge Ready` requires a fresh connector read proving that the recorded head is still current, PR
+history contains both reviewer sources, at least one current-head review and its late comments were
+processed, `fix_now` findings are zero, required verification passed, the tree is clean, and base
+synchronization is satisfied. The workflow never merges.
 
 Out-of-scope improvements are created in `Backlog`, never `Todo`. Agents query and mutate them
 through `linear_graphql`. For human-operated diagnostics, the helper derives a stable source/title
