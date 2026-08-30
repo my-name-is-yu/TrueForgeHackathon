@@ -113,25 +113,11 @@ def test_patch_and_basis_probe_are_single_objects() -> None:
 
 
 def test_run_probe_output_supplies_both_revision_basis_identifiers() -> None:
-    run = RunProbeOutput.model_validate(
-        {
-            "schema_version": "asset-autopsy/v1",
-            "request_id": "req_demo",
-            "case_id": "case_demo",
-            "event_ids": [],
-            "warnings": [],
-            "artifacts": [],
-            "revision_id": "r000",
-            "hypothesis_id": "hyp_demo",
-            "run_id": "run_demo",
-            "prediction_matched": True,
-            "falsifier_triggered": False,
-            "inconclusive": False,
-            "conflicting": False,
-            "observations": [{"metric": "abs_ee_dz_m", "value": 0.0}],
-            "trace": [],
-        }
-    )
+    payload = _run_probe_output_payload()
+    payload["trace"] = [
+        {"time_s": float(index), "values": (0.0,)} for index in range(256)
+    ]
+    run = RunProbeOutput.model_validate(payload)
     revision = CreateRevisionInput.model_validate(
         {
             "case_id": run.case_id,
@@ -154,6 +140,38 @@ def test_run_probe_output_supplies_both_revision_basis_identifiers() -> None:
     )
     assert revision.basis_hypothesis_id == "hyp_demo"
     assert revision.basis_probe_run_id == "run_demo"
+
+
+def _run_probe_output_payload() -> dict[str, object]:
+    return {
+        "schema_version": "asset-autopsy/v1",
+        "request_id": "req_demo",
+        "case_id": "case_demo",
+        "event_ids": [],
+        "warnings": [],
+        "artifacts": [],
+        "revision_id": "r000",
+        "hypothesis_id": "hyp_demo",
+        "run_id": "run_demo",
+        "prediction_matched": True,
+        "falsifier_triggered": False,
+        "inconclusive": False,
+        "conflicting": False,
+        "observations": [{"metric": "abs_ee_dz_m", "value": 0.0}],
+    }
+
+
+@pytest.mark.parametrize("trace", [[], [{"time_s": 0.0, "values": (0.0,)}] * 255])
+def test_run_probe_output_rejects_incomplete_analysis_trace(trace: list[dict[str, object]]) -> None:
+    payload = _run_probe_output_payload()
+    payload["trace"] = trace
+    with pytest.raises(ValidationError):
+        RunProbeOutput.model_validate(payload)
+
+
+def test_run_probe_output_requires_analysis_trace() -> None:
+    with pytest.raises(ValidationError):
+        RunProbeOutput.model_validate(_run_probe_output_payload())
 
 
 def test_axis_is_normalized_and_family_ranges_are_enforced() -> None:

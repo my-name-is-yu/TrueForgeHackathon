@@ -474,7 +474,7 @@ class RunProbeOutput(CommonOutput):
     inconclusive: StrictBool
     conflicting: StrictBool
     observations: list[ProbeObservation] = Field(min_length=1, max_length=128)
-    trace: list[TracePoint] = Field(default_factory=list, max_length=256)
+    trace: list[TracePoint] = Field(min_length=256, max_length=256)
 
 
 class CanonicalDiffEntry(StrictModel):
