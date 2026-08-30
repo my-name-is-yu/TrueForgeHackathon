@@ -5,6 +5,7 @@ import base64
 import json
 import struct
 from types import SimpleNamespace
+from typing import Any, cast
 import zlib
 
 import pytest
@@ -20,6 +21,7 @@ from asset_autopsy.mujoco_client import (
     UPSTREAM_BAD_RESPONSE,
     UPSTREAM_COMMIT,
     UPSTREAM_STEP_MISMATCH,
+    UPSTREAM_UNAVAILABLE,
     UpstreamToolError,
     normalize_json_result,
     server_parameters,
@@ -56,6 +58,7 @@ class _FakeSession:
         incomplete_run: bool = False,
         wrong_width_run: bool = False,
         block_on_run: bool = False,
+        render_is_error: bool = False,
         nq: int = 0,
         nv: int = 0,
         nu: int = 0,
@@ -66,6 +69,7 @@ class _FakeSession:
         self.incomplete_run = incomplete_run
         self.wrong_width_run = wrong_width_run
         self.block_on_run = block_on_run
+        self.render_is_error = render_is_error
         self.nq = nq
         self.nv = nv
         self.nu = nu
@@ -138,7 +142,10 @@ class _FakeSession:
                 }
             )
         if name == "render_snapshot":
-            return _text_result({"error": "synthetic render failure"})
+            return _text_result(
+                {"error": "synthetic render failure"},
+                is_error=self.render_is_error,
+            )
         raise AssertionError(name)
 
 
@@ -148,6 +155,7 @@ def _fake_client(
     incomplete_run: bool = False,
     wrong_width_run: bool = False,
     block_on_run: bool = False,
+    render_is_error: bool = False,
     nq: int = 0,
     nv: int = 0,
     nu: int = 0,
@@ -164,6 +172,7 @@ def _fake_client(
             incomplete_run=incomplete_run,
             wrong_width_run=wrong_width_run,
             block_on_run=block_on_run,
+            render_is_error=render_is_error,
             nq=nq,
             nv=nv,
             nu=nu,
@@ -341,6 +350,66 @@ def test_render_failure_returns_one_numeric_only_fallback() -> None:
         assert record.segments[0].ctrl == (0.25,)
         assert record.as_dict()["segments"][0]["ctrl"] == [0.25]
         assert record.as_dict()["segments"][0]["timeseries"][0]["ctrl"] == [0.25]
+
+    asyncio.run(run())
+
+
+def test_render_error_flag_uses_bounded_typed_error_path() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(
+            render_is_error=True,
+            nu=1,
+        )
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.render(slot)
+            assert caught.value.code == UPSTREAM_UNAVAILABLE
+            assert caught.value.envelope() == {
+                "code": UPSTREAM_UNAVAILABLE,
+                "message": SAFE_MESSAGE,
+                "retryable": True,
+                "next_action": SAFE_NEXT_ACTION,
+            }
+            assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
+def test_run_records_are_immutable_but_as_dict_is_independent() -> None:
+    async def run() -> None:
+        transport, make_session, _get_session = _fake_client(
+            nq=1,
+            nv=1,
+            nu=1,
+        )
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        record = await DeterministicRunner(
+            PinnedMujocoClient(
+                transport_factory=lambda _parameters: transport,
+                session_factory=make_session,
+            )
+        ).run(
+            RunConfiguration(
+                xml_string="<mujoco model=\"synthetic\"/>",
+                segments=(ConstantSegment((0.25,), 1, "numeric"),),
+            )
+        )
+        row = record.segments[0].timeseries[0]
+        with pytest.raises(TypeError):
+            cast(Any, row)["t"] = 1.0
+        with pytest.raises(TypeError):
+            cast(Any, row["qpos"])[0] = 1.0
+
+        serialized = record.as_dict()
+        serialized["segments"][0]["timeseries"][0]["qpos"][0] = 1.0
+        assert record.segments[0].timeseries[0]["qpos"] == (0.0,)
 
     asyncio.run(run())
 

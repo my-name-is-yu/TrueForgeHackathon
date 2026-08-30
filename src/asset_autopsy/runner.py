@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from .mujoco_client import (
@@ -29,6 +31,22 @@ def _numbers(value: Any) -> bool:
     if _number(value):
         return True
     return isinstance(value, list) and all(_numbers(item) for item in value)
+
+
+def _freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _thaw(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -95,14 +113,22 @@ class SegmentRecord:
     label: str
     step_count: int
     ctrl: tuple[float, ...]
-    timeseries: tuple[dict[str, Any], ...]
+    timeseries: tuple[Mapping[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "ctrl", tuple(self.ctrl))
+        object.__setattr__(
+            self,
+            "timeseries",
+            tuple(_freeze(row) for row in self.timeseries),
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "label": self.label,
             "step_count": self.step_count,
             "ctrl": list(self.ctrl),
-            "timeseries": [dict(row) for row in self.timeseries],
+            "timeseries": [_thaw(row) for row in self.timeseries],
         }
 
 
@@ -112,6 +138,9 @@ class RunRecord:
     segments: tuple[SegmentRecord, ...]
     image_png: bytes | None = field(default=None, repr=False)
     render_fallback: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "segments", tuple(self.segments))
 
     @property
     def numeric_only(self) -> bool:

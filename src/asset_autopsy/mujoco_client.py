@@ -290,6 +290,15 @@ def _is_error_result(result: Any) -> bool:
     return bool(getattr(result, "isError", False) or getattr(result, "is_error", False))
 
 
+def _wrapped_error() -> UpstreamToolError:
+    return UpstreamToolError(
+        UPSTREAM_UNAVAILABLE,
+        SAFE_MESSAGE,
+        True,
+        SAFE_NEXT_ACTION,
+    )
+
+
 def normalize_json_result(
     result: Any,
     validate: Callable[[dict[str, Any]], bool],
@@ -303,12 +312,7 @@ def normalize_json_result(
     if not isinstance(payload, dict):
         raise _bad_response("Upstream response JSON had an invalid shape.")
     if _is_error_result(result) or "error" in payload:
-        raise UpstreamToolError(
-            UPSTREAM_UNAVAILABLE,
-            SAFE_MESSAGE,
-            True,
-            SAFE_NEXT_ACTION,
-        )
+        raise _wrapped_error()
     try:
         valid = validate(payload)
     except Exception:
@@ -458,6 +462,8 @@ def _valid_png(data: bytes) -> bool:
 
 
 def _render_png(result: Any) -> bytes:
+    if _is_error_result(result):
+        raise _wrapped_error()
     blocks = getattr(result, "content", None)
     if not isinstance(blocks, list) or len(blocks) != 2:
         raise _bad_response("Upstream render response was unexpected.")
