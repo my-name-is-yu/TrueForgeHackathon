@@ -88,7 +88,7 @@ def replace_tail_event_payload(
         connection.row_factory = sqlite3.Row
         connection.execute(
             "UPDATE ledger_events SET payload_json = ? WHERE event_type = ?",
-            (json.dumps(payload), event_type),
+            (canonical_json_bytes(payload).decode(), event_type),
         )
         row = connection.execute(
             "SELECT * FROM ledger_events WHERE event_type = ? ORDER BY seq DESC LIMIT 1",
@@ -930,7 +930,10 @@ def test_restore_rejects_unqualified_case_commitment_corruption(
             "WHERE revision_id = 'r000'",
             "root revision state",
         ),
-        ("DELETE FROM revisions WHERE revision_id = 'r001'", "revision event state"),
+        (
+            "DELETE FROM revisions WHERE revision_id = 'r001'",
+            "revision event state|missing storage identity",
+        ),
         ("UPDATE revisions SET ordinal = 9 WHERE revision_id = 'r001'", "revision event state"),
         (
             f"UPDATE revisions SET asset_sha256 = '{'f' * 64}' WHERE revision_id = 'r001'",
@@ -1496,7 +1499,11 @@ def test_malformed_stored_promotion_revision_is_an_integrity_error(
     )
 
     with pytest.raises(
-        IntegrityError, match="promotion receipt identity is invalid|stored ledger event is invalid"
+        IntegrityError,
+        match=(
+            "promotion receipt identity is invalid|stored ledger event is invalid|"
+            "missing storage identity"
+        ),
     ):
         store.reconcile_promotion(case_id="case-1")
 

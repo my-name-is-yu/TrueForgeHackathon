@@ -615,6 +615,14 @@ class EvidenceStore:
             raise IntegrityError("ledger event JSON is invalid") from exc
         if not isinstance(payload, dict) or not isinstance(artifact_refs, list):
             raise IntegrityError("ledger event JSON shape is invalid")
+        try:
+            if (
+                _json_text(payload) != row["payload_json"]
+                or _json_text(artifact_refs) != row["artifact_refs_json"]
+            ):
+                raise IntegrityError("ledger event JSON is not canonical")
+        except ValidationError as exc:
+            raise IntegrityError("ledger event JSON is not canonical") from exc
         event = LedgerEvent(
             seq=row["seq"],
             event_id=row["event_id"],
@@ -2276,6 +2284,13 @@ class EvidenceStore:
         self, connection: sqlite3.Connection
     ) -> tuple[LedgerEvent, ...]:
         rows = connection.execute("SELECT * FROM ledger_events ORDER BY seq").fetchall()
+        case_ids = {
+            row["case_id"] for row in connection.execute("SELECT case_id FROM cases")
+        }
+        revision_ids = {
+            (row["case_id"], row["revision_id"])
+            for row in connection.execute("SELECT case_id, revision_id FROM revisions")
+        }
         sequence = connection.execute(
             "SELECT seq FROM sqlite_sequence WHERE name = 'ledger_events'"
         ).fetchone()
@@ -2286,6 +2301,11 @@ class EvidenceStore:
         previous = ZERO_HASH
         events: list[LedgerEvent] = []
         for row in rows:
+            if row["case_id"] not in case_ids or (
+                row["revision_id"] is not None
+                and (row["case_id"], row["revision_id"]) not in revision_ids
+            ):
+                raise IntegrityError("ledger event references missing storage identity")
             if row["prev_hash"] != previous:
                 raise IntegrityError("ledger event predecessor hash mismatch")
             _sha256(row["prev_hash"], "prev_hash")
