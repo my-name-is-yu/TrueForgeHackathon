@@ -204,6 +204,44 @@ def test_object_store_syncs_new_shard_and_hash_root_parent(
     assert shard in synchronized
     assert hash_root.parent in synchronized
     assert synchronized.index(hash_root) < synchronized.index(shard)
+    assert (tmp_path / "objects").parent in synchronized
+    assert synchronized.index(hash_root.parent) < synchronized.index((tmp_path / "objects").parent)
+
+
+def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    before = store.ledger_events("case-1")
+
+    with pytest.raises(ValidationError):
+        store.append_event(
+            LedgerEventRecord(
+                event_id="evt-invalid-artifact-ref",
+                case_id="case-1",
+                revision_id="r000",
+                event_type="EVIDENCE_RECORDED",
+                payload={},
+                artifact_refs=(42,),
+            )
+        )
+
+    assert store.ledger_events("case-1") == before
+    valid_reference = {
+        "sha256": "f" * 64,
+        "kind": "trace",
+        "size": 1,
+        "media_type": "text/plain",
+    }
+    store.append_event(
+        LedgerEventRecord(
+            event_id="evt-valid-artifact-ref",
+            case_id="case-1",
+            revision_id="r000",
+            event_type="EVIDENCE_RECORDED",
+            payload={},
+            artifact_refs=(valid_reference,),
+        )
+    )
+    assert store.ledger_events("case-1")[-1].artifact_refs == (valid_reference,)
 
 
 def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) -> None:

@@ -284,6 +284,7 @@ class ObjectStore:
     ) -> ObjectReference:
         if expected_sha256 is not None:
             _sha256(expected_sha256, "expected_sha256")
+        root_created = not self.root.exists()
         hash_root_created = not self.hash_root.exists()
         self.hash_root.mkdir(parents=True, exist_ok=True)
         temporary_path: Path | None = None
@@ -322,6 +323,8 @@ class ObjectStore:
             self._fsync_directory(destination.parent)
             if hash_root_created:
                 self._fsync_directory(self.hash_root.parent)
+            if root_created:
+                self._fsync_directory(self.root.parent)
             return ObjectReference(actual, size)
         except OSError as exc:
             raise ObjectIntegrityError("object publication failed") from exc
@@ -581,6 +584,8 @@ class EvidenceStore:
             event.artifact_refs, (str, bytes)
         ):
             raise ValidationError("artifact_refs must be a sequence")
+        if any(not isinstance(reference, Mapping) for reference in event.artifact_refs):
+            raise ValidationError("artifact_refs must contain objects")
         payload_json = _json_text(dict(event.payload))
         artifact_refs_json = _json_text(list(event.artifact_refs))
         request_id = event.request_id or _new_id("req")
