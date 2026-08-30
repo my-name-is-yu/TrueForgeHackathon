@@ -938,8 +938,8 @@ class EvidenceStore:
                 head_ordinal = revision["ordinal"]
                 replayed_revision_ids.add(event.revision_id)
             elif event.event_type == "QUALIFICATION_RESERVED":
-                attempt = self._attempt_from_payload(
-                    case_id, "RUNNING", event.payload, commitments=case_commitments
+                attempt = self._attempt_from_event(
+                    case_id, "RUNNING", event, commitments=case_commitments
                 )
                 qualification_revision_id = attempt.revision_id
                 qualification_attempt_id = attempt.attempt_id
@@ -957,16 +957,16 @@ class EvidenceStore:
                     "QUALIFICATION_PASSED": "PASSED",
                     "QUALIFICATION_FAILED": "FAILED",
                 }[event.event_type]
-                attempt = self._attempt_from_payload(
-                    case_id, state, event.payload, commitments=case_commitments
+                attempt = self._attempt_from_event(
+                    case_id, state, event, commitments=case_commitments
                 )
                 if qualification_identity != (attempt.revision_id, attempt.attempt_id):
                     raise IntegrityError("qualification event identity is invalid")
                 qualification_result = state
             elif event.event_type == "PROMOTED":
-                if event.revision_id is None or event.payload.get("revision_id") != event.revision_id:
-                    raise IntegrityError("promotion event identity is invalid")
-                promoted_revision_id = event.revision_id
+                promoted_revision_id = self._promotion_from_event(
+                    case_id, event
+                ).revision_id
 
         if replayed_revision_ids != set(revisions_by_id):
             raise IntegrityError("revision rows do not match the ledger replay")
@@ -1394,6 +1394,29 @@ class EvidenceStore:
         )
 
     @classmethod
+    def _attempt_from_event(
+        cls,
+        case_id: str,
+        state: str,
+        event: LedgerEvent,
+        *,
+        commitments: Mapping[str, str],
+    ) -> QualificationAttempt:
+        result = event.payload.get("result")
+        if result is not None and not isinstance(result, Mapping):
+            raise IntegrityError("qualification terminal result is invalid")
+        attempt = cls._attempt_from_payload(
+            case_id,
+            state,
+            event.payload,
+            result,
+            commitments=commitments,
+        )
+        if event.revision_id != attempt.revision_id:
+            raise IntegrityError("qualification event revision is invalid")
+        return attempt
+
+    @classmethod
     def _identity_matches(
         cls,
         attempt: QualificationAttempt,
@@ -1438,8 +1461,8 @@ class EvidenceStore:
         if row is None:
             raise IntegrityError("qualification reservation is missing")
         event = self._event_from_row(row)
-        return self._attempt_from_payload(
-            case_id, state, event.payload, commitments=commitments
+        return self._attempt_from_event(
+            case_id, state, event, commitments=commitments
         )
 
     def _require_attempt(
@@ -1751,11 +1774,8 @@ class EvidenceStore:
                 if terminal_row is None:
                     raise IntegrityError("qualification terminal event is missing")
                 terminal_event = self._event_from_row(terminal_row)
-                terminal_attempt = self._attempt_from_payload(
-                    case_id,
-                    state,
-                    terminal_event.payload,
-                    commitments=case_commitments,
+                terminal_attempt = self._attempt_from_event(
+                    case_id, state, terminal_event, commitments=case_commitments
                 )
                 if not self._identity_matches(
                     terminal_attempt,
@@ -1766,9 +1786,7 @@ class EvidenceStore:
                     scenario_hashes=existing.scenario_hashes,
                 ):
                     raise IntegrityError("qualification terminal identity is invalid")
-                stored_result = terminal_event.payload.get("result")
-                if stored_result is not None and not isinstance(stored_result, Mapping):
-                    raise IntegrityError("qualification terminal result is invalid")
+                stored_result = terminal_attempt.result
                 if (
                     existing.attempt_id == attempt_id
                     and existing.revision_id == revision_id
@@ -1866,8 +1884,8 @@ class EvidenceStore:
                 if row is None:
                     raise IntegrityError("qualification terminal event is missing")
                 event = self._event_from_row(row)
-                terminal_attempt = self._attempt_from_payload(
-                    case_id, state, event.payload, commitments=case_commitments
+                terminal_attempt = self._attempt_from_event(
+                    case_id, state, event, commitments=case_commitments
                 )
                 if not self._identity_matches(
                     terminal_attempt,
@@ -1878,9 +1896,6 @@ class EvidenceStore:
                     scenario_hashes=attempt.scenario_hashes,
                 ):
                     raise IntegrityError("qualification terminal identity is invalid")
-                result = event.payload.get("result")
-                if result is not None and not isinstance(result, Mapping):
-                    raise IntegrityError("qualification terminal result is invalid")
                 return QualificationAttempt(
                     case_id=attempt.case_id,
                     attempt_id=attempt.attempt_id,
@@ -1888,7 +1903,7 @@ class EvidenceStore:
                     suite_commitment_sha256=attempt.suite_commitment_sha256,
                     scenario_hashes=attempt.scenario_hashes,
                     state=state,
-                    result=result,
+                    result=terminal_attempt.result,
                 )
             return attempt
 
@@ -1960,6 +1975,34 @@ class EvidenceStore:
 
     record_promotion = record_promotion_receipt
 
+    @staticmethod
+    def _promotion_from_event(
+        case_id: str,
+        event: LedgerEvent,
+    ) -> PromotionReceipt:
+        try:
+            ticket_id = event.payload["ticket_id"]
+            stored_revision = event.payload["revision_id"]
+            manifest_sha256 = event.payload["manifest_sha256"]
+            receipt = event.payload["receipt"]
+        except (KeyError, TypeError) as exc:
+            raise IntegrityError("promotion receipt is incomplete") from exc
+        if stored_revision != event.revision_id or not isinstance(receipt, Mapping):
+            raise IntegrityError("promotion receipt identity is invalid")
+        try:
+            _id(ticket_id, "ticket_id")
+            _id(stored_revision, "revision_id")
+            _sha256(manifest_sha256, "manifest_sha256")
+        except ValidationError as exc:
+            raise IntegrityError("promotion receipt identity is invalid") from exc
+        return PromotionReceipt(
+            case_id=case_id,
+            revision_id=stored_revision,
+            ticket_id=ticket_id,
+            manifest_sha256=manifest_sha256,
+            receipt=receipt,
+        )
+
     def _promotion_from_connection(
         self,
         connection: sqlite3.Connection,
@@ -1987,29 +2030,7 @@ class EvidenceStore:
             ).fetchone()
         if row is None:
             return None
-        event = self._event_from_row(row)
-        try:
-            ticket_id = event.payload["ticket_id"]
-            stored_revision = event.payload["revision_id"]
-            manifest_sha256 = event.payload["manifest_sha256"]
-            receipt = event.payload["receipt"]
-        except (KeyError, TypeError) as exc:
-            raise IntegrityError("promotion receipt is incomplete") from exc
-        if stored_revision != event.revision_id or not isinstance(receipt, Mapping):
-            raise IntegrityError("promotion receipt identity is invalid")
-        try:
-            _id(ticket_id, "ticket_id")
-            _id(stored_revision, "revision_id")
-            _sha256(manifest_sha256, "manifest_sha256")
-        except ValidationError as exc:
-            raise IntegrityError("promotion receipt identity is invalid") from exc
-        return PromotionReceipt(
-            case_id=case_id,
-            revision_id=stored_revision,
-            ticket_id=ticket_id,
-            manifest_sha256=manifest_sha256,
-            receipt=receipt,
-        )
+        return self._promotion_from_event(case_id, self._event_from_row(row))
 
     def reconcile_promotion(
         self,

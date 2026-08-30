@@ -1067,6 +1067,37 @@ def test_malformed_stored_qualification_identity_is_an_integrity_error(
         store.get_qualification("case-1")
 
 
+def test_qualification_event_revision_must_match_its_payload(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            """
+            UPDATE ledger_events SET revision_id = 'r000'
+            WHERE event_type = 'QUALIFICATION_RESERVED'
+            """
+        )
+        connection.commit()
+    replace_tail_event_payload(
+        tmp_path / "ledger.sqlite",
+        "QUALIFICATION_RESERVED",
+        {
+            "attempt_id": "attempt-1",
+            "revision_id": "r001",
+            "suite_commitment_sha256": "4" * 64,
+            "scenario_hashes": ["5" * 64, "6" * 64, "7" * 64],
+            **COMMITMENTS,
+        },
+    )
+
+    with pytest.raises(IntegrityError, match="qualification event revision is invalid"):
+        store.get_qualification("case-1")
+    with pytest.raises(IntegrityError, match="qualification event revision is invalid"):
+        store.restore_state("case-1")
+
+
 def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
@@ -1223,6 +1254,8 @@ def test_malformed_stored_terminal_result_is_an_integrity_error(tmp_path: Path) 
 
     with pytest.raises(IntegrityError, match="qualification terminal result is invalid"):
         store.get_qualification("case-1")
+    with pytest.raises(IntegrityError, match="qualification terminal result is invalid"):
+        store.restore_state("case-1")
 
 
 def test_promotion_receipt_is_atomic_and_reconcilable(tmp_path: Path) -> None:
@@ -1342,6 +1375,8 @@ def test_malformed_stored_promotion_identity_is_an_integrity_error(
 
     with pytest.raises(IntegrityError, match="promotion receipt identity is invalid"):
         store.reconcile_promotion(case_id="case-1", revision_id="r001")
+    with pytest.raises(IntegrityError, match="promotion receipt identity is invalid"):
+        store.restore_state("case-1")
 
 
 def test_malformed_stored_promotion_revision_is_an_integrity_error(
