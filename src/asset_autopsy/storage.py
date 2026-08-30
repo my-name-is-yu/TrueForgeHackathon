@@ -498,6 +498,20 @@ class EvidenceStore:
                 if close:
                     connection.close()
 
+    @contextmanager
+    def _read_transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            connection = self._memory_connection or self._open_connection()
+            close = connection is not self._memory_connection
+            try:
+                connection.execute("BEGIN")
+                yield connection
+            finally:
+                if connection.in_transaction:
+                    connection.rollback()
+                if close:
+                    connection.close()
+
     @staticmethod
     def _case_from_row(row: sqlite3.Row) -> CaseRecord:
         values = dict(row)
@@ -754,8 +768,15 @@ class EvidenceStore:
         return self._case_from_row(row)
 
     def restore_state(self, case_id: str) -> CaseRecord:
-        events = self.verify_ledger()
-        case = self.get_case(case_id)
+        _id(case_id, "case_id")
+        with self._read_transaction() as connection:
+            events = self._verified_ledger_from_connection(connection)
+            row = connection.execute(
+                "SELECT * FROM cases WHERE case_id = ?", (case_id,)
+            ).fetchone()
+            if row is None:
+                raise CaseNotFoundError("case was not found")
+            case = self._case_from_row(row)
         case_events = tuple(event for event in events if event.case_id == case_id)
         created = tuple(event for event in case_events if event.event_type == "CASE_CREATED")
         if len(created) != 1 or created[0].payload.get("root_revision_id") != case.root_revision_id:
@@ -1774,12 +1795,13 @@ class EvidenceStore:
                 ).fetchall()
         return tuple(self._event_from_row(row) for row in rows)
 
-    def verify_ledger(self) -> tuple[LedgerEvent, ...]:
-        with self._read_connection() as connection:
-            rows = connection.execute("SELECT * FROM ledger_events ORDER BY seq").fetchall()
-            sequence = connection.execute(
-                "SELECT seq FROM sqlite_sequence WHERE name = 'ledger_events'"
-            ).fetchone()
+    def _verified_ledger_from_connection(
+        self, connection: sqlite3.Connection
+    ) -> tuple[LedgerEvent, ...]:
+        rows = connection.execute("SELECT * FROM ledger_events ORDER BY seq").fetchall()
+        sequence = connection.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'ledger_events'"
+        ).fetchone()
         expected_last_seq = sequence["seq"] if sequence is not None else 0
         actual_last_seq = rows[-1]["seq"] if rows else 0
         if len(rows) != expected_last_seq or actual_last_seq != expected_last_seq:
@@ -1803,6 +1825,10 @@ class EvidenceStore:
             events.append(event)
             previous = row["event_hash"]
         return tuple(events)
+
+    def verify_ledger(self) -> tuple[LedgerEvent, ...]:
+        with self._read_transaction() as connection:
+            return self._verified_ledger_from_connection(connection)
 
     def close(self) -> None:
         if self._memory_connection is not None:

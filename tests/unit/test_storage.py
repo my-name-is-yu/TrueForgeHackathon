@@ -685,6 +685,27 @@ def test_restore_rejects_materialized_state_that_differs_from_ledger(
         store.restore_state("case-1")
 
 
+def test_restore_uses_one_snapshot_during_concurrent_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    concurrent_store = EvidenceStore(tmp_path / "ledger.sqlite", tmp_path / "objects")
+    original_verify = store._verified_ledger_from_connection
+
+    def verify_then_commit(connection: sqlite3.Connection):
+        events = original_verify(connection)
+        add_child(concurrent_store)
+        return events
+
+    monkeypatch.setattr(store, "_verified_ledger_from_connection", verify_then_commit)
+
+    restored = store.restore_state("case-1")
+
+    assert restored.head_revision_id == "r000"
+    assert store.get_case("case-1").head_revision_id == "r001"
+
+
 def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
