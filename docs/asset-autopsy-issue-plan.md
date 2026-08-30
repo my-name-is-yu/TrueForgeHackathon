@@ -1,43 +1,38 @@
-# Asset Autopsy — Luna-sized issue execution plan
+# Asset Autopsy — issue execution plan
 
-Status: Linear synchronized; implementation not dispatched.
+Status: Linear synchronized; implementation proceeds through ordinary Codex pull requests.
 Human controls: `YU-19` (plan synchronization) and `YU-29` (final evidence, links, and submission).
 Product contract: `docs/asset-autopsy-mvp-design.md`.
 
 ## 1. Why this plan exists
 
-The MVP scope and behavior are unchanged. This document changes the execution boundary used by Symphony; the companion design receives only the review-proven export-name and destination-parent-fsync errata recorded by YU-19. The previous 12 implementation issues placed several independent unknowns into AA-00, AA-06, AA-09, and AA-10. Those four became non-dispatch umbrella parents. Review then separated AA-05's shared exact-byte commitment primitive from causal-service behavior, and split AA-12's three independently falsifiable release-harness seams into evidence-provenance, Git-binding, and manifest-CLI children.
+The MVP scope and behavior are unchanged. This document defines dependency-safe issue boundaries for ordinary Codex pull requests; the companion design receives only the review-proven export-name and destination-parent-fsync errata recorded by YU-19. The previous 12 implementation issues placed several independent unknowns into AA-00, AA-06, AA-09, and AA-10. Those four became non-executable umbrella parents. Review then separated AA-05's shared exact-byte commitment primitive from causal-service behavior, and split AA-12's three independently falsifiable release-harness seams into evidence-provenance, Git-binding, and manifest-CLI children.
 
 The resulting plan has:
 
 - 21 executable leaves;
-- six non-dispatch umbrellas with 14 native subissues;
+- six non-executable umbrellas with 14 native subissues;
 - one completed bootstrap issue, AA-B00;
-- two relation-free, non-dispatch human control issues;
+- two relation-free human control issues;
 - an acyclic 33-edge blocker graph;
-- effective wave width no greater than `max_concurrent_agents: 4`;
-- GPT-5.6 Luna with `xhigh` reasoning and at most 12 turns per run.
+- dependency-safe waves that make the next eligible issue explicit.
 
 Each executable leaf has one primary uncertainty, exclusive owned surfaces, protected surfaces, binary acceptance, and explicit verification. The target is the smallest complete PR that closes that leaf's understand-work-verify loop.
 
-## 2. Dispatch safety
+## 2. Issue activation safety
 
-Current state is intentionally inert:
+Every unfinished AA issue remains Backlog until a human starts an ordinary Codex task for it.
 
-- every unfinished AA issue is Backlog;
-- the active Symphony dispatch count is zero;
-- this plan does not start, restart, or reconfigure the Mac mini service.
-
-The transition from Backlog to Todo is the sole dispatch switch. Linear blocker relations document and expose readiness, but do not by themselves prevent dispatch. Activate an executable leaf only with this sequence:
+Linear blocker relations document and expose readiness, but do not by themselves prove that work may start. Activate an executable leaf only with this sequence:
 
 1. Verify every listed prerequisite PR is merged into `main`; In Review or a green unmerged PR is insufficient.
 2. Verify the issue body, owned surfaces, acceptance, and dependency links still match this plan.
-3. Move only that ready leaf from Backlog to Todo.
-4. If the agent reports a blocker, move it back to Backlog before changing scope or dependencies.
+3. Start one ordinary Codex task for that ready leaf and record its branch or pull request in Linear.
+4. If the task reports a blocker, record it before changing scope or dependencies.
 
-Never move an umbrella parent, `YU-19`, or `YU-29` to Todo.
+Never execute an umbrella parent. `YU-19` and `YU-29` remain human-controlled.
 
-## 3. Non-dispatch umbrellas
+## 3. Non-executable umbrellas
 
 | Umbrella | Linear | Children | Human rollup condition |
 |---|---|---|---|
@@ -50,7 +45,7 @@ Never move an umbrella parent, `YU-19`, or `YU-29` to Todo.
 
 An umbrella owns no files, branch, commit, or PR. It remains Backlog and relation-free. Mark it Done only after every child PR is merged and a human verifies its rollup condition.
 
-`YU-19` owns this planning and bounded contract-errata PR. `YU-29` owns the post-hardening evidence decision, final README/demo-link PR, video upload, and submission. Both remain relation-free and never dispatch through Symphony.
+`YU-19` owns this planning and bounded contract-errata PR. `YU-29` owns the post-hardening evidence decision, final README/demo-link PR, video upload, and submission. Both remain relation-free and run only when the user explicitly starts them.
 
 ## 4. Executable leaves
 
@@ -101,12 +96,12 @@ AA-06B may become ready while the other Wave 2A leaves are still in review, but 
 
 ### Host-capacity gate for width four
 
-`max_concurrent_agents: 4` is a scheduling ceiling, not permission to activate four leaves blindly. Before Wave 2A or Wave 4A, the human dispatcher records a fresh capacity checkpoint in Linear:
+Four concurrent local Codex tasks is a scheduling ceiling, not permission to start four leaves blindly. Before Wave 2A or Wave 4A, the human records a fresh capacity checkpoint in Linear:
 
 - total RAM and current macOS memory-pressure state;
 - whether swapouts continuously rise during the three-agent ramp;
 - free disk versus four measured shallow-clone plus frozen-environment footprints, with at least 20 percent headroom;
-- zero unexpected `codex app-server` exits or repeated Symphony retries during the ramp;
+- zero unexpected Codex task exits or repeated startup failures during the ramp;
 - no dependency-install lock stall;
 - no external or manually launched live CGL, real TrueForge, private qualification/publication, or full-E2E workload while the four-wide wave is active;
 - enough human/Qodo review capacity to merge the current wave before activating the next one.
@@ -131,7 +126,7 @@ Only relation-free `YU-29`, after every Wave 4 and release-preparation PR is mer
 
 ## 6. Exact blocker graph
 
-The following 33 `blocks` relations are the complete baseline executable AA graph. The source is the blocker; the target is the blocked issue. Human control issues and non-dispatch umbrellas are intentionally relation-free.
+The following 33 `blocks` relations are the complete baseline executable AA graph. The source is the blocker; the target is the blocked issue. Human control issues and non-executable umbrellas are intentionally relation-free.
 
 - `AA-B00` blocks `AA-00A`
 - `AA-00A` blocks `AA-00B`
@@ -1249,7 +1244,7 @@ After every implementation and release-preparation PR is merged, a human selects
 ## Preconditions
 
 - AA-10A, AA-10B, AA-10C, AA-12A, AA-12B, AA-12C, and AA-11 PRs are merged into main.
-- All six non-dispatch umbrella rollups are human-verified.
+- All six non-executable umbrella rollups are human-verified.
 - The repository SPDX license is fixed.
 - No other live CGL, TrueForge, private-runtime, qualification, publication, or full-E2E lane is active.
 - The human has selected one safe run ID and export name from the private `asset-autopsy-e2e-index/v1` source map; no file path or digest is hand-entered.
@@ -1271,7 +1266,7 @@ After every implementation and release-preparation PR is merged, a human selects
 
 - Keep this issue Backlog until all preconditions pass.
 - Never move this issue to Todo.
-- Do not assign this issue to Symphony; browser approval, recording, upload, merge, and submission remain human actions.
+- Do not delegate browser approval, recording, upload, merge, or submission; these remain human actions.
 
 ## Acceptance
 
