@@ -281,6 +281,16 @@ class ObjectStore:
         except OSError as exc:
             raise ObjectIntegrityError("object directory cannot be synchronized") from exc
 
+    def _fsync_through_ancestor(self, path: Path, ancestor: Path) -> None:
+        while True:
+            self._fsync_directory(path)
+            if path == ancestor:
+                return
+            parent = path.parent
+            if parent == path:
+                raise ObjectIntegrityError("object directory ancestry is invalid")
+            path = parent
+
     def put_bytes(self, data: bytes, *, expected_sha256: str | None = None) -> ObjectReference:
         if not isinstance(data, bytes):
             raise TypeError("data must be bytes")
@@ -294,6 +304,12 @@ class ObjectStore:
     ) -> ObjectReference:
         if expected_sha256 is not None:
             _sha256(expected_sha256, "expected_sha256")
+        durable_ancestor = self.root.parent
+        while not durable_ancestor.exists():
+            parent = durable_ancestor.parent
+            if parent == durable_ancestor:
+                raise ObjectIntegrityError("object root has no existing ancestor")
+            durable_ancestor = parent
         self.hash_root.mkdir(parents=True, exist_ok=True)
         temporary_path: Path | None = None
         digest = hashlib.sha256()
@@ -322,17 +338,11 @@ class ObjectStore:
                 stored, stored_size = self._digest_file(destination)
                 if stored != actual:
                     raise ObjectIntegrityError("canonical object failed hash verification")
-                self._fsync_directory(destination.parent)
-                self._fsync_directory(self.hash_root)
-                self._fsync_directory(self.hash_root.parent)
-                self._fsync_directory(self.root.parent)
+                self._fsync_through_ancestor(destination.parent, durable_ancestor)
                 return ObjectReference(stored, stored_size)
             os.replace(temporary_path, destination)
             temporary_path = None
-            self._fsync_directory(destination.parent)
-            self._fsync_directory(self.hash_root)
-            self._fsync_directory(self.root)
-            self._fsync_directory(self.root.parent)
+            self._fsync_through_ancestor(destination.parent, durable_ancestor)
             return ObjectReference(actual, size)
         except OSError as exc:
             raise ObjectIntegrityError("object publication failed") from exc

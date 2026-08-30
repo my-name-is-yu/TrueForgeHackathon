@@ -234,6 +234,32 @@ def test_new_object_syncs_ancestors_even_when_they_already_exist(
     ]
 
 
+def test_object_store_syncs_every_recursively_created_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    object_store = ObjectStore(tmp_path / "new" / "a" / "objects")
+    synchronized: list[Path] = []
+    monkeypatch.setattr(
+        object_store,
+        "_fsync_directory",
+        lambda path: synchronized.append(path),
+    )
+
+    payload = b"object root with multiple missing ancestors"
+    digest = hashlib.sha256(payload).hexdigest()
+    object_store.put_bytes(payload, expected_sha256=digest)
+
+    shard = object_store.hash_root / digest[:2]
+    assert synchronized == [
+        shard,
+        object_store.hash_root,
+        object_store.root,
+        object_store.root.parent,
+        object_store.root.parent.parent,
+        tmp_path,
+    ]
+
+
 def test_concurrent_object_publication_syncs_existing_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
