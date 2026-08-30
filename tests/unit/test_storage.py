@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import inspect
 import json
+import os
 import sqlite3
 import threading
 from pathlib import Path
 
 import pytest
 
+import asset_autopsy.storage as storage_module
 from asset_autopsy.storage import (
     CaseAlreadyExistsError,
     EvidenceStore,
     IntegrityError,
     LedgerEventRecord,
+    MAX_OBJECT_BYTES,
     ObjectStore,
     ObjectIntegrityError,
     QualificationConflictError,
@@ -39,11 +43,13 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def directory_chain_to_root(path: Path) -> list[Path]:
+def directory_chain_to(path: Path, stop: Path) -> list[Path]:
     chain = [path]
-    while path.parent != path:
+    while path != stop:
+        assert path.parent != path
         path = path.parent
         chain.append(path)
+    assert chain[-1] == stop
     return chain
 
 
@@ -105,6 +111,50 @@ def test_case_creation_rejects_an_invalid_existing_ledger(tmp_path: Path) -> Non
         assert connection.execute(
             "SELECT 1 FROM cases WHERE case_id = 'case-2'"
         ).fetchone() is None
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        pytest.param(object(), id="unsupported-type"),
+        pytest.param(float("nan"), id="nan"),
+    ],
+)
+def test_canonicalization_failures_are_stable_validation_errors(
+    tmp_path: Path, invalid_value: object
+) -> None:
+    store = make_store(tmp_path)
+    before = store.ledger_events("case-1")
+
+    with pytest.raises(ValidationError, match="canonical JSON"):
+        canonical_json_bytes({"invalid": invalid_value})
+    with pytest.raises(ValidationError, match="canonical JSON"):
+        store.append_event(
+            LedgerEventRecord(
+                event_id="evt-invalid-canonical-json",
+                case_id="case-1",
+                revision_id="r000",
+                event_type="EVIDENCE_RECORDED",
+                payload={"invalid": invalid_value},
+            )
+        )
+
+    assert store.ledger_events("case-1") == before
+
+
+def test_persisted_canonicalization_failure_is_an_integrity_error(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            "UPDATE ledger_events SET event_type = ? WHERE event_type = 'CASE_CREATED'",
+            (sqlite3.Binary(b"invalid event type"),),
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="hash cannot be computed"):
+        store.verify_ledger()
 
 
 def replace_event_payload(
@@ -294,6 +344,72 @@ def test_object_store_hashes_external_payload_atomically(tmp_path: Path) -> None
         store.objects.read_bytes(digest)
 
 
+def test_object_size_limit_covers_the_active_sc1_artifact_ceiling() -> None:
+    assert MAX_OBJECT_BYTES == 64 * 1024 * 1024
+
+
+def test_object_store_accepts_an_object_at_the_size_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(storage_module, "MAX_OBJECT_BYTES", 8)
+    store = ObjectStore(tmp_path / "objects")
+    payload = b"12345678"
+
+    reference = store.put_stream(io.BytesIO(payload))
+
+    assert reference.bytes == 8
+    assert store.verify(reference.sha256, expected_size=8) == reference
+    assert store.read_bytes(reference.sha256) == payload
+
+
+def test_object_store_rejects_an_over_limit_stream_without_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(storage_module, "MAX_OBJECT_BYTES", 8)
+    store = ObjectStore(tmp_path / "objects")
+    payload = b"123456789"
+    digest = hashlib.sha256(payload).hexdigest()
+
+    with pytest.raises(ValidationError, match="maximum size"):
+        store.put_stream(io.BytesIO(payload))
+    with pytest.raises(ValidationError, match="maximum size"):
+        store.put_bytes(payload)
+
+    assert not store.path_for(digest).exists()
+    assert not [path for path in store.hash_root.rglob("*") if path.is_file()]
+
+
+def test_object_store_rejects_an_over_limit_canonical_object_on_verify_and_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(storage_module, "MAX_OBJECT_BYTES", 8)
+    store = ObjectStore(tmp_path / "objects")
+    payload = b"123456789"
+    digest = hashlib.sha256(payload).hexdigest()
+    path = store.path_for(digest)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(payload)
+
+    with pytest.raises(ObjectIntegrityError, match="maximum size"):
+        store.verify(digest)
+    with pytest.raises(ObjectIntegrityError, match="maximum size"):
+        store.read_bytes(digest)
+
+
+def test_object_store_hash_mismatch_removes_the_temporary_without_publishing(
+    tmp_path: Path,
+) -> None:
+    store = ObjectStore(tmp_path / "objects")
+    payload = b"mismatched payload"
+    actual_digest = hashlib.sha256(payload).hexdigest()
+
+    with pytest.raises(ObjectIntegrityError, match="expected digest"):
+        store.put_bytes(payload, expected_sha256="0" * 64)
+
+    assert not store.path_for(actual_digest).exists()
+    assert not [path for path in store.hash_root.rglob("*") if path.is_file()]
+
+
 def test_object_store_wraps_root_creation_failure(tmp_path: Path) -> None:
     root = tmp_path / "objects-file"
     root.write_bytes(b"not a directory")
@@ -318,7 +434,82 @@ def test_object_store_verifies_and_returns_bytes_from_one_open(
     assert store.read_bytes(digest) == payload
 
 
-def test_object_store_syncs_new_shard_and_hash_root_parent(
+def test_object_store_verifier_reads_bounded_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ObjectStore(tmp_path / "objects")
+    payload = b"streamed verification payload"
+    reference = store.put_bytes(payload)
+    path = store.path_for(reference.sha256)
+    original_open = Path.open
+    read_sizes: list[int] = []
+
+    class GuardedReader:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def __enter__(self):
+            self.wrapped.__enter__()
+            return self
+
+        def __exit__(self, *args: object):
+            return self.wrapped.__exit__(*args)
+
+        def read(self, size: int = -1) -> bytes:
+            assert size > 0
+            read_sizes.append(size)
+            return self.wrapped.read(size)
+
+    def guarded_open(target: Path, *args: object, **kwargs: object):
+        opened = original_open(target, *args, **kwargs)
+        return GuardedReader(opened) if target == path else opened
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+
+    assert store.verify(reference.sha256, expected_size=len(payload)) == reference
+    assert read_sizes
+
+
+def test_object_store_fsyncs_file_before_rename_and_directory_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ObjectStore(tmp_path / "objects")
+    events: list[str] = []
+    original_replace = os.replace
+
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: events.append("file-fsync"))
+
+    def tracked_replace(
+        source: str | os.PathLike[str], destination: str | os.PathLike[str]
+    ) -> None:
+        events.append("rename")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", tracked_replace)
+    monkeypatch.setattr(
+        store,
+        "_fsync_directory",
+        lambda _path: events.append("directory-fsync"),
+    )
+
+    store.put_bytes(b"durable publication order")
+
+    assert events[:2] == ["file-fsync", "rename"]
+    assert events[2:]
+    assert set(events[2:]) == {"directory-fsync"}
+
+
+def test_sqlite_connections_use_wal_and_full_synchronous(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path / "ledger.sqlite", tmp_path / "objects")
+    connection = store._open_connection()
+    try:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert connection.execute("PRAGMA synchronous").fetchone()[0] == 2
+    finally:
+        connection.close()
+
+
+def test_object_store_syncs_new_shard_through_the_object_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     object_store = ObjectStore(tmp_path / "objects")
@@ -335,7 +526,7 @@ def test_object_store_syncs_new_shard_and_hash_root_parent(
 
     hash_root = tmp_path / "objects" / "sha256"
     shard = hash_root / digest[:2]
-    assert synchronized == directory_chain_to_root(shard)
+    assert synchronized == directory_chain_to(shard, object_store.root)
 
 
 def test_new_object_syncs_ancestors_even_when_they_already_exist(
@@ -355,7 +546,9 @@ def test_new_object_syncs_ancestors_even_when_they_already_exist(
     object_store.put_bytes(payload, expected_sha256=digest)
 
     hash_root = tmp_path / "objects" / "sha256"
-    assert synchronized == directory_chain_to_root(hash_root / digest[:2])
+    assert synchronized == directory_chain_to(
+        hash_root / digest[:2], object_store.root
+    )
 
 
 def test_existing_object_removes_temporary_before_directory_sync(
@@ -381,7 +574,7 @@ def test_existing_object_removes_temporary_before_directory_sync(
     assert not list(object_store.hash_root.glob(".tmp-*"))
 
 
-def test_object_store_creates_and_syncs_missing_parent_chain(
+def test_object_store_syncs_only_inside_its_durable_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     object_store = ObjectStore(tmp_path / "new" / "a" / "objects")
@@ -401,9 +594,9 @@ def test_object_store_creates_and_syncs_missing_parent_chain(
     assert reference.sha256 == digest
     assert reference.bytes == len(payload)
     assert object_store.read_bytes(digest) == payload
-    assert tmp_path / "new" in synchronized
-    assert tmp_path / "new" / "a" in synchronized
-    assert tmp_path / "new" / "a" / "objects" in synchronized
+    shard = object_store.hash_root / digest[:2]
+    assert synchronized == directory_chain_to(shard, object_store.root)
+    assert tmp_path / "new" / "a" not in synchronized
 
 
 def test_concurrent_object_publication_syncs_existing_destination(
@@ -448,7 +641,7 @@ def test_concurrent_object_publication_syncs_existing_destination(
     assert first_errors == []
     hash_root = object_root / "sha256"
     shard = hash_root / digest[:2]
-    assert second_synchronized == directory_chain_to_root(shard)
+    assert second_synchronized == directory_chain_to(shard, second_store.root)
 
 
 def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
@@ -461,6 +654,12 @@ def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
         {"sha256": "changed", "kind": "trace", "size": 1, "media_type": "text/plain"},
         {"sha256": "f" * 64, "kind": "trace", "size": -1, "media_type": "text/plain"},
         {"sha256": "f" * 64, "kind": "trace", "size": True, "media_type": "text/plain"},
+        {
+            "sha256": "f" * 64,
+            "kind": "trace",
+            "size": MAX_OBJECT_BYTES + 1,
+            "media_type": "text/plain",
+        },
     )
     for index, reference in enumerate(invalid_references):
         with pytest.raises(ValidationError):
@@ -509,19 +708,21 @@ def test_event_artifact_reference_snapshot_survives_mutation_during_and_after_ca
         "media_type": "application/octet-stream",
     }
     expected = dict(reference)
-    original_read = store.objects.read_bytes
+    original_verify = store.objects.verify
 
-    def mutate_during_verification(digest: str) -> bytes:
-        data = original_read(digest)
+    def mutate_during_verification(
+        digest: str, *, expected_size: int | None = None
+    ):
+        verified = original_verify(digest, expected_size=expected_size)
         reference.update(
             sha256=replacement.sha256,
             kind="changed-during-call",
             size=replacement.bytes,
             media_type="text/plain",
         )
-        return data
+        return verified
 
-    monkeypatch.setattr(store.objects, "read_bytes", mutate_during_verification)
+    monkeypatch.setattr(store.objects, "verify", mutate_during_verification)
 
     stored = store.append_event(
         LedgerEventRecord(
@@ -550,6 +751,45 @@ def test_event_artifact_reference_snapshot_survives_mutation_during_and_after_ca
         if event.event_id == "evt-frozen-artifact-ref"
     )
     assert replayed.artifact_refs == (expected,)
+
+
+def test_event_artifact_validation_streams_without_reading_object_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = make_store(tmp_path)
+    published = store.objects.put_bytes(b"stream-verified artifact")
+    verified: list[tuple[str, int | None]] = []
+    original_verify = store.objects.verify
+
+    def track_verify(digest: str, *, expected_size: int | None = None):
+        verified.append((digest, expected_size))
+        return original_verify(digest, expected_size=expected_size)
+
+    def reject_materialized_read(_digest: str) -> bytes:
+        raise AssertionError("artifact verification must not materialize object bytes")
+
+    monkeypatch.setattr(store.objects, "verify", track_verify)
+    monkeypatch.setattr(store.objects, "read_bytes", reject_materialized_read)
+
+    store.append_event(
+        LedgerEventRecord(
+            event_id="evt-stream-verified-artifact",
+            case_id="case-1",
+            revision_id="r000",
+            event_type="EVIDENCE_RECORDED",
+            payload={},
+            artifact_refs=(
+                {
+                    "sha256": published.sha256,
+                    "kind": "trace",
+                    "size": published.bytes,
+                    "media_type": "application/octet-stream",
+                },
+            ),
+        )
+    )
+
+    assert verified == [(published.sha256, published.bytes)]
 
 
 @pytest.mark.parametrize("failure", ["missing", "wrong_hash", "wrong_size"])

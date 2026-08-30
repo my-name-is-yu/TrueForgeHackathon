@@ -18,6 +18,8 @@ from typing import Any, BinaryIO, Iterator, Mapping, Sequence
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ZERO_HASH = "0" * 64
+MAX_OBJECT_BYTES = 64 * 1024 * 1024
+_OBJECT_IO_CHUNK_BYTES = 1024 * 1024
 COMMITMENT_FIELDS = (
     "source_asset_sha256",
     "controller_sha256",
@@ -284,9 +286,17 @@ class ObjectStore:
         size = 0
         try:
             with path.open("rb") as source:
-                while chunk := source.read(1024 * 1024):
-                    digest.update(chunk)
+                while chunk := source.read(
+                    min(_OBJECT_IO_CHUNK_BYTES, MAX_OBJECT_BYTES - size + 1)
+                ):
                     size += len(chunk)
+                    if size > MAX_OBJECT_BYTES:
+                        raise ObjectIntegrityError(
+                            "canonical object exceeds maximum size"
+                        )
+                    digest.update(chunk)
+        except ObjectIntegrityError:
+            raise
         except OSError as exc:
             raise ObjectIntegrityError("object cannot be read") from exc
         return digest.hexdigest(), size
@@ -302,17 +312,23 @@ class ObjectStore:
         except OSError as exc:
             raise ObjectIntegrityError("object directory cannot be synchronized") from exc
 
-    def _fsync_to_root(self, path: Path) -> None:
+    def _fsync_object_tree(self, path: Path) -> None:
+        if path != self.root and self.root not in path.parents:
+            raise ObjectIntegrityError("object directory is outside the object root")
         while True:
             self._fsync_directory(path)
+            if path == self.root:
+                return
             parent = path.parent
             if parent == path:
-                return
+                raise ObjectIntegrityError("object directory is outside the object root")
             path = parent
 
     def put_bytes(self, data: bytes, *, expected_sha256: str | None = None) -> ObjectReference:
         if not isinstance(data, bytes):
-            raise TypeError("data must be bytes")
+            raise ValidationError("data must be bytes")
+        if len(data) > MAX_OBJECT_BYTES:
+            raise ValidationError("object exceeds maximum size")
         return self.put_stream(io.BytesIO(data), expected_sha256=expected_sha256)
 
     def put_stream(
@@ -323,6 +339,8 @@ class ObjectStore:
     ) -> ObjectReference:
         if expected_sha256 is not None:
             _sha256(expected_sha256, "expected_sha256")
+        if not callable(getattr(source, "read", None)):
+            raise ValidationError("source must provide bytes")
         temporary_path: Path | None = None
         digest = hashlib.sha256()
         size = 0
@@ -334,9 +352,22 @@ class ObjectStore:
                 mode="wb", dir=self.hash_root, prefix=".tmp-", delete=False
             ) as temporary:
                 temporary_path = Path(temporary.name)
-                while chunk := source.read(1024 * 1024):
+                while True:
+                    try:
+                        chunk = source.read(
+                            min(
+                                _OBJECT_IO_CHUNK_BYTES,
+                                MAX_OBJECT_BYTES - size + 1,
+                            )
+                        )
+                    except (TypeError, ValueError) as exc:
+                        raise ValidationError("source must provide bytes") from exc
                     if not isinstance(chunk, bytes):
-                        raise TypeError("source must provide bytes")
+                        raise ValidationError("source must provide bytes")
+                    if not chunk:
+                        break
+                    if len(chunk) > MAX_OBJECT_BYTES - size:
+                        raise ValidationError("object exceeds maximum size")
                     temporary.write(chunk)
                     digest.update(chunk)
                     size += len(chunk)
@@ -355,11 +386,11 @@ class ObjectStore:
                     raise ObjectIntegrityError("canonical object failed hash verification")
                 temporary_path.unlink()
                 temporary_path = None
-                self._fsync_to_root(destination.parent)
+                self._fsync_object_tree(destination.parent)
                 return ObjectReference(stored, stored_size)
             os.replace(temporary_path, destination)
             temporary_path = None
-            self._fsync_to_root(destination.parent)
+            self._fsync_object_tree(destination.parent)
             return ObjectReference(actual, size)
         except OSError as exc:
             raise ObjectIntegrityError("object publication failed") from exc
@@ -373,18 +404,54 @@ class ObjectStore:
     def path_for(self, sha256: str) -> Path:
         return self._path(sha256)
 
+    def verify(
+        self,
+        sha256: str,
+        *,
+        expected_size: int | None = None,
+    ) -> ObjectReference:
+        path = self._path(sha256)
+        if expected_size is not None and (
+            not isinstance(expected_size, int)
+            or isinstance(expected_size, bool)
+            or not 0 <= expected_size <= MAX_OBJECT_BYTES
+        ):
+            raise ValidationError("expected_size is outside the object size limit")
+        if not path.is_file():
+            raise ObjectIntegrityError("canonical object is missing")
+        stored, size = self._digest_file(path)
+        if stored != sha256:
+            raise ObjectIntegrityError("canonical object failed hash verification")
+        if expected_size is not None and size != expected_size:
+            raise ObjectIntegrityError("object size does not match artifact reference")
+        return ObjectReference(stored, size)
+
     def read_bytes(self, sha256: str) -> bytes:
         path = self._path(sha256)
         if not path.is_file():
             raise ObjectIntegrityError("canonical object is missing")
+        digest = hashlib.sha256()
+        size = 0
+        data = bytearray()
         try:
             with path.open("rb") as source:
-                data = source.read()
+                while chunk := source.read(
+                    min(_OBJECT_IO_CHUNK_BYTES, MAX_OBJECT_BYTES - size + 1)
+                ):
+                    size += len(chunk)
+                    if size > MAX_OBJECT_BYTES:
+                        raise ObjectIntegrityError(
+                            "canonical object exceeds maximum size"
+                        )
+                    digest.update(chunk)
+                    data.extend(chunk)
+        except ObjectIntegrityError:
+            raise
         except OSError as exc:
             raise ObjectIntegrityError("canonical object cannot be read") from exc
-        if hashlib.sha256(data).hexdigest() != sha256:
+        if digest.hexdigest() != sha256:
             raise ObjectIntegrityError("canonical object failed hash verification")
-        return data
+        return bytes(data)
 
 
 class EvidenceStore:
@@ -709,8 +776,12 @@ class EvidenceStore:
             or any(char in media_type for char in ("\x00", "\n", "\r"))
         ):
             raise ValidationError("artifact reference media_type is invalid")
-        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
-            raise ValidationError("artifact reference size must be nonnegative")
+        if (
+            not isinstance(size, int)
+            or isinstance(size, bool)
+            or not 0 <= size <= MAX_OBJECT_BYTES
+        ):
+            raise ValidationError("artifact reference size is outside the object size limit")
 
     @classmethod
     def _prepare_event_record(cls, event: LedgerEventRecord) -> _PreparedLedgerEvent:
@@ -766,9 +837,10 @@ class EvidenceStore:
         self, artifact_refs: Sequence[_ArtifactReferenceSnapshot]
     ) -> None:
         for reference in artifact_refs:
-            data = self.objects.read_bytes(reference.sha256)
-            if len(data) != reference.size:
-                raise ObjectIntegrityError("object size does not match artifact reference")
+            self.objects.verify(
+                reference.sha256,
+                expected_size=reference.size,
+            )
 
     @classmethod
     def _append_event(
@@ -2044,13 +2116,13 @@ class EvidenceStore:
                 raise IntegrityError("ledger event references missing storage identity")
             if row["prev_hash"] != previous:
                 raise IntegrityError("ledger event predecessor hash mismatch")
-            _sha256(row["prev_hash"], "prev_hash")
             try:
+                _sha256(row["prev_hash"], "prev_hash")
                 expected = hashlib.sha256(
                     bytes.fromhex(row["prev_hash"])
                     + canonical_json_bytes(self._event_without_hash(row))
                 ).hexdigest()
-            except (ValueError, TypeError) as exc:
+            except (ValueError, TypeError, ValidationError) as exc:
                 raise IntegrityError("ledger event hash cannot be computed") from exc
             if row["event_hash"] != expected:
                 raise IntegrityError("ledger event hash mismatch")
