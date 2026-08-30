@@ -348,6 +348,22 @@ class PatchPolicy(StrictModel):
             raise ValueError("patch allowlist must contain exactly the four editable attributes")
         return value
 
+    @model_validator(mode="after")
+    def validate_enforced_policy(self) -> PatchPolicy:
+        if not self.axis_unit_vector:
+            raise ValueError("axis_unit_vector must be true")
+
+        enforced_ranges = {
+            "damping": (0.0, 100.0),
+            "armature": (0.0, 10.0),
+            "frictionloss": (0.0, 100.0),
+        }
+        for attribute, (minimum, maximum) in enforced_ranges.items():
+            advertised = getattr(self, attribute)
+            if (advertised.minimum, advertised.maximum) != (minimum, maximum):
+                raise ValueError(f"{attribute} range must match the enforced safety range")
+        return self
+
 
 class CompiledDimensions(StrictModel):
     nq: StrictInt = Field(ge=0)

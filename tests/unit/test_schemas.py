@@ -9,6 +9,7 @@ from asset_autopsy.schemas import (
     BehaviorDiff,
     CreateRevisionInput,
     OpenCaseInput,
+    PatchPolicy,
     PublicEventSummary,
     RunTaskOutput,
     ScalarPatch,
@@ -67,6 +68,46 @@ def test_numbers_are_strict_and_finite() -> None:
                 "new_value": float("nan"),
             }
         )
+
+
+def test_patch_policy_requires_axis_unit_vectors() -> None:
+    with pytest.raises(ValidationError):
+        PatchPolicy.model_validate(
+            {
+                "editable_attributes": ("axis", "damping", "armature", "frictionloss"),
+                "axis_unit_vector": False,
+                "damping": {"minimum": 0.0, "maximum": 100.0},
+                "armature": {"minimum": 0.0, "maximum": 10.0},
+                "frictionloss": {"minimum": 0.0, "maximum": 100.0},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("attribute", "minimum", "maximum"),
+    [
+        ("damping", 0.0, 99.0),
+        ("damping", 1.0, 100.0),
+        ("armature", 0.0, 9.0),
+        ("armature", 1.0, 10.0),
+        ("frictionloss", 0.0, 99.0),
+        ("frictionloss", 1.0, 100.0),
+    ],
+)
+def test_patch_policy_ranges_match_scalar_patch_limits(
+    attribute: str, minimum: float, maximum: float
+) -> None:
+    payload = {
+        "editable_attributes": ("axis", "damping", "armature", "frictionloss"),
+        "axis_unit_vector": True,
+        "damping": {"minimum": 0.0, "maximum": 100.0},
+        "armature": {"minimum": 0.0, "maximum": 10.0},
+        "frictionloss": {"minimum": 0.0, "maximum": 100.0},
+    }
+    payload[attribute] = {"minimum": minimum, "maximum": maximum}
+
+    with pytest.raises(ValidationError):
+        PatchPolicy.model_validate(payload)
 
 
 def test_patch_and_basis_probe_are_single_objects() -> None:
