@@ -95,7 +95,7 @@ class _FakeSession:
         wrong_width_run: bool = False,
         block_on_run: bool = False,
         synchronize_two_runs: bool = False,
-        oversized_run_response: bool = False,
+        oversized_response_tool: str | None = None,
         block_on_initialize: bool = False,
         render_is_error: bool = False,
         invalid_render_png: bool = False,
@@ -120,7 +120,7 @@ class _FakeSession:
         self.wrong_width_run = wrong_width_run
         self.block_on_run = block_on_run
         self.synchronize_two_runs = synchronize_two_runs
-        self.oversized_run_response = oversized_run_response
+        self.oversized_response_tool = oversized_response_tool
         self.block_on_initialize = block_on_initialize
         self.render_is_error = render_is_error
         self.invalid_render_png = invalid_render_png
@@ -165,6 +165,11 @@ class _FakeSession:
 
     async def call_tool(self, name: str, *, arguments: dict[str, object]) -> SimpleNamespace:
         self.calls.append((name, arguments))
+        if name == self.oversized_response_tool:
+            return SimpleNamespace(
+                isError=False,
+                content=[SimpleNamespace(type="text", text=" " * 5_000)],
+            )
         if name == "sim_load":
             nq = self.nq
             nv = self.nv
@@ -210,11 +215,6 @@ class _FakeSession:
                 time = self.set_state_time
             return _text_result({"status": "ok", "time": time})
         if name == "run_and_analyze":
-            if self.oversized_run_response:
-                return SimpleNamespace(
-                    isError=False,
-                    content=[SimpleNamespace(type="text", text=" " * 5_000)],
-                )
             steps = arguments["n_steps"]
             if self.block_on_run:
                 self.run_started.set()
@@ -309,7 +309,7 @@ def _fake_client(
     wrong_width_run: bool = False,
     block_on_run: bool = False,
     synchronize_two_runs: bool = False,
-    oversized_run_response: bool = False,
+    oversized_response_tool: str | None = None,
     block_on_initialize: bool = False,
     render_is_error: bool = False,
     invalid_render_png: bool = False,
@@ -340,7 +340,7 @@ def _fake_client(
             wrong_width_run=wrong_width_run,
             block_on_run=block_on_run,
             synchronize_two_runs=synchronize_two_runs,
-            oversized_run_response=oversized_run_response,
+            oversized_response_tool=oversized_response_tool,
             block_on_initialize=block_on_initialize,
             render_is_error=render_is_error,
             invalid_render_png=invalid_render_png,
@@ -388,7 +388,11 @@ def test_child_environment_is_allowlisted_and_pinned() -> None:
 
 def test_normalizer_rejects_wrapped_error_and_unexpected_content() -> None:
     with pytest.raises(UpstreamToolError) as wrapped:
-        normalize_json_result(_text_result({"error": "private traceback"}), lambda _: True)
+        normalize_json_result(
+            _text_result({"error": "private traceback"}),
+            lambda _: True,
+            max_text_chars=4096,
+        )
     assert wrapped.value.envelope() == {
         "code": "UPSTREAM_UNAVAILABLE",
         "message": SAFE_MESSAGE,
@@ -404,7 +408,7 @@ def test_normalizer_rejects_wrapped_error_and_unexpected_content() -> None:
         isError=False,
     )
     with pytest.raises(UpstreamToolError) as unexpected:
-        normalize_json_result(result, lambda _: True)
+        normalize_json_result(result, lambda _: True, max_text_chars=4096)
     assert unexpected.value.envelope() == {
         "code": UPSTREAM_BAD_RESPONSE,
         "message": "Upstream response content was unexpected.",
@@ -416,6 +420,7 @@ def test_normalizer_rejects_wrapped_error_and_unexpected_content() -> None:
         normalize_json_result(
             SimpleNamespace(isError=True, content=[]),
             lambda _: True,
+            max_text_chars=4096,
         )
     assert flagged.value.envelope() == {
         "code": UPSTREAM_UNAVAILABLE,
@@ -629,7 +634,9 @@ def test_run_response_is_bounded_before_json_decoding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def check() -> None:
-        transport, make_session, _get_session = _fake_client(oversized_run_response=True)
+        transport, make_session, _get_session = _fake_client(
+            oversized_response_tool="run_and_analyze"
+        )
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
         async with PinnedMujocoClient(
@@ -645,6 +652,41 @@ def test_run_response_is_bounded_before_json_decoding(
                 await client.run_segment(slot, ctrl=[], n_steps=1)
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
             assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("tool_name", ("sim_load", "sim_reset", "sim_set_state"))
+def test_small_json_responses_are_bounded_before_decoding(
+    tool_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client(
+            oversized_response_tool=tool_name if tool_name == "sim_load" else None
+        )
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = None
+            if tool_name != "sim_load":
+                slot = await client.load("<mujoco model=\"synthetic\"/>")
+                get_session().oversized_response_tool = tool_name
+            monkeypatch.setattr(
+                "asset_autopsy.mujoco_client.json.loads",
+                lambda _text: pytest.fail("oversized response reached json.loads"),
+            )
+            with pytest.raises(UpstreamToolError) as caught:
+                if tool_name == "sim_load":
+                    await client.load("<mujoco model=\"synthetic\"/>")
+                elif tool_name == "sim_reset":
+                    await client.reset(slot)
+                else:
+                    await client.set_state(slot)
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert client._slots[-1].state is SlotState.POISONED
 
     asyncio.run(check())
 
@@ -1162,7 +1204,8 @@ def test_concurrent_first_runner_startup_shares_lifecycle_without_early_close() 
     asyncio.run(check())
 
 
-def test_concurrent_calls_on_one_slot_are_serialized() -> None:
+@pytest.mark.parametrize("second_operation", ("run", "render"))
+def test_concurrent_calls_on_one_slot_are_serialized(second_operation: str) -> None:
     async def check() -> None:
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
@@ -1181,6 +1224,8 @@ def test_concurrent_calls_on_one_slot_are_serialized() -> None:
                 self, name: str, *, arguments: dict[str, object]
             ) -> SimpleNamespace:
                 if name != "run_and_analyze":
+                    if self.run_active:
+                        self.overlapped = True
                     return await super().call_tool(name, arguments=arguments)
                 if self.run_active:
                     self.overlapped = True
@@ -1206,12 +1251,21 @@ def test_concurrent_calls_on_one_slot_are_serialized() -> None:
             slot = await client.load("<mujoco model=\"synthetic\"/>")
             first = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
             await first_started.wait()
-            second = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
+            second = asyncio.create_task(
+                client.run_segment(slot, ctrl=[], n_steps=1)
+                if second_operation == "run"
+                else client.render(slot)
+            )
             await asyncio.sleep(0)
             assert session is not None and session.overlapped is False
             release_first.set()
-            first_payload, second_payload = await asyncio.gather(first, second)
-            assert first_payload["sim_time"][1] < second_payload["sim_time"][0]
+            if second_operation == "run":
+                first_payload, second_payload = await asyncio.gather(first, second)
+                assert first_payload["sim_time"][1] < second_payload["sim_time"][0]
+            else:
+                await first
+                with pytest.raises(UpstreamToolError):
+                    await second
             assert session.overlapped is False
 
     asyncio.run(check())

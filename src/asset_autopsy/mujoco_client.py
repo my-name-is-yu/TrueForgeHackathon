@@ -324,12 +324,12 @@ def normalize_json_result(
     result: Any,
     validate: Callable[[dict[str, Any]], bool],
     *,
-    max_text_chars: int | None = None,
+    max_text_chars: int,
 ) -> dict[str, Any]:
     if _is_error_result(result):
         raise _wrapped_error()
     text = _text_block(result)
-    if max_text_chars is not None and len(text) > max_text_chars:
+    if len(text) > max_text_chars:
         raise _bad_response("Upstream response was too large.")
     try:
         payload = json.loads(text)
@@ -847,6 +847,7 @@ class PinnedMujocoClient:
             payload = normalize_json_result(
                 result,
                 lambda value: _matches_load(value, expected_name=slot._name),
+                max_text_chars=4096 + 4 * len(xml_string),
             )
             slot.summary = {key: value for key, value in payload.items() if key != "name"}
         except UpstreamToolError:
@@ -857,19 +858,18 @@ class PinnedMujocoClient:
 
     async def reset(self, slot: SimulationSlot) -> None:
         async with slot._operation_lock:
-            await self._reset(slot)
-
-    async def _reset(self, slot: SimulationSlot) -> None:
-        result = await self._invoke(slot, "sim_reset", {"sim_name": slot._name})
-        try:
-            payload = normalize_json_result(
-                result,
-                lambda payload: _matches_status(payload, "reset") and payload["time"] == 0.0,
-            )
-        except UpstreamToolError:
-            slot.state = SlotState.POISONED
-            raise
-        slot._time = payload["time"]
+            result = await self._invoke(slot, "sim_reset", {"sim_name": slot._name})
+            try:
+                payload = normalize_json_result(
+                    result,
+                    lambda payload: _matches_status(payload, "reset")
+                    and payload["time"] == 0.0,
+                    max_text_chars=4096,
+                )
+            except UpstreamToolError:
+                slot.state = SlotState.POISONED
+                raise
+            slot._time = payload["time"]
 
     async def set_state(
         self,
@@ -880,41 +880,34 @@ class PinnedMujocoClient:
         ctrl: list[float] | None = None,
     ) -> None:
         async with slot._operation_lock:
-            await self._set_state(slot, qpos=qpos, qvel=qvel, ctrl=ctrl)
-
-    async def _set_state(
-        self,
-        slot: SimulationSlot,
-        *,
-        qpos: list[float] | None = None,
-        qvel: list[float] | None = None,
-        ctrl: list[float] | None = None,
-    ) -> None:
-        self._require_ready_slot(slot)
-        for value, width, name in (
-            (qpos, slot.summary["nq"], "qpos"),
-            (qvel, slot.summary["nv"], "qvel"),
-            (ctrl, slot.summary["nu"], "ctrl"),
-        ):
-            if value is not None and not _numeric_vector(value, width):
-                raise ValueError(f"{name} must match the loaded model width with finite values")
-        arguments: dict[str, Any] = {"sim_name": slot._name}
-        if qpos is not None:
-            arguments["qpos"] = list(qpos)
-        if qvel is not None:
-            arguments["qvel"] = list(qvel)
-        if ctrl is not None:
-            arguments["ctrl"] = list(ctrl)
-        result = await self._invoke(slot, "sim_set_state", arguments)
-        try:
-            normalize_json_result(
-                result,
-                lambda payload: _matches_status(payload, "ok")
-                and payload["time"] == slot._time,
-            )
-        except UpstreamToolError:
-            slot.state = SlotState.POISONED
-            raise
+            self._require_ready_slot(slot)
+            for value, width, name in (
+                (qpos, slot.summary["nq"], "qpos"),
+                (qvel, slot.summary["nv"], "qvel"),
+                (ctrl, slot.summary["nu"], "ctrl"),
+            ):
+                if value is not None and not _numeric_vector(value, width):
+                    raise ValueError(
+                        f"{name} must match the loaded model width with finite values"
+                    )
+            arguments: dict[str, Any] = {"sim_name": slot._name}
+            if qpos is not None:
+                arguments["qpos"] = list(qpos)
+            if qvel is not None:
+                arguments["qvel"] = list(qvel)
+            if ctrl is not None:
+                arguments["ctrl"] = list(ctrl)
+            result = await self._invoke(slot, "sim_set_state", arguments)
+            try:
+                normalize_json_result(
+                    result,
+                    lambda payload: _matches_status(payload, "ok")
+                    and payload["time"] == slot._time,
+                    max_text_chars=4096,
+                )
+            except UpstreamToolError:
+                slot.state = SlotState.POISONED
+                raise
 
     async def run_segment(
         self,
@@ -924,62 +917,54 @@ class PinnedMujocoClient:
         n_steps: int,
     ) -> dict[str, Any]:
         async with slot._operation_lock:
-            return await self._run_segment(slot, ctrl=ctrl, n_steps=n_steps)
-
-    async def _run_segment(
-        self,
-        slot: SimulationSlot,
-        *,
-        ctrl: list[float],
-        n_steps: int,
-    ) -> dict[str, Any]:
-        if type(n_steps) is not int or not 1 <= n_steps <= MAX_STEPS:
-            raise ValueError(f"n_steps must be between 1 and {MAX_STEPS}")
-        self._require_ready_slot(slot)
-        if not _numeric_vector(ctrl, slot.summary["nu"]):
-            raise ValueError("ctrl must match the loaded model width with finite values")
-        projected_scalars = n_steps * (
-            slot.summary["nq"] + slot.summary["nv"] + slot.summary["nu"] + 4
-        )
-        if projected_scalars > MAX_TRACE_SCALARS:
-            raise ValueError("requested trace exceeds the bounded numeric record budget")
-        result = await self._invoke(
-            slot,
-            "run_and_analyze",
-            {
-                "sim_name": slot._name,
-                "ctrl": list(ctrl),
-                "n_steps": n_steps,
-                "capture_every_n": 0,
-                "track": ["qpos", "qvel", "energy"],
-            },
-        )
-        try:
-            payload = normalize_json_result(
-                result,
-                lambda value: _matches_run(
-                    value,
-                    qpos_width=slot.summary["nq"],
-                    qvel_width=slot.summary["nv"],
-                    timestep=slot.summary["timestep"],
-                    expected_start=slot._time + slot.summary["timestep"],
-                ),
-                max_text_chars=4096
-                + n_steps * (512 + 64 * (slot.summary["nq"] + slot.summary["nv"])),
+            if type(n_steps) is not int or not 1 <= n_steps <= MAX_STEPS:
+                raise ValueError(f"n_steps must be between 1 and {MAX_STEPS}")
+            self._require_ready_slot(slot)
+            if not _numeric_vector(ctrl, slot.summary["nu"]):
+                raise ValueError("ctrl must match the loaded model width with finite values")
+            projected_scalars = n_steps * (
+                slot.summary["nq"] + slot.summary["nv"] + slot.summary["nu"] + 4
             )
-        except UpstreamToolError:
-            slot.state = SlotState.POISONED
-            raise
-        if payload["n_steps"] != n_steps or len(payload["timeseries"]) != n_steps:
-            slot.state = SlotState.POISONED
-            raise UpstreamToolError(
-                UPSTREAM_STEP_MISMATCH,
-                "Upstream returned an unexpected step count.",
-                False,
-                SAFE_SLOT_ACTION,
+            if projected_scalars > MAX_TRACE_SCALARS:
+                raise ValueError("requested trace exceeds the bounded numeric record budget")
+            result = await self._invoke(
+                slot,
+                "run_and_analyze",
+                {
+                    "sim_name": slot._name,
+                    "ctrl": list(ctrl),
+                    "n_steps": n_steps,
+                    "capture_every_n": 0,
+                    "track": ["qpos", "qvel", "energy"],
+                },
             )
-        slot._time = payload["sim_time"][1]
-        return payload
+            try:
+                payload = normalize_json_result(
+                    result,
+                    lambda value: _matches_run(
+                        value,
+                        qpos_width=slot.summary["nq"],
+                        qvel_width=slot.summary["nv"],
+                        timestep=slot.summary["timestep"],
+                        expected_start=slot._time + slot.summary["timestep"],
+                    ),
+                    max_text_chars=4096
+                    + n_steps
+                    * (512 + 64 * (slot.summary["nq"] + slot.summary["nv"])),
+                )
+            except UpstreamToolError:
+                slot.state = SlotState.POISONED
+                raise
+            if payload["n_steps"] != n_steps or len(payload["timeseries"]) != n_steps:
+                slot.state = SlotState.POISONED
+                raise UpstreamToolError(
+                    UPSTREAM_STEP_MISMATCH,
+                    "Upstream returned an unexpected step count.",
+                    False,
+                    SAFE_SLOT_ACTION,
+                )
+            slot._time = payload["sim_time"][1]
+            return payload
 
     async def render(
         self,
@@ -988,28 +973,29 @@ class PinnedMujocoClient:
         width: int = 160,
         height: int = 120,
     ) -> bytes:
-        if (
-            type(width) is not int
-            or type(height) is not int
-            or not 1 <= width <= MAX_RENDER_DIMENSION
-            or not 1 <= height <= MAX_RENDER_DIMENSION
-        ):
-            raise ValueError("render dimensions are invalid")
-        result = await self._invoke(
-            slot,
-            "render_snapshot",
-            {
-                "sim_name": slot._name,
-                "width": width,
-                "height": height,
-            },
-            timeout=self.render_timeout,
-        )
-        try:
-            return _render_png(result, width=width, height=height)
-        except UpstreamToolError:
-            slot.state = SlotState.POISONED
-            raise
+        async with slot._operation_lock:
+            if (
+                type(width) is not int
+                or type(height) is not int
+                or not 1 <= width <= MAX_RENDER_DIMENSION
+                or not 1 <= height <= MAX_RENDER_DIMENSION
+            ):
+                raise ValueError("render dimensions are invalid")
+            result = await self._invoke(
+                slot,
+                "render_snapshot",
+                {
+                    "sim_name": slot._name,
+                    "width": width,
+                    "height": height,
+                },
+                timeout=self.render_timeout,
+            )
+            try:
+                return _render_png(result, width=width, height=height)
+            except UpstreamToolError:
+                slot.state = SlotState.POISONED
+                raise
 
 
 __all__ = [
