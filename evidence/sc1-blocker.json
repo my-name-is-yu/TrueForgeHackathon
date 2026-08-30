@@ -1,0 +1,20 @@
+{
+  "commit_sha": "362b944c754696686274bb98083e4c6e58ba5bca",
+  "details": {
+    "error_type": "_EvidenceGateFailure",
+    "failed_gates": [
+      "event_contract",
+      "qualified_not_published",
+      "ledger_experiment_evidence_matches",
+      "ledger_qualification_once"
+    ],
+    "terminal_category": "none",
+    "turn_status": "done"
+  },
+  "reason": "failed gates: event_contract, qualified_not_published, ledger_experiment_evidence_matches, ledger_qualification_once",
+  "recorded_at": "2026-08-30T14:25:38.449046+00:00",
+  "reproduction": "uv run python scripts/run_sc1_e2e.py",
+  "schema_version": "asset-autopsy-sc1-blocker/v1",
+  "stage": "evidence_gate",
+  "status": "blocked"
+}
