@@ -524,6 +524,7 @@ class PinnedMujocoClient:
         self._generation = 0
         self._lifecycle_lock = asyncio.Lock()
         self._context_owners = 0
+        self._context_tokens: dict[asyncio.Task[Any], list[object]] = {}
 
     @property
     def ready(self) -> bool:
@@ -532,7 +533,7 @@ class PinnedMujocoClient:
     async def __aenter__(self) -> PinnedMujocoClient:
         async with self._lifecycle_lock:
             if self.ready:
-                self._context_owners += 1
+                self._record_context_owner()
                 return self
             verify_pinned_upstream()
             stack = AsyncExitStack()
@@ -590,16 +591,30 @@ class PinnedMujocoClient:
             self._stack = stack
             self._session = session
             self._session_token = object()
-            self._context_owners = 1
+            self._record_context_owner()
             return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         async with self._lifecycle_lock:
-            if self._context_owners == 0:
+            task = asyncio.current_task()
+            tokens = self._context_tokens.get(task) if task is not None else None
+            if not tokens:
+                return
+            token = tokens.pop()
+            if not tokens:
+                del self._context_tokens[task]
+            if token is not self._session_token:
                 return
             self._context_owners -= 1
             if self._context_owners == 0:
                 await self._shutdown_child_locked(poison=False)
+
+    def _record_context_owner(self) -> None:
+        task = asyncio.current_task()
+        if task is None or self._session_token is None:
+            raise RuntimeError("client context requires an active asyncio task")
+        self._context_tokens.setdefault(task, []).append(self._session_token)
+        self._context_owners += 1
 
     async def _shutdown_child(self, *, poison: bool = True) -> None:
         async with self._lifecycle_lock:

@@ -858,6 +858,65 @@ def test_cancelled_partial_startup_closes_entered_resources() -> None:
     asyncio.run(check())
 
 
+def test_stale_context_exit_does_not_close_restarted_session() -> None:
+    async def check() -> None:
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        transports: list[_FakeTransport] = []
+        sessions: list[_FakeSession] = []
+
+        def make_transport(_parameters: object) -> _FakeTransport:
+            transport = _FakeTransport()
+            transports.append(transport)
+            return transport
+
+        def make_session(read: object, write: object) -> _FakeSession:
+            session = _FakeSession(read, write)
+            sessions.append(session)
+            return session
+
+        client = PinnedMujocoClient(
+            transport_factory=make_transport,
+            session_factory=make_session,
+        )
+        first_entered = asyncio.Event()
+        second_entered = asyncio.Event()
+        failure_closed = asyncio.Event()
+        release_stale_exits = asyncio.Event()
+
+        async def failing_owner() -> None:
+            async with client:
+                first_entered.set()
+                await second_entered.wait()
+                await client._shutdown_child()
+                failure_closed.set()
+                await release_stale_exits.wait()
+
+        async def stale_owner() -> None:
+            async with client:
+                second_entered.set()
+                await release_stale_exits.wait()
+
+        first = asyncio.create_task(failing_owner())
+        await first_entered.wait()
+        second = asyncio.create_task(stale_owner())
+        await failure_closed.wait()
+
+        async with client:
+            assert len(transports) == len(sessions) == 2
+            assert client.ready is True
+            release_stale_exits.set()
+            await asyncio.gather(first, second)
+            assert client.ready is True
+            assert transports[1].closed is False
+            assert sessions[1].closed is False
+
+        assert transports[1].closed is True
+        assert sessions[1].closed is True
+
+    asyncio.run(check())
+
+
 def test_foreign_and_restarted_slots_are_rejected() -> None:
     async def check() -> None:
         first_transport, first_factory, _first_session = _fake_client()
