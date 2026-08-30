@@ -4,10 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from asset_autopsy.schemas import (
+    ArtifactRef,
     AxisPatch,
     AggregateResult,
     BehaviorDiff,
     CreateRevisionInput,
+    OpenCaseOutput,
     OpenCaseInput,
     PatchPolicy,
     PublicEventSummary,
@@ -247,6 +249,35 @@ def test_run_probe_output_rejects_nonuniform_analysis_trace_timestamps() -> None
         RunProbeOutput.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("prediction_matched", "falsifier_triggered", "inconclusive", "conflicting"),
+    [
+        (True, True, False, False),
+        (True, True, True, True),
+        (False, False, False, False),
+        (False, False, True, True),
+    ],
+)
+def test_run_probe_output_rejects_contradictory_predicate_state(
+    prediction_matched: bool,
+    falsifier_triggered: bool,
+    inconclusive: bool,
+    conflicting: bool,
+) -> None:
+    payload = _run_probe_output_payload()
+    payload.update(
+        {
+            "prediction_matched": prediction_matched,
+            "falsifier_triggered": falsifier_triggered,
+            "inconclusive": inconclusive,
+            "conflicting": conflicting,
+            "trace": [_analysis_trace_point(index) for index in range(256)],
+        }
+    )
+    with pytest.raises(ValidationError):
+        RunProbeOutput.model_validate(payload)
+
+
 def test_behavior_diff_encodes_frozen_comparison_evidence() -> None:
     behavior_diff = BehaviorDiff.model_validate(
         {
@@ -303,6 +334,34 @@ def test_behavior_diff_rejects_false_metric_deltas_and_contradictory_state() -> 
             }
         )
 
+
+def test_behavior_diff_represents_nullable_settling_time_transitions() -> None:
+    behavior_diff = BehaviorDiff.model_validate(
+        {
+            "changed": True,
+            "first_divergence": {
+                "step": 12,
+                "time_s": 0.12,
+                "signal": "qvel",
+                "magnitude": 0.002,
+            },
+            "metric_deltas": [
+                {"metric": "settling_time_s", "before": None, "after": 1.5, "delta": None}
+            ],
+            "clause_outcomes": [{"clause_id": "settling", "outcome": "improved"}],
+            "verdict": "improved",
+        }
+    )
+    assert behavior_diff.metric_deltas[0].before is None
+    assert behavior_diff.metric_deltas[0].delta is None
+
+    invalid = behavior_diff.model_dump()
+    invalid["metric_deltas"] = [
+        {"metric": "hold_error_p95_m", "before": None, "after": 0.02, "delta": None}
+    ]
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(invalid)
+
     with pytest.raises(ValidationError):
         BehaviorDiff.model_validate(
             {
@@ -355,7 +414,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
             "event_ids": [],
             "warnings": [],
             "artifacts": [],
-            "revision_id": "r000",
+            "revision_id": "r001",
             "scenario_id": "public_center",
             "result": "pass",
             "observations": _run_task_observations(),
@@ -376,7 +435,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
                 "schema_version": "asset-autopsy/v1",
                 "request_id": "req_demo",
                 "case_id": "case_demo",
-                "revision_id": "r000",
+                "revision_id": "r001",
                 "scenario_id": "public_center",
                 "result": "fail",
                 "observations": _run_task_observations(),
@@ -396,7 +455,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
             "schema_version": "asset-autopsy/v1",
             "request_id": "req_demo",
             "case_id": "case_demo",
-            "revision_id": "r000",
+            "revision_id": "r001",
             "scenario_id": "public_center",
             "result": "fail",
             "observations": _run_task_observations(),
@@ -435,6 +494,38 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
         },
     }
     RunTaskOutput.model_validate(child_with_unchanged_failure)
+
+    root_with_diff = {**child_with_unchanged_failure, "revision_id": "r000"}
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(root_with_diff)
+
+
+def test_run_task_output_rejects_changed_public_pass_verdict_on_failure() -> None:
+    payload = {
+        "schema_version": "asset-autopsy/v1",
+        "request_id": "req_demo",
+        "case_id": "case_demo",
+        "revision_id": "r001",
+        "scenario_id": "public_center",
+        "result": "fail",
+        "observations": _run_task_observations(),
+        "behavior_diff": {
+            "changed": True,
+            "first_divergence": {
+                "step": 12,
+                "time_s": 0.12,
+                "signal": "qpos",
+                "magnitude": 0.002,
+            },
+            "metric_deltas": [
+                {"metric": "hold_error_p95_m", "before": 0.04, "after": 0.02, "delta": -0.02}
+            ],
+            "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
+            "verdict": "public_pass",
+        },
+    }
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(payload)
 
 
 def _run_task_observations(*, settling_time_s: float | None = 1.5) -> list[dict[str, object]]:
@@ -561,6 +652,38 @@ def test_metric_observation_allows_only_nullable_settling_time() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("metric", "value"),
+    [
+        ("hold_error_p95_m", 0.031),
+        ("joint_speed_rms_rad_s", 0.051),
+        ("settling_time_s", None),
+        ("settling_time_s", 2.1),
+        ("joint_limit_violation_count", 1.0),
+        ("non_finite_count", 1.0),
+    ],
+)
+def test_run_task_output_rejects_passes_that_violate_fixed_clauses(
+    metric: str, value: float | None
+) -> None:
+    observations = [
+        {**observation, "value": value} if observation["metric"] == metric else observation
+        for observation in _run_task_observations()
+    ]
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(
+            {
+                "schema_version": "asset-autopsy/v1",
+                "request_id": "req_demo",
+                "case_id": "case_demo",
+                "revision_id": "r000",
+                "scenario_id": "public_center",
+                "result": "pass",
+                "observations": observations,
+            }
+        )
+
+
 def _verify_revision_payload() -> dict[str, object]:
     return {
         "schema_version": "asset-autopsy/v1",
@@ -630,6 +753,12 @@ def test_verify_revision_requires_successful_bound_promotion_ticket() -> None:
     with pytest.raises(ValidationError):
         VerifyRevisionOutput.model_validate(undersized)
 
+    incomplete_failure = _verify_revision_payload()
+    incomplete_failure["public_result"] = {"passed": 0, "total": 1}
+    incomplete_failure["holdout_result"] = {"passed": 0, "total": 1}
+    with pytest.raises(ValidationError):
+        VerifyRevisionOutput.model_validate(incomplete_failure)
+
 
 def test_verify_revision_rejects_promotion_ticket_count_mismatches() -> None:
     for result_name, result in (
@@ -658,6 +787,29 @@ def test_public_event_tail_accepts_hypothesis_preregistration() -> None:
         {"event_id": "evt_demo", "kind": "HYPOTHESIS_RECORDED", "summary": "Hypothesis recorded."}
     )
     assert event.kind == "HYPOTHESIS_RECORDED"
+
+
+def test_public_outputs_cover_case_commitments_and_evidence_ledger() -> None:
+    required = set(OpenCaseOutput.model_json_schema()["required"])
+    assert {
+        "original_asset_sha256",
+        "controller_sha256",
+        "public_contract_sha256",
+        "runner_sha256",
+        "holdout_commitment_sha256",
+    } <= required
+
+    artifact = ArtifactRef.model_validate(
+        {
+            "artifact_id": "art_ledger",
+            "kind": "evidence_ledger",
+            "uri": "autopsy://case_demo/art_ledger",
+            "media_type": "application/jsonl",
+            "sha256": "1" * 64,
+            "bytes": 42,
+        }
+    )
+    assert artifact.kind == "evidence_ledger"
 
 
 def test_axis_is_normalized_and_family_ranges_are_enforced() -> None:

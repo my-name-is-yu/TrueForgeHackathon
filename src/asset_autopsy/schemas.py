@@ -119,6 +119,13 @@ _RUN_TASK_METRICS = frozenset(
 )
 _METRIC_DELTA_REL_TOLERANCE = 1e-9
 _METRIC_DELTA_ABS_TOLERANCE = 1e-12
+_PASS_METRIC_LIMITS = {
+    "hold_error_p95_m": 0.03,
+    "joint_speed_rms_rad_s": 0.05,
+    "settling_time_s": 2.0,
+    "joint_limit_violation_count": 0.0,
+    "non_finite_count": 0.0,
+}
 
 AllowedAttribute: TypeAlias = Literal["axis", "damping", "armature", "frictionloss"]
 HypothesisAttribute: TypeAlias = Literal[
@@ -319,7 +326,14 @@ class PublishRevisionInput(StrictModel):
 
 class ArtifactRef(StrictModel):
     artifact_id: ArtifactId
-    kind: Literal["trace_json", "filmstrip", "repaired_mjcf", "patch_manifest", "qualification"]
+    kind: Literal[
+        "trace_json",
+        "filmstrip",
+        "repaired_mjcf",
+        "patch_manifest",
+        "qualification",
+        "evidence_ledger",
+    ]
     uri: Annotated[
         str,
         StringConstraints(strict=True, min_length=10, max_length=160, pattern=r"^autopsy://[A-Za-z0-9_./-]+$"),
@@ -459,6 +473,10 @@ class OpenCaseOutput(CommonOutput):
     qualification_state: Literal["unused", "running", "recovering", "passed", "failed"]
     original_revision_id: RevisionId
     original_asset_sha256: AssetHash
+    controller_sha256: AssetHash
+    public_contract_sha256: AssetHash
+    runner_sha256: AssetHash
+    holdout_commitment_sha256: AssetHash
     public_scenarios: list[ScenarioSummary] = Field(min_length=1, max_length=16)
     contract_clauses: list[ContractClause] = Field(min_length=1, max_length=32)
     compiled_dimensions: CompiledDimensions
@@ -508,12 +526,20 @@ class FirstDivergence(StrictModel):
 
 class MetricDelta(StrictModel):
     metric: MetricName
-    before: StrictFiniteFloat
-    after: StrictFiniteFloat
-    delta: StrictFiniteFloat
+    before: StrictFiniteFloat | None
+    after: StrictFiniteFloat | None
+    delta: StrictFiniteFloat | None
 
     @model_validator(mode="after")
     def validate_delta(self) -> MetricDelta:
+        if self.before is None or self.after is None:
+            if self.metric != "settling_time_s":
+                raise ValueError("only settling_time_s may have null metric endpoints")
+            if self.delta is not None:
+                raise ValueError("a null settling-time transition must have a null delta")
+            return self
+        if self.delta is None:
+            raise ValueError("finite metric endpoints require a finite delta")
         expected = self.after - self.before
         if not math.isclose(
             self.delta,
@@ -570,16 +596,31 @@ class RunTaskOutput(CommonOutput):
 
     @model_validator(mode="after")
     def validate_behavior_diff_result(self) -> RunTaskOutput:
-        if self.behavior_diff is None:
-            if self.revision_id != "r000":
-                raise ValueError("child task output requires behavior diff evidence")
+        if self.revision_id == "r000":
+            if self.behavior_diff is not None:
+                raise ValueError("root task output cannot have behavior diff evidence")
             return self
+        if self.behavior_diff is None:
+            raise ValueError("child task output requires behavior diff evidence")
+        if self.result == "pass" and self.behavior_diff.verdict != "public_pass":
+            raise ValueError("a passing task must have the public_pass verdict")
+        if self.result == "fail" and self.behavior_diff.verdict == "public_pass":
+            raise ValueError("a failing task cannot have the public_pass verdict")
         if self.behavior_diff.changed:
             return self
-        if self.result == "pass" and self.behavior_diff.verdict != "public_pass":
-            raise ValueError("a passing unchanged task must have the public_pass verdict")
         if self.result == "fail" and self.behavior_diff.verdict != "unchanged_failure":
             raise ValueError("a failing unchanged task must have the unchanged_failure verdict")
+        return self
+
+    @model_validator(mode="after")
+    def validate_pass_result(self) -> RunTaskOutput:
+        if self.result != "pass":
+            return self
+        values = {observation.metric: observation.value for observation in self.observations}
+        for metric, limit in _PASS_METRIC_LIMITS.items():
+            value = values[metric]
+            if value is None or value > limit:
+                raise ValueError(f"passing task violates the fixed {metric} clause")
         return self
 
     @model_validator(mode="after")
@@ -619,6 +660,16 @@ class RunProbeOutput(CommonOutput):
     conflicting: StrictBool
     observations: list[ProbeObservation] = Field(min_length=1, max_length=128)
     trace: list[AnalysisTracePoint] = Field(min_length=256, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_predicate_state(self) -> RunProbeOutput:
+        expected_conflicting = self.prediction_matched and self.falsifier_triggered
+        expected_inconclusive = not self.prediction_matched and not self.falsifier_triggered
+        if self.conflicting != expected_conflicting:
+            raise ValueError("conflicting must match the predicate results")
+        if self.inconclusive != expected_inconclusive:
+            raise ValueError("inconclusive must match the predicate results")
+        return self
 
     @model_validator(mode="after")
     def validate_analysis_trace(self) -> RunProbeOutput:
@@ -696,6 +747,13 @@ class VerifyRevisionOutput(CommonOutput):
     def validate_public_result_count(cls, value: AggregateResult) -> AggregateResult:
         if value.total != 1:
             raise ValueError("public qualification must contain exactly one scenario")
+        return value
+
+    @field_validator("holdout_result")
+    @classmethod
+    def validate_holdout_result_count(cls, value: AggregateResult) -> AggregateResult:
+        if value.total != 3:
+            raise ValueError("holdout qualification must contain exactly three scenarios")
         return value
 
     @model_validator(mode="after")
