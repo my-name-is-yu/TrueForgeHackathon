@@ -12,9 +12,6 @@ from types import MappingProxyType
 
 from .fixture import CompoundArmFixture, load_compound_arm_fixture
 from .metrics import (
-    TASK_METRIC_ORDER,
-    TaskEvaluation,
-    behavior_diff,
     evaluate_task,
     first_nonfinite_step,
     resample_experiment_trace,
@@ -85,6 +82,7 @@ from .storage import (
     StorageError,
     canonical_json_bytes,
 )
+from .task_evaluation import PASS_LIMITS, TASK_METRIC_ORDER, TaskEvaluation
 
 
 TOTAL_RUN_BUDGET = 10
@@ -260,11 +258,6 @@ class AssetAutopsyService:
                     "Start a fresh case after checking the pinned simulation runtime.",
                 ) from None
 
-            diff = (
-                behavior_diff(parent_evaluation, evaluation)
-                if parent_evaluation
-                else None
-            )
             run_id = _new_id("run")
             condition_hash = self._public_condition_hash()
             execution = self._execution_fingerprint(
@@ -275,7 +268,7 @@ class AssetAutopsyService:
             )
             result_payload = {
                 "run_id": run_id,
-                "result": "pass" if evaluation.passed else "fail",
+                "result": evaluation.result,
                 "evaluation": {
                     "observations": [
                         item.model_dump(mode="json") for item in evaluation.observations
@@ -314,6 +307,16 @@ class AssetAutopsyService:
                     "The numeric task completed, but the optional image was unavailable."
                 )
             event_id = _new_id("evt")
+            output = RunTaskOutput.from_evaluation(
+                request_id=request_id,
+                case_id=case.case_id,
+                event_ids=[event_id],
+                warnings=warnings,
+                artifacts=artifacts,
+                revision_id=revision.revision_id,
+                evaluation=evaluation,
+                parent_evaluation=parent_evaluation,
+            )
             stored_run = StoredRunRecord(
                 run_id=run_id,
                 case_id=case.case_id,
@@ -341,24 +344,7 @@ class AssetAutopsyService:
                 )
             except StorageError:
                 raise self._integrity_error(request_id) from None
-            return RunTaskOutput(
-                schema_version=SCHEMA_VERSION,
-                request_id=request_id,
-                case_id=case.case_id,
-                event_ids=[event_id],
-                warnings=warnings,
-                artifacts=artifacts,
-                revision_id=revision.revision_id,
-                scenario_id="public_center",
-                result="pass" if evaluation.passed else "fail",
-                observations=list(evaluation.observations),
-                # The complete fixed-task trace remains content-addressed in the
-                # task artifact. The public response only needs contract metrics
-                # and the parent BehaviorDiff; experiment traces are the values
-                # intentionally offloaded for Sandbox analysis.
-                trace=[],
-                behavior_diff=diff,
-            )
+            return output
 
     async def run_experiment(self, value: RunExperimentInput) -> RunExperimentOutput:
         request_id = self._begin("run_experiment", value, RunExperimentInput)
@@ -896,7 +882,11 @@ class AssetAutopsyService:
             integrity = self._integrity_checks(case, revisions, request_id)
             if not all(integrity.model_dump().values()):
                 raise self._integrity_error(request_id)
-            public_result = AggregateResult(passed=1, total=1, violated_clause_ids=[])
+            public_result = AggregateResult(
+                passed=int(public_evaluation.passed),
+                total=1,
+                violated_clause_ids=list(public_evaluation.violated_clause_ids),
+            )
             attempt_id = _new_id("attempt")
             commitments = self._commitments(case)
             try:
@@ -1384,20 +1374,62 @@ class AssetAutopsyService:
             if event.event_type != "TASK_COMPLETED" or event.revision_id != revision_id:
                 continue
             try:
-                payload = event.payload["evaluation"]
+                event_payload = event.payload
+                if set(event_payload) != {"run_id", "result", "evaluation"}:
+                    raise ValueError("task event payload fields are invalid")
+                payload = event_payload["evaluation"]
+                if not isinstance(payload, Mapping) or set(payload) != {
+                    "observations",
+                    "trace",
+                    "passed",
+                }:
+                    raise ValueError("stored task evaluation fields are invalid")
                 from .schemas import MetricObservation, TracePoint
 
-                return TaskEvaluation(
-                    observations=tuple(
-                        MetricObservation.model_validate(item)
-                        for item in payload["observations"]
-                    ),
-                    trace=tuple(
-                        TracePoint.model_validate(item) for item in payload["trace"]
-                    ),
-                    passed=payload["passed"],
+                observations = tuple(
+                    MetricObservation.model_validate(item)
+                    for item in payload["observations"]
                 )
-            except (KeyError, TypeError, ValueError):
+                if tuple(item.metric for item in observations) != TASK_METRIC_ORDER:
+                    raise ValueError("stored task metrics are invalid")
+                trace = tuple(
+                    TracePoint.model_validate(item) for item in payload["trace"]
+                )
+                if len(trace) not in {0, 51}:
+                    raise ValueError("stored task trace length is invalid")
+                evaluation = TaskEvaluation(observations=observations, trace=trace)
+                if (
+                    type(payload["passed"]) is not bool
+                    or payload["passed"] != evaluation.passed
+                ):
+                    raise ValueError("stored task pass state is invalid")
+                if event_payload["result"] != evaluation.result:
+                    raise ValueError("stored task result is invalid")
+                run = self.store.get_run(event_payload["run_id"])
+                if (
+                    run.case_id != case_id
+                    or run.revision_id != revision_id
+                    or run.run_kind != "task"
+                    or run.probe_kind is not None
+                    or run.passed != evaluation.passed
+                    or run.trace_sha256 is None
+                    or run.trace_sha256 != run.metrics_sha256
+                ):
+                    raise ValueError("stored task run is inconsistent")
+                task_refs = [
+                    reference
+                    for reference in event.artifact_refs
+                    if reference["kind"] == "task_result"
+                ]
+                if (
+                    len(task_refs) != 1
+                    or task_refs[0]["sha256"] != run.trace_sha256
+                    or self.store.objects.read_bytes(run.trace_sha256)
+                    != canonical_json_bytes(event_payload)
+                ):
+                    raise ValueError("stored task artifact is inconsistent")
+                return evaluation
+            except (KeyError, TypeError, ValueError, StorageError):
                 raise self._integrity_error(request_id) from None
         raise self._error(
             request_id,
@@ -1821,14 +1853,24 @@ def _contract_clauses() -> list[ContractClause]:
     return [
         ContractClause(
             clause_id="reach_error",
-            description="Hold error p95 must not exceed 0.03 m.",
+            description=(
+                "Hold error p95 must not exceed "
+                f"{PASS_LIMITS['hold_error_p95_m']:g} m."
+            ),
         ),
         ContractClause(
             clause_id="stable_hold",
-            description="Joint-speed RMS must not exceed 0.05 rad/s.",
+            description=(
+                "Joint-speed RMS must not exceed "
+                f"{PASS_LIMITS['joint_speed_rms_rad_s']:g} rad/s."
+            ),
         ),
         ContractClause(
-            clause_id="settling", description="Settling time must not exceed 2.0 s."
+            clause_id="settling",
+            description=(
+                "Settling time must not exceed "
+                f"{PASS_LIMITS['settling_time_s']:.1f} s."
+            ),
         ),
         ContractClause(
             clause_id="finite_state",

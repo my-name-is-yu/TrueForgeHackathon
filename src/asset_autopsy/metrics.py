@@ -2,26 +2,21 @@ from __future__ import annotations
 
 import bisect
 import math
-from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
-from .fixture import PublicScenario
+from .fixture import JOINT_RANGE_RAD, PublicScenario
 from .runner import RunRecord
 from .schemas import (
     ActuatorControlTraceColumn,
-    BehaviorDiff,
     BodyPositionObservable,
     BodyPositionTraceColumn,
-    ClauseResult,
     ContactCountObservable,
     ContactCountTraceColumn,
     EnergyObservable,
     EnergyTraceColumn,
     ExperimentObservable,
     ExperimentTrace,
-    FirstDivergence,
     JointTraceColumn,
-    MetricDelta,
     MetricObservation,
     QposObservable,
     QvelObservable,
@@ -29,44 +24,7 @@ from .schemas import (
     TracePoint,
     experiment_trace_value_key,
 )
-
-
-TASK_METRIC_ORDER = (
-    "final_target_error_m",
-    "hold_error_p95_m",
-    "joint_speed_rms_rad_s",
-    "settling_time_s",
-    "peak_energy_j",
-    "joint_limit_violation_count",
-    "non_finite_count",
-)
-CLAUSE_METRIC = {
-    "reach_error": "hold_error_p95_m",
-    "stable_hold": "joint_speed_rms_rad_s",
-    "settling": "settling_time_s",
-    "finite_state": "non_finite_count",
-    "joint_limits": "joint_limit_violation_count",
-}
-PASS_LIMITS = {
-    "hold_error_p95_m": 0.03,
-    "joint_speed_rms_rad_s": 0.05,
-    "settling_time_s": 2.0,
-    "joint_limit_violation_count": 0.0,
-    "non_finite_count": 0.0,
-}
-
-
-@dataclass(frozen=True, slots=True)
-class TaskEvaluation:
-    observations: tuple[MetricObservation, ...]
-    trace: tuple[TracePoint, ...]
-    passed: bool
-
-    @property
-    def values(self) -> dict[str, float | None]:
-        return {
-            observation.metric: observation.value for observation in self.observations
-        }
+from .task_evaluation import PASS_LIMITS, TASK_METRIC_ORDER, TaskEvaluation
 
 
 def flatten_rows(record: RunRecord) -> tuple[Mapping[str, Any], ...]:
@@ -168,7 +126,7 @@ def evaluate_task(record: RunRecord, scenario: PublicScenario) -> TaskEvaluation
                 "non_finite_count": 1.0,
             }
         )
-        return TaskEvaluation(observations, (), False)
+        return TaskEvaluation(observations, ())
 
     positions = [_vector(row, "body_xpos:end_effector") for row in rows]
     errors = [
@@ -200,7 +158,7 @@ def evaluate_task(record: RunRecord, scenario: PublicScenario) -> TaskEvaluation
         1
         for row in rows
         for value in _vector(row, "qpos")
-        if value < -1.2 or value > 1.2
+        if value < JOINT_RANGE_RAD[0] or value > JOINT_RANGE_RAD[1]
     )
     peak_energy = max(
         abs(float(row["E_pot"])) + abs(float(row["E_kin"])) for row in rows
@@ -215,12 +173,8 @@ def evaluate_task(record: RunRecord, scenario: PublicScenario) -> TaskEvaluation
         "non_finite_count": 0.0,
     }
     observations = _observations(values)
-    passed = all(
-        values[metric] is not None and values[metric] <= limit
-        for metric, limit in PASS_LIMITS.items()
-    )
     trace = resample_task_trace(rows, count=51)
-    return TaskEvaluation(observations, trace, passed)
+    return TaskEvaluation(observations, trace)
 
 
 def _observations(values: Mapping[str, float | None]) -> tuple[MetricObservation, ...]:
@@ -244,85 +198,6 @@ def resample_task_trace(
         qvel = _linear_value(rows, source_times, target, lambda row: row["qvel"])
         points.append(TracePoint(time_s=target, values=position + qpos + qvel))
     return tuple(points)
-
-
-def behavior_diff(before: TaskEvaluation, after: TaskEvaluation) -> BehaviorDiff:
-    before_values = before.values
-    after_values = after.values
-    deltas = []
-    for metric in TASK_METRIC_ORDER:
-        old = before_values[metric]
-        new = after_values[metric]
-        delta = None if old is None or new is None else new - old
-        deltas.append(MetricDelta(metric=metric, before=old, after=new, delta=delta))
-
-    clause_results = []
-    for clause_id, metric in CLAUSE_METRIC.items():
-        old = before_values[metric]
-        new = after_values[metric]
-        limit = PASS_LIMITS[metric]
-        before_pass = old is not None and old <= limit
-        after_pass = new is not None and new <= limit
-        outcome = (
-            "improved"
-            if not before_pass and after_pass
-            else "regressed"
-            if before_pass and not after_pass
-            else "unchanged"
-        )
-        clause_results.append(ClauseResult(clause_id=clause_id, outcome=outcome))
-
-    first = _first_divergence(before.trace, after.trace)
-    changed = first is not None
-    outcomes = {result.outcome for result in clause_results}
-    if after.passed:
-        verdict = "public_pass"
-    elif "improved" in outcomes and "regressed" in outcomes:
-        verdict = "changed"
-    elif "improved" in outcomes:
-        verdict = "improved"
-    elif "regressed" in outcomes:
-        verdict = "regressed"
-    elif changed:
-        verdict = "changed"
-    else:
-        verdict = "unchanged_failure"
-    if verdict not in {"public_pass", "unchanged_failure"} and not changed:
-        raise ValueError("metric change lacks trace divergence evidence")
-    return BehaviorDiff(
-        changed=changed,
-        first_divergence=first,
-        metric_deltas=deltas,
-        clause_outcomes=clause_results,
-        verdict=verdict,
-    )
-
-
-def _first_divergence(
-    before: Sequence[TracePoint], after: Sequence[TracePoint]
-) -> FirstDivergence | None:
-    if len(before) != len(after) or not before:
-        return None
-    for step, (old, new) in enumerate(zip(before, after)):
-        body = _distance(old.values[:3], new.values[:3])
-        if body > 1e-4:
-            return FirstDivergence(
-                step=step,
-                time_s=new.time_s,
-                signal="end_effector_position",
-                magnitude=body,
-            )
-        qpos = max(abs(a - b) for a, b in zip(old.values[3:6], new.values[3:6]))
-        if qpos > 1e-4:
-            return FirstDivergence(
-                step=step, time_s=new.time_s, signal="qpos", magnitude=qpos
-            )
-        qvel = max(abs(a - b) for a, b in zip(old.values[6:], new.values[6:]))
-        if qvel > 1e-3:
-            return FirstDivergence(
-                step=step, time_s=new.time_s, signal="qvel", magnitude=qvel
-            )
-    return None
 
 
 def resample_experiment_trace(
@@ -403,7 +278,6 @@ __all__ = [
     "PASS_LIMITS",
     "TASK_METRIC_ORDER",
     "TaskEvaluation",
-    "behavior_diff",
     "evaluate_task",
     "first_nonfinite_step",
     "flatten_rows",

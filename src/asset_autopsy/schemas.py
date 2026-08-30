@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Annotated, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Literal, Sequence, TypeAlias
 
 from pydantic import (
     AllowInfNan,
@@ -15,6 +15,19 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from .task_evaluation import (
+    CLAUSE_METRIC,
+    COUNT_METRICS,
+    TASK_METRIC_ORDER,
+    TRACE_DIVERGENCE_LIMITS,
+    behavior_verdict,
+    compare_clause_outcomes,
+    task_passed,
+)
+
+if TYPE_CHECKING:
+    from .task_evaluation import TaskEvaluation
 
 
 SCHEMA_VERSION = "asset-autopsy/v1"
@@ -109,36 +122,10 @@ RunTaskMetricName: TypeAlias = Literal[
 ContractClauseId: TypeAlias = Literal[
     "reach_error", "stable_hold", "settling", "finite_state", "joint_limits"
 ]
-_RUN_TASK_METRICS = frozenset(
-    {
-        "final_target_error_m",
-        "hold_error_p95_m",
-        "joint_speed_rms_rad_s",
-        "settling_time_s",
-        "peak_energy_j",
-        "joint_limit_violation_count",
-        "non_finite_count",
-    }
-)
+_RUN_TASK_METRICS = frozenset(TASK_METRIC_ORDER)
 _METRIC_DELTA_REL_TOLERANCE = 1e-9
 _METRIC_DELTA_ABS_TOLERANCE = 1e-12
-_PASS_METRIC_LIMITS = {
-    "hold_error_p95_m": 0.03,
-    "joint_speed_rms_rad_s": 0.05,
-    "settling_time_s": 2.0,
-    "joint_limit_violation_count": 0.0,
-    "non_finite_count": 0.0,
-}
-_CONTRACT_CLAUSE_IDS = frozenset(
-    {"reach_error", "stable_hold", "settling", "finite_state", "joint_limits"}
-)
-_CLAUSE_METRICS = {
-    "reach_error": "hold_error_p95_m",
-    "stable_hold": "joint_speed_rms_rad_s",
-    "settling": "settling_time_s",
-    "finite_state": "non_finite_count",
-    "joint_limits": "joint_limit_violation_count",
-}
+_CONTRACT_CLAUSE_IDS = frozenset(CLAUSE_METRIC)
 
 AllowedAttribute: TypeAlias = Literal["axis", "damping", "armature", "frictionloss"]
 HypothesisAttribute: TypeAlias = Literal[
@@ -638,7 +625,7 @@ class MetricObservation(StrictModel):
             raise ValueError("only settling_time_s may have a null value")
         if self.value is not None and self.value < 0.0:
             raise ValueError("task observations must be nonnegative")
-        if self.metric in {"joint_limit_violation_count", "non_finite_count"}:
+        if self.metric in COUNT_METRICS:
             if self.value is None or not self.value.is_integer():
                 raise ValueError("count observations must be nonnegative integers")
         return self
@@ -657,12 +644,7 @@ class FirstDivergence(StrictModel):
 
     @model_validator(mode="after")
     def validate_threshold(self) -> FirstDivergence:
-        thresholds = {
-            "end_effector_position": 1e-4,
-            "qpos": 1e-4,
-            "qvel": 1e-3,
-        }
-        if self.magnitude <= thresholds[self.signal]:
+        if self.magnitude <= TRACE_DIVERGENCE_LIMITS[self.signal]:
             raise ValueError("first divergence magnitude must exceed the signal threshold")
         return self
 
@@ -678,7 +660,7 @@ class MetricDelta(StrictModel):
         for endpoint in (self.before, self.after):
             if endpoint is not None and endpoint < 0.0:
                 raise ValueError("metric delta endpoints must be nonnegative")
-        if self.metric in {"joint_limit_violation_count", "non_finite_count"}:
+        if self.metric in COUNT_METRICS:
             if self.before is None or self.after is None:
                 raise ValueError("count metric endpoints cannot be null")
             if not self.before.is_integer() or not self.after.is_integer():
@@ -725,36 +707,19 @@ class BehaviorDiff(StrictModel):
         if len(clauses) != len(_CONTRACT_CLAUSE_IDS) or set(clauses) != _CONTRACT_CLAUSE_IDS:
             raise ValueError("behavior diff must contain each fixed contract clause exactly once")
         deltas = {delta.metric: delta for delta in self.metric_deltas}
-        for result in self.clause_outcomes:
-            delta = deltas[_CLAUSE_METRICS[result.clause_id]]
-            limit = _PASS_METRIC_LIMITS[delta.metric]
-            before_passed = delta.before is not None and delta.before <= limit
-            after_passed = delta.after is not None and delta.after <= limit
-            if not before_passed and after_passed:
-                expected_outcome = "improved"
-            elif before_passed and not after_passed:
-                expected_outcome = "regressed"
-            else:
-                expected_outcome = "unchanged"
-            if result.outcome != expected_outcome:
-                raise ValueError("clause outcome must match its contract-state transition")
-        outcomes = {result.outcome for result in self.clause_outcomes}
-        all_clauses_pass = all(
-            deltas[metric].after is not None and deltas[metric].after <= limit
-            for metric, limit in _PASS_METRIC_LIMITS.items()
+        before_values = {metric: delta.before for metric, delta in deltas.items()}
+        after_values = {metric: delta.after for metric, delta in deltas.items()}
+        expected_outcomes = dict(
+            compare_clause_outcomes(before_values, after_values)
         )
-        if all_clauses_pass:
-            expected_verdict = "public_pass"
-        elif "improved" in outcomes and "regressed" in outcomes:
-            expected_verdict = "changed"
-        elif "improved" in outcomes:
-            expected_verdict = "improved"
-        elif "regressed" in outcomes:
-            expected_verdict = "regressed"
-        elif self.changed:
-            expected_verdict = "changed"
-        else:
-            expected_verdict = "unchanged_failure"
+        for result in self.clause_outcomes:
+            if result.outcome != expected_outcomes[result.clause_id]:
+                raise ValueError("clause outcome must match its contract-state transition")
+        expected_verdict = behavior_verdict(
+            after_passed=task_passed(after_values),
+            clause_outcomes=[result.outcome for result in self.clause_outcomes],
+            changed=self.changed,
+        )
         if self.verdict != expected_verdict:
             raise ValueError("verdict must match the contract clause outcomes")
         if self.changed and self.first_divergence is None:
@@ -777,6 +742,42 @@ class RunTaskOutput(CommonOutput):
     trace: list[TracePoint] = Field(default_factory=list, max_length=51)
     behavior_diff: BehaviorDiff | None = None
 
+    @classmethod
+    def from_evaluation(
+        cls,
+        *,
+        request_id: str,
+        case_id: str,
+        event_ids: Sequence[str],
+        warnings: Sequence[str],
+        artifacts: Sequence[ArtifactRef],
+        revision_id: str,
+        evaluation: TaskEvaluation,
+        parent_evaluation: TaskEvaluation | None,
+    ) -> RunTaskOutput:
+        if (revision_id == "r000") != (parent_evaluation is None):
+            raise ValueError("task evaluation parent must match the revision lineage")
+        return cls(
+            schema_version=SCHEMA_VERSION,
+            request_id=request_id,
+            case_id=case_id,
+            event_ids=list(event_ids),
+            warnings=list(warnings),
+            artifacts=list(artifacts),
+            revision_id=revision_id,
+            scenario_id="public_center",
+            result=evaluation.result,
+            observations=list(evaluation.observations),
+            # The full fixed-task trace remains content-addressed; the public
+            # response exposes contract metrics and the parent comparison.
+            trace=[],
+            behavior_diff=(
+                evaluation.behavior_diff_from(parent_evaluation)
+                if parent_evaluation is not None
+                else None
+            ),
+        )
+
     @model_validator(mode="after")
     def validate_observation_set(self) -> RunTaskOutput:
         metrics = [observation.metric for observation in self.observations]
@@ -787,30 +788,19 @@ class RunTaskOutput(CommonOutput):
         return self
 
     @model_validator(mode="after")
-    def validate_behavior_diff_result(self) -> RunTaskOutput:
+    def validate_behavior_diff_presence(self) -> RunTaskOutput:
         if self.revision_id == "r000":
             if self.behavior_diff is not None:
                 raise ValueError("root task output cannot have behavior diff evidence")
             return self
         if self.behavior_diff is None:
             raise ValueError("child task output requires behavior diff evidence")
-        if self.result == "pass" and self.behavior_diff.verdict != "public_pass":
-            raise ValueError("a passing task must have the public_pass verdict")
-        if self.result == "fail" and self.behavior_diff.verdict == "public_pass":
-            raise ValueError("a failing task cannot have the public_pass verdict")
-        if self.behavior_diff.changed:
-            return self
-        if self.result == "fail" and self.behavior_diff.verdict != "unchanged_failure":
-            raise ValueError("a failing unchanged task must have the unchanged_failure verdict")
         return self
 
     @model_validator(mode="after")
     def validate_result_against_contract(self) -> RunTaskOutput:
         values = {observation.metric: observation.value for observation in self.observations}
-        contract_passed = all(
-            values[metric] is not None and values[metric] <= limit
-            for metric, limit in _PASS_METRIC_LIMITS.items()
-        )
+        contract_passed = task_passed(values)
         if (self.result == "pass") != contract_passed:
             raise ValueError("task result must match the fixed contract clauses")
         return self

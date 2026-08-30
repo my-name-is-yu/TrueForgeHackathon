@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import sqlite3
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -39,6 +41,7 @@ from asset_autopsy.schemas import (
     VerifyRevisionInput,
 )
 from asset_autopsy.service import AssetAutopsyService, DomainError
+from asset_autopsy.storage import EvidenceStore, canonical_json_bytes
 
 
 class DeterministicFakeRunner:
@@ -424,6 +427,53 @@ def test_transient_compile_failure_preserves_primary_upstream_failure_and_state(
     assert "secret" not in caught.value.safe_message
     assert runner.validated_xml == [expected_xml]
     assert service_state(service) == before
+
+
+def test_persisted_task_tampering_is_rejected_after_ledger_rehash(tmp_path) -> None:
+    service = AssetAutopsyService(tmp_path, runner=DeterministicFakeRunner())
+    public = run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id="r000",
+                scenario_id="public_center",
+                capture="metrics",
+            )
+        )
+    )
+    assert public.result == "fail"
+    event = next(
+        event
+        for event in service.store.ledger_events(CASE_ID)
+        if event.event_type == "TASK_COMPLETED"
+    )
+    tampered = json.loads(json.dumps(event.payload))
+    tampered["evaluation"]["passed"] = True
+    with sqlite3.connect(tmp_path / "evidence.sqlite") as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute(
+            "UPDATE ledger_events SET payload_json = ? WHERE event_id = ?",
+            (canonical_json_bytes(tampered).decode(), event.event_id),
+        )
+        row = connection.execute(
+            "SELECT * FROM ledger_events WHERE event_id = ?", (event.event_id,)
+        ).fetchone()
+        assert row is not None
+        event_hash = hashlib.sha256(
+            bytes.fromhex(row["prev_hash"])
+            + canonical_json_bytes(EvidenceStore._event_without_hash(row))
+        ).hexdigest()
+        connection.execute(
+            "UPDATE ledger_events SET event_hash = ? WHERE event_id = ?",
+            (event_hash, event.event_id),
+        )
+        connection.commit()
+
+    with pytest.raises(DomainError) as caught:
+        service._latest_task_evaluation(CASE_ID, "r000", "req_read_tamper")
+
+    assert caught.value.code == "EVIDENCE_INTEGRITY_FAILED"
+    assert caught.value.retryable is False
 
 
 @pytest.mark.parametrize("revision_count", [1, 2])
