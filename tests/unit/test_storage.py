@@ -33,6 +33,17 @@ COMMITMENTS = {
 }
 
 
+def revision_event_payload(revision: RevisionRecord) -> dict[str, object]:
+    return {
+        "parent_revision_id": revision.parent_revision_id,
+        "ordinal": revision.ordinal,
+        "asset_sha256": revision.asset_sha256,
+        "patch_manifest_sha256": revision.patch_manifest_sha256,
+        "hypothesis_event_id": revision.hypothesis_event_id,
+        "probe_run_id": revision.probe_run_id,
+    }
+
+
 def make_store(tmp_path: Path) -> EvidenceStore:
     store = EvidenceStore(tmp_path / "ledger.sqlite", tmp_path / "objects")
     store.create_preprovisioned_case(
@@ -70,23 +81,24 @@ def add_probe_evidence(store: EvidenceStore) -> None:
 
 
 def add_child(store: EvidenceStore, revision_id: str = "r001") -> None:
+    revision = RevisionRecord(
+        case_id="case-1",
+        revision_id=revision_id,
+        parent_revision_id="r000",
+        ordinal=1,
+        asset_sha256="2" * 64,
+        patch_manifest_sha256="3" * 64,
+        hypothesis_event_id="evt-hypothesis-1",
+        probe_run_id="run-probe-1",
+    )
     store.commit_revision_with_event(
-        revision=RevisionRecord(
-            case_id="case-1",
-            revision_id=revision_id,
-            parent_revision_id="r000",
-            ordinal=1,
-            asset_sha256="2" * 64,
-            patch_manifest_sha256="3" * 64,
-            hypothesis_event_id="evt-hypothesis-1",
-            probe_run_id="run-probe-1",
-        ),
+        revision=revision,
         event=LedgerEventRecord(
             event_id=f"evt-revision-{revision_id}",
             case_id="case-1",
             revision_id=revision_id,
             event_type="REVISION_CREATED",
-            payload={"asset_sha256": "2" * 64},
+            payload=revision_event_payload(revision),
         ),
         expected_head_revision_id="r000",
     )
@@ -148,6 +160,9 @@ def test_preprovisioning_is_keyword_only_exact_and_create_once(tmp_path: Path) -
     assert root.parent_revision_id is None
     assert root.hypothesis_event_id is None
     assert root.probe_run_id is None
+    created = store.ledger_events("case-1")[-1]
+    assert created.event_type == "CASE_CREATED"
+    assert {field: created.payload[field] for field in COMMITMENTS} == COMMITMENTS
 
     with pytest.raises(CaseAlreadyExistsError):
         store.create_preprovisioned_case(
@@ -400,7 +415,9 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
     assert child.hypothesis_event_id == "evt-hypothesis-1"
     assert child.probe_run_id == "run-probe-1"
     assert store.get_case("case-1").head_revision_id == "r001"
-    assert store.ledger_events("case-1")[-1].event_id == "evt-revision-r001"
+    revision_event = store.ledger_events("case-1")[-1]
+    assert revision_event.event_id == "evt-revision-r001"
+    assert revision_event.payload == revision_event_payload(child)
 
     store.append_event(
         LedgerEventRecord(
@@ -440,7 +457,14 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
                 case_id="case-1",
                 revision_id="r002",
                 event_type="REVISION_CREATED",
-                payload={},
+                payload={
+                    "parent_revision_id": "r001",
+                    "ordinal": 2,
+                    "asset_sha256": "8" * 64,
+                    "patch_manifest_sha256": None,
+                    "hypothesis_event_id": "evt-hypothesis-2",
+                    "probe_run_id": "run-probe-2",
+                },
             ),
             expected_head_revision_id="r001",
         )
@@ -465,7 +489,14 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
                 case_id="case-1",
                 revision_id="r003",
                 event_type="REVISION_CREATED",
-                payload={},
+                payload={
+                    "parent_revision_id": "r001",
+                    "ordinal": 2,
+                    "asset_sha256": "9" * 64,
+                    "patch_manifest_sha256": None,
+                    "hypothesis_event_id": "evt-hypothesis-1",
+                    "probe_run_id": "run-probe-1",
+                },
             ),
             expected_head_revision_id="r000",
         )
@@ -532,7 +563,7 @@ def test_revision_retry_accepts_omitted_generated_event_metadata(tmp_path: Path)
             case_id="case-1",
             revision_id="r001",
             event_type="REVISION_CREATED",
-            payload={"asset_sha256": "2" * 64},
+            payload=revision_event_payload(child),
         ),
         expected_head_revision_id="r001",
     ) == child
@@ -562,7 +593,7 @@ def test_revision_retry_rejects_changed_explicit_timestamp(tmp_path: Path) -> No
                 case_id="case-1",
                 revision_id="r001",
                 event_type="REVISION_CREATED",
-                payload={"asset_sha256": "2" * 64},
+                payload=revision_event_payload(child),
             ),
             expected_head_revision_id="r001",
         )
@@ -609,7 +640,14 @@ def test_child_revision_requires_probe_run(tmp_path: Path) -> None:
                 case_id="case-1",
                 revision_id="r001",
                 event_type="REVISION_CREATED",
-                payload={"asset_sha256": "2" * 64},
+                payload={
+                    "parent_revision_id": "r000",
+                    "ordinal": 1,
+                    "asset_sha256": "2" * 64,
+                    "patch_manifest_sha256": "3" * 64,
+                    "hypothesis_event_id": "evt-task-hypothesis",
+                    "probe_run_id": "run-task-1",
+                },
             ),
             expected_head_revision_id="r000",
         )
@@ -685,7 +723,7 @@ def test_restore_rejects_materialized_state_that_differs_from_ledger(
         connection.commit()
 
     with pytest.raises(
-        IntegrityError, match="materialized case state|qualification commitments"
+        IntegrityError, match="materialized case state|commitments"
     ):
         store.restore_state("case-1")
 
@@ -712,10 +750,39 @@ def test_restore_uses_one_snapshot_during_concurrent_commit(
 
 
 @pytest.mark.parametrize(
+    "field",
+    [
+        "controller_sha256",
+        "public_contract_sha256",
+        "runner_sha256",
+        "holdout_commitment_sha256",
+    ],
+)
+def test_restore_rejects_unqualified_case_commitment_corruption(
+    tmp_path: Path, field: str
+) -> None:
+    store = make_store(tmp_path)
+
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            f"UPDATE cases SET {field} = ? WHERE case_id = ?",
+            ("f" * 64, "case-1"),
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="case commitments"):
+        store.restore_state("case-1")
+
+
+@pytest.mark.parametrize(
     ("mutation", "error"),
     [
         ("DELETE FROM revisions WHERE revision_id = 'r001'", "revision event state"),
         ("UPDATE revisions SET ordinal = 9 WHERE revision_id = 'r001'", "revision event state"),
+        (
+            f"UPDATE revisions SET asset_sha256 = '{'f' * 64}' WHERE revision_id = 'r001'",
+            "does not match its ledger event",
+        ),
         ("DELETE FROM runs WHERE run_id = 'run-probe-1'", "causal citations"),
     ],
 )
@@ -982,7 +1049,14 @@ def test_new_child_revision_is_rejected_after_lifecycle_seal(
                 case_id="case-1",
                 revision_id="r002",
                 event_type="REVISION_CREATED",
-                payload={"asset_sha256": "9" * 64},
+                payload={
+                    "parent_revision_id": "r001",
+                    "ordinal": 2,
+                    "asset_sha256": "9" * 64,
+                    "patch_manifest_sha256": "a" * 64,
+                    "hypothesis_event_id": "evt-hypothesis-2",
+                    "probe_run_id": "run-probe-2",
+                },
             ),
             expected_head_revision_id="r001",
         )
