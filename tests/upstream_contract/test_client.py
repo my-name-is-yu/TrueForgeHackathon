@@ -67,11 +67,13 @@ class _FakeSession:
         render_is_error: bool = False,
         invalid_render_png: bool = False,
         timestamp_mode: str | None = None,
+        boundary_mode: str | None = None,
         wrong_load_name: bool = False,
         invalid_load_metadata: str | None = None,
         nq: int = 0,
         nv: int = 0,
         nu: int = 0,
+        timestep: float = 0.002,
     ) -> None:
         self.closed = False
         self.calls: list[tuple[str, dict[str, object]]] = []
@@ -82,11 +84,14 @@ class _FakeSession:
         self.render_is_error = render_is_error
         self.invalid_render_png = invalid_render_png
         self.timestamp_mode = timestamp_mode
+        self.boundary_mode = boundary_mode
         self.wrong_load_name = wrong_load_name
         self.invalid_load_metadata = invalid_load_metadata
         self.nq = nq
         self.nv = nv
         self.nu = nu
+        self.timestep = timestep
+        self.current_time = 0.0
         self.run_started = asyncio.Event()
 
     async def __aenter__(self) -> _FakeSession:
@@ -112,7 +117,7 @@ class _FakeSession:
             nq = self.nq
             nv = self.nv
             nu = self.nu
-            timestep = 0.002
+            timestep = self.timestep
             if self.invalid_load_metadata == "negative_dimension":
                 nu = -1
             elif self.invalid_load_metadata == "invalid_timestep":
@@ -152,13 +157,18 @@ class _FakeSession:
                 await asyncio.Event().wait()
             qpos = [0.0] if self.wrong_width_run else [0.0] * self.nq
             qvel = [0.0] if self.wrong_width_run else [0.0] * self.nv
-            timestamps = [0.002 * (index + 1) for index in range(steps)]
+            timestamps = [self.current_time + self.timestep * (index + 1) for index in range(steps)]
             if self.timestamp_mode == "duplicate" and len(timestamps) >= 2:
                 timestamps[1] = timestamps[0]
             elif self.timestamp_mode == "reversed":
                 timestamps.reverse()
             elif self.timestamp_mode == "wrong_interval" and len(timestamps) >= 3:
-                timestamps[2] = timestamps[1] + 0.003
+                timestamps[2] = timestamps[1] + 2 * self.timestep
+            if self.boundary_mode and self.current_time and timestamps:
+                if self.boundary_mode == "duplicate":
+                    timestamps[0] = self.current_time
+                elif self.boundary_mode == "backward":
+                    timestamps[0] = self.current_time - self.timestep
             rows = []
             for timestamp in timestamps:
                 row = {"t": timestamp, "E_pot": 0.0, "E_kin": 0.0, "ncon": 0}
@@ -166,6 +176,7 @@ class _FakeSession:
                     row.update({"qpos": qpos, "qvel": qvel})
                 rows.append(row)
             sim_time = [timestamps[0], timestamps[-1]]
+            self.current_time = timestamps[-1]
             if self.timestamp_mode == "inconsistent":
                 sim_time[1] += 0.002
             return _text_result(
@@ -205,11 +216,13 @@ def _fake_client(
     render_is_error: bool = False,
     invalid_render_png: bool = False,
     timestamp_mode: str | None = None,
+    boundary_mode: str | None = None,
     wrong_load_name: bool = False,
     invalid_load_metadata: str | None = None,
     nq: int = 0,
     nv: int = 0,
     nu: int = 0,
+    timestep: float = 0.002,
 ):
     transport = _FakeTransport()
     session: _FakeSession | None = None
@@ -226,11 +239,13 @@ def _fake_client(
             render_is_error=render_is_error,
             invalid_render_png=invalid_render_png,
             timestamp_mode=timestamp_mode,
+            boundary_mode=boundary_mode,
             wrong_load_name=wrong_load_name,
             invalid_load_metadata=invalid_load_metadata,
             nq=nq,
             nv=nv,
             nu=nu,
+            timestep=timestep,
         )
         return session
 
@@ -429,6 +444,59 @@ def test_run_response_requires_monotonic_consistent_timestamps(timestamp_mode: s
             assert slot.state is SlotState.POISONED
 
     asyncio.run(check())
+
+
+def test_run_response_interval_tolerance_scales_to_tiny_timesteps() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(
+            timestamp_mode="wrong_interval", timestep=1e-12
+        )
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.run_segment(slot, ctrl=[], n_steps=3)
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("boundary_mode", ("duplicate", "backward"))
+def test_runner_rejects_noncontiguous_segment_boundaries(boundary_mode: str) -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(boundary_mode=boundary_mode)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        with pytest.raises(ValueError, match="discontinuous segment timestamps"):
+            await DeterministicRunner(
+                PinnedMujocoClient(
+                    transport_factory=lambda _parameters: transport,
+                    session_factory=make_session,
+                )
+            ).run(
+                RunConfiguration(
+                    xml_string="<mujoco model=\"synthetic\"/>",
+                    segments=(ConstantSegment((), 1, "first"), ConstantSegment((), 1, "second")),
+                )
+            )
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("timeout_name", ("call_timeout", "render_timeout", "startup_timeout"))
+@pytest.mark.parametrize("timeout_value", (float("nan"), float("inf"), 0.0, -1.0))
+def test_client_rejects_nonfinite_or_nonpositive_timeouts(
+    timeout_name: str, timeout_value: float
+) -> None:
+    from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        PinnedMujocoClient(**{timeout_name: timeout_value})
 
 
 @pytest.mark.parametrize("invalid_load_metadata", ("negative_dimension", "invalid_timestep"))

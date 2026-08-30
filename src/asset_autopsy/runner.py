@@ -178,6 +178,9 @@ class DeterministicRunner:
         )
 
         records: list[SegmentRecord] = []
+        previous_timestamp: float | None = None
+        timestep = slot.summary["timestep"]
+        interval_tolerance = timestep * 1e-6
         for segment in configuration.segments:
             if len(segment.ctrl) != slot.summary["nu"]:
                 raise ValueError("controller width does not match the loaded model")
@@ -196,6 +199,15 @@ class DeterministicRunner:
                 for row in rows
             ):
                 raise ValueError("runner received a non-numeric run record")
+            expected_start = timestep if previous_timestamp is None else previous_timestamp + timestep
+            if not math.isclose(
+                rows[0]["t"],
+                expected_start,
+                rel_tol=1e-6,
+                abs_tol=interval_tolerance,
+            ):
+                raise ValueError("runner received discontinuous segment timestamps")
+            previous_timestamp = rows[-1]["t"]
             records.append(
                 SegmentRecord(
                     label=segment.label,

@@ -429,16 +429,21 @@ def _matches_run(
     if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
         return False
     sim_start, sim_end = payload["sim_time"]
+    interval_tolerance = timestep * 1e-6
     return bool(
         timestamps
-        and math.isclose(timestamps[0], sim_start, rel_tol=0.0, abs_tol=1e-9)
-        and math.isclose(timestamps[-1], sim_end, rel_tol=0.0, abs_tol=1e-9)
+        and math.isclose(
+            timestamps[0], sim_start, rel_tol=1e-6, abs_tol=interval_tolerance
+        )
+        and math.isclose(
+            timestamps[-1], sim_end, rel_tol=1e-6, abs_tol=interval_tolerance
+        )
         and all(
             math.isclose(
                 current - previous,
                 timestep,
-                rel_tol=0.0,
-                abs_tol=1e-9,
+                rel_tol=1e-6,
+                abs_tol=interval_tolerance,
             )
             for previous, current in zip(timestamps, timestamps[1:])
         )
@@ -493,8 +498,14 @@ class PinnedMujocoClient:
         transport_factory: Callable[[StdioServerParameters], Any] = stdio_client,
         session_factory: Callable[[Any, Any], ClientSession] = ClientSession,
     ) -> None:
-        if min(call_timeout, render_timeout, startup_timeout) <= 0:
-            raise ValueError("timeouts must be positive")
+        timeouts = (call_timeout, render_timeout, startup_timeout)
+        if not all(
+            type(timeout) in (int, float)
+            and math.isfinite(float(timeout))
+            and timeout > 0
+            for timeout in timeouts
+        ):
+            raise ValueError("timeouts must be finite and positive")
         self.call_timeout = call_timeout
         self.render_timeout = render_timeout
         self.startup_timeout = startup_timeout
