@@ -501,8 +501,10 @@ class MetricObservation(StrictModel):
     def validate_nullable_value(self) -> MetricObservation:
         if self.value is None and self.metric != "settling_time_s":
             raise ValueError("only settling_time_s may have a null value")
+        if self.value is not None and self.value < 0.0:
+            raise ValueError("task observations must be nonnegative")
         if self.metric in {"joint_limit_violation_count", "non_finite_count"}:
-            if self.value is None or self.value < 0.0 or not self.value.is_integer():
+            if self.value is None or not self.value.is_integer():
                 raise ValueError("count observations must be nonnegative integers")
         return self
 
@@ -528,7 +530,7 @@ class FirstDivergence(StrictModel):
 
 
 class MetricDelta(StrictModel):
-    metric: MetricName
+    metric: RunTaskMetricName
     before: StrictFiniteFloat | None
     after: StrictFiniteFloat | None
     delta: StrictFiniteFloat | None
@@ -570,8 +572,13 @@ class BehaviorDiff(StrictModel):
 
     @model_validator(mode="after")
     def validate_evidence_state(self) -> BehaviorDiff:
+        metrics = [delta.metric for delta in self.metric_deltas]
+        if len(metrics) != len(_RUN_TASK_METRICS) or set(metrics) != _RUN_TASK_METRICS:
+            raise ValueError("behavior diff must contain each fixed metric exactly once")
         if self.changed and self.first_divergence is None:
             raise ValueError("changed behavior requires first divergence evidence")
+        if self.changed and self.verdict == "unchanged_failure":
+            raise ValueError("changed behavior cannot have an unchanged verdict")
         if not self.changed:
             if self.first_divergence is not None:
                 raise ValueError("unchanged behavior cannot report first divergence")
