@@ -26,6 +26,16 @@ COMMITMENT_FIELDS = (
     "holdout_commitment_sha256",
 )
 TABLE_NAMES = ("cases", "revisions", "runs", "ledger_events")
+TRANSACTIONAL_EVENT_TYPES = {
+    "CASE_CREATED",
+    "REVISION_CREATED",
+    "QUALIFICATION_RESERVED",
+    "QUALIFICATION_RECOVERING",
+    "QUALIFICATION_RECOVERED",
+    "QUALIFICATION_PASSED",
+    "QUALIFICATION_FAILED",
+    "PROMOTED",
+}
 
 
 class StorageError(Exception):
@@ -284,8 +294,6 @@ class ObjectStore:
     ) -> ObjectReference:
         if expected_sha256 is not None:
             _sha256(expected_sha256, "expected_sha256")
-        root_created = not self.root.exists()
-        hash_root_created = not self.hash_root.exists()
         self.hash_root.mkdir(parents=True, exist_ok=True)
         temporary_path: Path | None = None
         digest = hashlib.sha256()
@@ -307,7 +315,6 @@ class ObjectStore:
             if expected_sha256 is not None and actual != expected_sha256:
                 raise ObjectIntegrityError("object hash does not match expected digest")
             destination = self._path(actual)
-            shard_created = not destination.parent.exists()
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.exists():
                 if not destination.is_file():
@@ -322,13 +329,10 @@ class ObjectStore:
                 return ObjectReference(stored, stored_size)
             os.replace(temporary_path, destination)
             temporary_path = None
-            if shard_created:
-                self._fsync_directory(self.hash_root)
             self._fsync_directory(destination.parent)
-            if hash_root_created:
-                self._fsync_directory(self.hash_root.parent)
-            if root_created:
-                self._fsync_directory(self.root.parent)
+            self._fsync_directory(self.hash_root)
+            self._fsync_directory(self.root)
+            self._fsync_directory(self.root.parent)
             return ObjectReference(actual, size)
         except OSError as exc:
             raise ObjectIntegrityError("object publication failed") from exc
@@ -783,6 +787,8 @@ class EvidenceStore:
 
     def append_event(self, event: LedgerEventRecord) -> LedgerEvent:
         self._validate_event_record(event)
+        if event.event_type in TRANSACTIONAL_EVENT_TYPES:
+            raise ValidationError("event type requires its dedicated transaction API")
         with self._transaction() as connection:
             if connection.execute(
                 "SELECT 1 FROM cases WHERE case_id = ?", (event.case_id,)
@@ -826,18 +832,25 @@ class EvidenceStore:
 
     def _revision_matches(self, row: sqlite3.Row, revision: RevisionRecord) -> bool:
         values = dict(row)
-        return all(
-            values[field] == getattr(revision, field)
-            for field in (
-                "case_id",
-                "revision_id",
-                "parent_revision_id",
-                "ordinal",
-                "asset_sha256",
-                "patch_manifest_sha256",
-                "hypothesis_event_id",
+        return (
+            all(
+                values[field] == getattr(revision, field)
+                for field in (
+                    "case_id",
+                    "revision_id",
+                    "parent_revision_id",
+                    "ordinal",
+                    "asset_sha256",
+                    "patch_manifest_sha256",
+                    "hypothesis_event_id",
+                )
             )
-        ) and values["probe_run_id"] == revision.probe_run_id
+            and values["probe_run_id"] == revision.probe_run_id
+            and (
+                revision.created_at is None
+                or values["created_at"] == _timestamp(revision.created_at)
+            )
+        )
 
     def commit_revision_with_event(
         self,
@@ -852,6 +865,8 @@ class EvidenceStore:
             raise ValidationError("commit_revision_with_event requires a child revision")
         if event.case_id != revision.case_id or event.revision_id != revision.revision_id:
             raise ValidationError("revision and event identities do not match")
+        if event.event_type != "REVISION_CREATED":
+            raise ValidationError("revision transaction requires REVISION_CREATED")
         _id(expected_head_revision_id, "expected_head_revision_id")
         with self._transaction() as connection:
             case = connection.execute(
@@ -987,6 +1002,8 @@ class EvidenceStore:
             self._validate_event_record(event)
             if event.case_id != run.case_id or event.revision_id != run.revision_id:
                 raise ValidationError("run and event identities do not match")
+            if event.event_type in TRANSACTIONAL_EVENT_TYPES:
+                raise ValidationError("event type requires its dedicated transaction API")
         with self._transaction() as connection:
             if connection.execute(
                 "SELECT 1 FROM runs WHERE run_id = ?", (run.run_id,)
@@ -1430,6 +1447,8 @@ class EvidenceStore:
                 ):
                     raise IntegrityError("qualification terminal identity is invalid")
                 stored_result = terminal_event.payload.get("result")
+                if stored_result is not None and not isinstance(stored_result, Mapping):
+                    raise IntegrityError("qualification terminal result is invalid")
                 if (
                     existing.attempt_id == attempt_id
                     and existing.revision_id == revision_id
@@ -1437,6 +1456,12 @@ class EvidenceStore:
                     and existing.scenario_hashes == normalized
                     and case["qualification_result"] == state
                 ):
+                    if result_payload is not None and _json_text(result_payload) != _json_text(
+                        stored_result
+                    ):
+                        raise QualificationConflictError(
+                            "qualification terminal result is immutable"
+                        )
                     return QualificationAttempt(
                         case_id=existing.case_id,
                         attempt_id=existing.attempt_id,
@@ -1692,6 +1717,13 @@ class EvidenceStore:
     def verify_ledger(self) -> tuple[LedgerEvent, ...]:
         with self._read_connection() as connection:
             rows = connection.execute("SELECT * FROM ledger_events ORDER BY seq").fetchall()
+            sequence = connection.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'ledger_events'"
+            ).fetchone()
+        expected_last_seq = sequence["seq"] if sequence is not None else 0
+        actual_last_seq = rows[-1]["seq"] if rows else 0
+        if len(rows) != expected_last_seq or actual_last_seq != expected_last_seq:
+            raise IntegrityError("ledger event tail is missing")
         previous = ZERO_HASH
         events: list[LedgerEvent] = []
         for row in rows:

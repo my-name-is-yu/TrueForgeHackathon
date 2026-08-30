@@ -201,12 +201,37 @@ def test_object_store_syncs_new_shard_and_hash_root_parent(
 
     hash_root = tmp_path / "objects" / "sha256"
     shard = hash_root / digest[:2]
-    assert hash_root in synchronized
-    assert shard in synchronized
-    assert hash_root.parent in synchronized
-    assert synchronized.index(hash_root) < synchronized.index(shard)
-    assert (tmp_path / "objects").parent in synchronized
-    assert synchronized.index(hash_root.parent) < synchronized.index((tmp_path / "objects").parent)
+    assert synchronized == [
+        shard,
+        hash_root,
+        hash_root.parent,
+        hash_root.parent.parent,
+    ]
+
+
+def test_new_object_syncs_ancestors_even_when_they_already_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    object_store = ObjectStore(tmp_path / "objects")
+    object_store.hash_root.mkdir(parents=True)
+    synchronized: list[Path] = []
+    monkeypatch.setattr(
+        object_store,
+        "_fsync_directory",
+        lambda path: synchronized.append(path),
+    )
+
+    payload = b"publisher observed a concurrently created object root"
+    digest = hashlib.sha256(payload).hexdigest()
+    object_store.put_bytes(payload, expected_sha256=digest)
+
+    hash_root = tmp_path / "objects" / "sha256"
+    assert synchronized == [
+        hash_root / digest[:2],
+        hash_root,
+        hash_root.parent,
+        hash_root.parent.parent,
+    ]
 
 
 def test_concurrent_object_publication_syncs_existing_destination(
@@ -292,6 +317,39 @@ def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
         )
     )
     assert store.ledger_events("case-1")[-1].artifact_refs == (valid_reference,)
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "CASE_CREATED",
+        "REVISION_CREATED",
+        "QUALIFICATION_RESERVED",
+        "QUALIFICATION_RECOVERING",
+        "QUALIFICATION_RECOVERED",
+        "QUALIFICATION_PASSED",
+        "QUALIFICATION_FAILED",
+        "PROMOTED",
+    ],
+)
+def test_generic_append_rejects_transaction_owned_events(
+    tmp_path: Path, event_type: str
+) -> None:
+    store = make_store(tmp_path)
+    before = store.ledger_events("case-1")
+
+    with pytest.raises(ValidationError):
+        store.append_event(
+            LedgerEventRecord(
+                event_id=f"evt-bypass-{event_type.lower()}",
+                case_id="case-1",
+                revision_id="r000",
+                event_type=event_type,
+                payload={},
+            )
+        )
+
+    assert store.ledger_events("case-1") == before
 
 
 def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) -> None:
@@ -403,7 +461,7 @@ def test_revision_retry_rejects_changed_ledger_event(
         "created_at": persisted.created_at,
     }
     supplied[field] = value
-    with pytest.raises(IntegrityError):
+    with pytest.raises((IntegrityError, ValidationError)):
         store.commit_revision_with_event(
             revision=child,
             event=LedgerEventRecord(
@@ -439,6 +497,36 @@ def test_revision_retry_accepts_omitted_generated_event_metadata(tmp_path: Path)
         ),
         expected_head_revision_id="r001",
     ) == child
+
+
+def test_revision_retry_rejects_changed_explicit_timestamp(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    child = store.get_revision("case-1", "r001")
+
+    with pytest.raises(RevisionConflictError):
+        store.commit_revision_with_event(
+            revision=RevisionRecord(
+                case_id=child.case_id,
+                revision_id=child.revision_id,
+                parent_revision_id=child.parent_revision_id,
+                ordinal=child.ordinal,
+                asset_sha256=child.asset_sha256,
+                patch_manifest_sha256=child.patch_manifest_sha256,
+                hypothesis_event_id=child.hypothesis_event_id,
+                probe_run_id=child.probe_run_id,
+                created_at="changed-time",
+            ),
+            event=LedgerEventRecord(
+                event_id="evt-revision-r001",
+                case_id="case-1",
+                revision_id="r001",
+                event_type="REVISION_CREATED",
+                payload={"asset_sha256": "2" * 64},
+            ),
+            expected_head_revision_id="r001",
+        )
 
 
 def test_child_revision_requires_probe_run(tmp_path: Path) -> None:
@@ -505,6 +593,22 @@ def test_event_chain_detects_mutation_and_restores_state(tmp_path: Path) -> None
         store.restore_state("case-1")
 
 
+def test_event_chain_detects_tail_deletion(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            "DELETE FROM ledger_events WHERE seq = (SELECT MAX(seq) FROM ledger_events)"
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="tail is missing"):
+        store.verify_ledger()
+    with pytest.raises(IntegrityError, match="tail is missing"):
+        store.restore_state("case-1")
+
+
 def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
@@ -545,6 +649,12 @@ def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_pat
     assert store.record_qualification_terminal(**identity, state="PASSED").result == terminal.result
     with pytest.raises(Exception):
         store.record_qualification_terminal(**identity, state="FAILED")
+    with pytest.raises(Exception):
+        store.record_qualification_terminal(
+            **identity,
+            state="PASSED",
+            result={"qualified_core_sha256": "0" * 64, "passed": 999},
+        )
     with pytest.raises(Exception):
         store.reserve_qualification(
             case_id="case-1",
