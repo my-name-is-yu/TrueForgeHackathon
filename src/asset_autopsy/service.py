@@ -70,6 +70,7 @@ from .schemas import (
     SegmentBoundary,
     VerifyRevisionInput,
     VerifyRevisionOutput,
+    validate_experiment_trace_contract,
 )
 from .storage import (
     CaseAlreadyExistsError,
@@ -523,12 +524,27 @@ class AssetAutopsyService:
             trace_sha = None
             snapshot = None
             if bad_step is None:
-                trace = resample_experiment_trace(
-                    physics,
-                    observables=value.observables,
-                    joint_names=self.fixture.joint_names,
-                    actuator_names=self.fixture.actuator_names,
-                )
+                try:
+                    trace = resample_experiment_trace(
+                        physics,
+                        observables=value.observables,
+                        joint_names=self.fixture.joint_names,
+                        actuator_names=self.fixture.actuator_names,
+                    )
+                    trace = validate_experiment_trace_contract(
+                        trace,
+                        observables=value.observables,
+                        joint_names=self.fixture.joint_names,
+                        actuator_names=self.fixture.actuator_names,
+                    )
+                except ValueError:
+                    raise self._error(
+                        request_id,
+                        "SIMULATION_RESULT_INVALID",
+                        "The experiment returned an invalid numeric result.",
+                        False,
+                        "Start a fresh case after checking the pinned simulation runtime.",
+                    ) from None
                 trace_bytes = canonical_json_bytes(trace.model_dump(mode="json"))
                 trace_ref, trace_internal = self._store_artifact(
                     trace_bytes,

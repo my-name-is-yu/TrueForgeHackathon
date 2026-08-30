@@ -7,21 +7,16 @@ from typing import Any, Iterable, Mapping, Sequence
 from .fixture import JOINT_RANGE_RAD, PublicScenario
 from .runner import RunRecord
 from .schemas import (
-    ActuatorControlTraceColumn,
     BodyPositionObservable,
-    BodyPositionTraceColumn,
     ContactCountObservable,
-    ContactCountTraceColumn,
     EnergyObservable,
-    EnergyTraceColumn,
     ExperimentObservable,
     ExperimentTrace,
-    JointTraceColumn,
     MetricObservation,
     QposObservable,
     QvelObservable,
-    TimeTraceColumn,
     TracePoint,
+    experiment_trace_columns,
     experiment_trace_value_key,
 )
 from .task_evaluation import PASS_LIMITS, TASK_METRIC_ORDER, TaskEvaluation
@@ -214,24 +209,22 @@ def resample_experiment_trace(
         raise ValueError("non-finite experiments cannot be resampled")
     source_times = tuple(float(row["t"]) for row in rows)
     sample_times = _sample_times(rows, 256)
-    columns: list[Any] = [TimeTraceColumn(kind="time")]
+    columns = list(
+        experiment_trace_columns(
+            observables=observables,
+            joint_names=joint_names,
+            actuator_names=actuator_names,
+        )
+    )
     extractors: list[tuple[str, Any]] = []
     for observable in observables:
         if isinstance(observable, QposObservable):
-            for index, name in enumerate(joint_names):
-                columns.append(JointTraceColumn(kind="qpos", joint_name=name))
+            for index, _ in enumerate(joint_names):
                 extractors.append(("linear", lambda row, i=index: (row["qpos"][i],)))
         elif isinstance(observable, QvelObservable):
-            for index, name in enumerate(joint_names):
-                columns.append(JointTraceColumn(kind="qvel", joint_name=name))
+            for index, _ in enumerate(joint_names):
                 extractors.append(("linear", lambda row, i=index: (row["qvel"][i],)))
         elif isinstance(observable, EnergyObservable):
-            columns.extend(
-                (
-                    EnergyTraceColumn(kind="energy", component="potential"),
-                    EnergyTraceColumn(kind="energy", component="kinetic"),
-                )
-            )
             extractors.extend(
                 (
                     ("linear", lambda row: (row["E_pot"],)),
@@ -239,23 +232,16 @@ def resample_experiment_trace(
                 )
             )
         elif isinstance(observable, ContactCountObservable):
-            columns.append(ContactCountTraceColumn(kind="contact_count"))
             extractors.append(("zoh", lambda row: (row["ncon"],)))
         elif isinstance(observable, BodyPositionObservable):
-            for axis_index, axis in enumerate(("x", "y", "z")):
-                columns.append(
-                    BodyPositionTraceColumn(
-                        kind="body_position", body_name=observable.body_name, axis=axis
-                    )
-                )
+            for axis_index in range(3):
                 key = f"body_xpos:{observable.body_name}"
                 extractors.append(
                     ("linear", lambda row, i=axis_index, k=key: (row[k][i],))
                 )
         else:
             raise ValueError("unsupported experiment observable")
-    for index, name in enumerate(actuator_names):
-        columns.append(ActuatorControlTraceColumn(kind="control", actuator_name=name))
+    for index, _ in enumerate(actuator_names):
         extractors.append(("zoh", lambda row, i=index: (row["ctrl"][i],)))
 
     output_rows: list[dict[str, Any]] = []

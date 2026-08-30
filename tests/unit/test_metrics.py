@@ -13,6 +13,7 @@ from asset_autopsy.schemas import (
     ContactCountObservable,
     QposObservable,
     RunTaskOutput,
+    validate_experiment_trace_contract,
 )
 from asset_autopsy.task_evaluation import TASK_METRIC_ORDER
 
@@ -134,3 +135,18 @@ def test_experiment_resampling_is_uniform_and_uses_zoh_for_control_and_contacts(
     assert trace.rows[127].values["control:motor_a"] == 0.1
     assert trace.rows[128].values["control:motor_a"] == -0.1
     assert trace.rows[-1].values["control:motor_a"] == -0.1
+    assert (
+        validate_experiment_trace_contract(
+            trace,
+            observables=(
+                QposObservable(kind="qpos"),
+                ContactCountObservable(kind="contact_count"),
+                BodyPositionObservable(
+                    kind="body_position", body_name="end_effector"
+                ),
+            ),
+            joint_names=("joint_a", "joint_b", "joint_c"),
+            actuator_names=("motor_a", "motor_b", "motor_c"),
+        )
+        == trace
+    )

@@ -1007,6 +1007,83 @@ def test_nonfinite_experiment_is_a_sanitized_budget_consuming_domain_outcome(
     assert opened.remaining_budgets.experiments_remaining == 4
 
 
+@pytest.mark.parametrize(
+    "violation",
+    ["swapped_controls", "missing_observable", "extra_field", "duplicate_field"],
+)
+def test_service_rejects_trace_fields_unbound_from_the_accepted_experiment(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, violation: str
+) -> None:
+    from asset_autopsy.metrics import resample_experiment_trace as real_resample
+
+    def unbound_trace(*args, **kwargs):
+        trace = real_resample(*args, **kwargs)
+        payload = trace.model_dump(mode="python")
+        columns = payload["columns"]
+        rows = payload["rows"]
+        if violation == "swapped_controls":
+            columns[-2], columns[-1] = columns[-1], columns[-2]
+        elif violation == "missing_observable":
+            columns[:] = [
+                column for column in columns if column.get("kind") != "qvel"
+            ]
+            for row in rows:
+                row["values"] = {
+                    key: item
+                    for key, item in row["values"].items()
+                    if not key.startswith("qvel:")
+                }
+        elif violation == "extra_field":
+            columns.insert(-3, {"kind": "energy", "component": "potential"})
+            for row in rows:
+                row["values"]["energy:potential"] = 0.0
+        else:
+            duplicate_columns = list(trace.columns)
+            duplicate_columns.insert(1, duplicate_columns[1])
+            return trace.model_copy(update={"columns": duplicate_columns})
+        return type(trace).model_validate(payload)
+
+    monkeypatch.setattr(
+        "asset_autopsy.service.resample_experiment_trace", unbound_trace
+    )
+    service = AssetAutopsyService(tmp_path, runner=DeterministicFakeRunner())
+    run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id="r000",
+                scenario_id="public_center",
+                capture="metrics",
+            )
+        )
+    )
+
+    with pytest.raises(DomainError) as caught:
+        run(
+            service.run_experiment(
+                experiment(
+                    "r000",
+                    hypothesis("joint_b", "axis", "joint_c", "damping"),
+                )
+            )
+        )
+
+    assert caught.value.code == "SIMULATION_RESULT_INVALID"
+    events = service.store.ledger_events(CASE_ID)
+    assert not any(
+        event.event_type in {"EXPERIMENT_COMPLETED", "EXPERIMENT_FAILED"}
+        for event in events
+    )
+    assert not any(
+        reference["kind"] == "trace_json"
+        for event in events
+        for reference in event.artifact_refs
+    )
+    opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
+    assert opened.remaining_budgets.runs_remaining == 9
+    assert opened.remaining_budgets.experiments_remaining == 5
+
+
 def test_upstream_failure_before_first_completed_segment_consumes_no_budget(
     tmp_path,
 ) -> None:
@@ -1044,8 +1121,15 @@ def test_upstream_failure_before_first_completed_segment_consumes_no_budget(
 
 
 def test_partial_experiment_failure_persists_bounded_evidence_and_budget_after_restart(
-    tmp_path,
+    tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    def reject_complete_trace(*args, **kwargs):
+        raise AssertionError("partial failures must not validate a complete trace")
+
+    monkeypatch.setattr(
+        "asset_autopsy.service.validate_experiment_trace_contract",
+        reject_complete_trace,
+    )
     service = AssetAutopsyService(
         tmp_path, runner=UpstreamFailingExperimentRunner(completed_segments=1)
     )
