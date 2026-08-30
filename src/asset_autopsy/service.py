@@ -727,6 +727,18 @@ class AssetAutopsyService:
                     False,
                     "Inspect the authored value and submit one permitted attribute change.",
                 ) from None
+            try:
+                patched_valid = await self.runner.validate(patched.xml.decode("utf-8"))
+            except UpstreamToolError as exc:
+                raise self._upstream_error(request_id, exc) from None
+            if not patched_valid:
+                raise self._error(
+                    request_id,
+                    "PATCHED_ASSET_INVALID",
+                    "The patched asset was rejected by the pinned simulation runtime.",
+                    False,
+                    "Revise the proposed attribute value and retry from the same base revision.",
+                )
             child_id = f"r{base.ordinal + 1:03d}"
             canonical_diff = CanonicalDiffEntry(
                 target=value.patch.target.name,

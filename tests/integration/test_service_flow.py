@@ -12,6 +12,7 @@ from asset_autopsy.mujoco_client import (
     UPSTREAM_TIMEOUT,
     UpstreamToolError,
 )
+from asset_autopsy.patcher import apply_one_attribute_patch
 from asset_autopsy.runner import PartialRunError, RunRecord, SegmentRecord
 from asset_autopsy.schemas import (
     ActuatorControl,
@@ -40,6 +41,17 @@ from asset_autopsy.service import AssetAutopsyService, DomainError
 
 
 class DeterministicFakeRunner:
+    def __init__(self) -> None:
+        self.validation_result = True
+        self.validation_error: Exception | None = None
+        self.validated_xml: list[str] = []
+
+    async def validate(self, xml_string: str) -> bool:
+        self.validated_xml.append(xml_string)
+        if self.validation_error is not None:
+            raise self.validation_error
+        return self.validation_result
+
     async def run(self, configuration):
         root = ET.fromstring(configuration.xml_string)
         joints = {joint.attrib["name"]: joint for joint in root.findall(".//joint")}
@@ -114,6 +126,7 @@ class NonfiniteExperimentRunner(DeterministicFakeRunner):
 
 class UpstreamFailingExperimentRunner(DeterministicFakeRunner):
     def __init__(self, completed_segments: int) -> None:
+        super().__init__()
         self.completed_segments = completed_segments
 
     async def run(self, configuration):
@@ -207,6 +220,159 @@ def multi_segment_experiment(revision_id: str, claim: Hypothesis) -> RunExperime
 
 def run(coroutine):
     return asyncio.run(coroutine)
+
+
+def prepare_axis_revision(service: AssetAutopsyService) -> CreateRevisionInput:
+    opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
+    run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id="r000",
+                scenario_id="public_center",
+                capture="metrics",
+            )
+        )
+    )
+    basis = run(
+        service.run_experiment(
+            experiment(
+                "r000",
+                hypothesis("joint_b", "axis", "joint_c", "damping"),
+            )
+        )
+    )
+    return CreateRevisionInput(
+        case_id=CASE_ID,
+        base_revision_id="r000",
+        expected_base_sha256=opened.original_asset_sha256,
+        basis_hypothesis_id=basis.hypothesis_id,
+        basis_experiment_run_id=basis.run_id,
+        patch=AxisPatch(
+            target=PatchTarget(kind="joint", name="joint_b"),
+            attribute="axis",
+            expected_old_value=(0.0, 0.0, 1.0),
+            new_value=(0.0, 1.0, 0.0),
+        ),
+        rationale="The registered direction experiment separates the axis explanation.",
+        expected_effect=ExpectedEffect(
+            scenario_id="public_center",
+            predicates=[Predicate(metric="hold_error_p95_m", op="lt", value=0.03)],
+        ),
+    )
+
+
+def service_state(service: AssetAutopsyService) -> dict[str, object]:
+    def files(root) -> dict[str, bytes]:
+        if not root.exists():
+            return {}
+        return {
+            str(path.relative_to(root)): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+    opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
+    case = service.store.get_case(CASE_ID)
+    return {
+        "head": case.head_revision_id,
+        "revisions": service.store.list_revisions(CASE_ID),
+        "ledger": service.store.ledger_events(CASE_ID),
+        "budgets": opened.remaining_budgets.model_dump(),
+        "objects": files(service.store.objects.root),
+        "publication_receipts": service.publication_receipt_count,
+        "published_bundles": service.published_bundle_count,
+        "public_artifacts": service.public_artifact_count,
+        "publication_files": files(service.publisher.root),
+    }
+
+
+def expected_patched_xml(
+    service: AssetAutopsyService, request: CreateRevisionInput
+) -> str:
+    return apply_one_attribute_patch(
+        base_xml=service.store.objects.read_bytes(request.expected_base_sha256),
+        expected_base_sha256=request.expected_base_sha256,
+        patch=request.patch,
+    ).xml.decode("utf-8")
+
+
+def test_compile_rejection_preserves_all_revision_state_and_validates_exact_bytes(
+    tmp_path,
+) -> None:
+    runner = DeterministicFakeRunner()
+    runner.validation_result = False
+    service = AssetAutopsyService(tmp_path, runner=runner)
+    request = prepare_axis_revision(service)
+    expected_xml = expected_patched_xml(service, request)
+    before = service_state(service)
+
+    with pytest.raises(DomainError) as caught:
+        run(service.create_revision(request))
+
+    assert caught.value.code == "PATCHED_ASSET_INVALID"
+    assert caught.value.safe_message == (
+        "The patched asset was rejected by the pinned simulation runtime."
+    )
+    assert caught.value.retryable is False
+    assert runner.validated_xml == [expected_xml]
+    assert service_state(service) == before
+
+
+def test_valid_compile_creates_one_revision_and_committed_retry_skips_validation(
+    tmp_path,
+) -> None:
+    runner = DeterministicFakeRunner()
+    service = AssetAutopsyService(tmp_path, runner=runner)
+    request = prepare_axis_revision(service)
+    expected_xml = expected_patched_xml(service, request)
+
+    created = run(service.create_revision(request))
+
+    assert created.status == "created"
+    assert created.revision_id == "r001"
+    assert runner.validated_xml == [expected_xml]
+    assert [revision.revision_id for revision in service.store.list_revisions(CASE_ID)] == [
+        "r000",
+        "r001",
+    ]
+    assert sum(
+        event.event_type == "REVISION_CREATED"
+        for event in service.store.ledger_events(CASE_ID)
+    ) == 1
+
+    runner.validation_error = AssertionError("committed retry revalidated upstream")
+    retried = run(service.create_revision(request))
+
+    assert retried.status == "already_exists"
+    assert retried.revision_id == "r001"
+    assert runner.validated_xml == [expected_xml]
+
+
+def test_transient_compile_failure_preserves_primary_upstream_failure_and_state(
+    tmp_path,
+) -> None:
+    runner = DeterministicFakeRunner()
+    runner.validation_error = UpstreamToolError(
+        UPSTREAM_TIMEOUT,
+        "private compiler timeout at /tmp/secret.xml",
+        True,
+        SAFE_NEXT_ACTION,
+    )
+    service = AssetAutopsyService(tmp_path, runner=runner)
+    request = prepare_axis_revision(service)
+    expected_xml = expected_patched_xml(service, request)
+    before = service_state(service)
+
+    with pytest.raises(DomainError) as caught:
+        run(service.create_revision(request))
+
+    assert caught.value.code == UPSTREAM_TIMEOUT
+    assert caught.value.retryable is True
+    assert "private" not in caught.value.safe_message
+    assert "secret" not in caught.value.safe_message
+    assert runner.validated_xml == [expected_xml]
+    assert service_state(service) == before
 
 
 def test_full_two_revision_service_flow_qualifies_and_direct_publication_emits_one_bundle(

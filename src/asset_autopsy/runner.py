@@ -248,6 +248,10 @@ class DeterministicRunner:
     def __init__(self, client: PinnedMujocoClient | None = None) -> None:
         self.client = client or PinnedMujocoClient()
 
+    async def validate(self, xml_string: str) -> bool:
+        async with self.client:
+            return await self.client.validate(xml_string)
+
     async def run(self, configuration: RunConfiguration) -> RunRecord:
         async with self.client:
             return await self._run(configuration)

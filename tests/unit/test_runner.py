@@ -79,6 +79,32 @@ def configuration() -> RunConfiguration:
     )
 
 
+def test_validation_uses_the_runner_client_boundary_without_loading_a_slot() -> None:
+    class ValidationClient:
+        def __init__(self) -> None:
+            self.entered = 0
+            self.exited = 0
+            self.validated: list[str] = []
+
+        async def __aenter__(self):
+            self.entered += 1
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _tb) -> None:
+            self.exited += 1
+
+        async def validate(self, xml_string: str) -> bool:
+            self.validated.append(xml_string)
+            return False
+
+    client = ValidationClient()
+    xml = '<mujoco model="patched"><worldbody/></mujoco>'
+
+    assert asyncio.run(DeterministicRunner(client).validate(xml)) is False
+    assert client.validated == [xml]
+    assert client.entered == client.exited == 1
+
+
 def test_failure_before_the_first_completed_segment_has_no_partial_record() -> None:
     client = SegmentFailureClient(fail_on_call=1)
 

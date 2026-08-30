@@ -178,6 +178,8 @@ class _FakeSession:
                 isError=False,
                 content=[SimpleNamespace(type="text", text=" " * 5_000)],
             )
+        if name == "validate_mjcf":
+            return _text_result({"valid": True, "errors": [], "warnings": []})
         if name == "sim_load":
             nq = self.nq
             nv = self.nv
@@ -570,6 +572,56 @@ def test_client_uses_only_xml_string_and_poisoned_slots_cannot_be_reused() -> No
         assert slot.state is SlotState.CLOSED
         assert transport.closed is True
         assert get_session().closed is True
+
+    asyncio.run(check())
+
+
+def test_client_validates_exact_xml_and_discards_private_diagnostics() -> None:
+    async def check() -> None:
+        class RejectingValidationSession(_FakeSession):
+            async def call_tool(
+                self, name: str, *, arguments: dict[str, object]
+            ) -> SimpleNamespace:
+                if name != "validate_mjcf":
+                    return await super().call_tool(name, arguments=arguments)
+                self.calls.append((name, arguments))
+                return _text_result(
+                    {
+                        "valid": False,
+                        "errors": [
+                            {
+                                "rule": "mujoco_compile",
+                                "element": "model",
+                                "message": "private compiler traceback /tmp/secret.xml",
+                            }
+                        ],
+                        "warnings": [
+                            {
+                                "rule": "private_warning",
+                                "element": "host",
+                                "message": "private warning detail",
+                            }
+                        ],
+                    }
+                )
+
+        transport = _FakeTransport()
+        session: RejectingValidationSession | None = None
+
+        def make_session(read: object, write: object) -> RejectingValidationSession:
+            nonlocal session
+            session = RejectingValidationSession(read, write)
+            return session
+
+        xml = '<mujoco model="patched"><worldbody/></mujoco>'
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            assert await client.validate(xml) is False
+
+        assert session is not None
+        assert session.calls == [("validate_mjcf", {"xml_string": xml})]
 
     asyncio.run(check())
 
@@ -1313,6 +1365,27 @@ def test_timeout_preserves_timeout_code_when_cleanup_fails() -> None:
             assert caught.value.code == UPSTREAM_TIMEOUT
             assert client.ready is False
             assert session is not None and session.closed is True
+
+    asyncio.run(check())
+
+
+@pytest.mark.phase0_upstream
+def test_real_client_validation_returns_only_the_compile_decision() -> None:
+    from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+    valid = """<mujoco model="valid">
+      <worldbody>
+        <body><joint name="j" type="hinge" axis="0 0 1"/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>"""
+    invalid = valid.replace('axis="0 0 1"', 'axis="0 0 0"')
+
+    async def check() -> None:
+        runner = DeterministicRunner(PinnedMujocoClient(no_render=True))
+        assert await runner.validate(valid) is True
+        assert await runner.validate(invalid) is False
 
     asyncio.run(check())
 

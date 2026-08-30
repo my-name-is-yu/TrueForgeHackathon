@@ -449,6 +449,28 @@ def _matches_status(payload: dict[str, Any], status: str) -> bool:
     )
 
 
+def _matches_validation(payload: dict[str, Any]) -> bool:
+    if set(payload) != {"valid", "errors", "warnings"}:
+        return False
+    if type(payload["valid"]) is not bool:
+        return False
+    for field in ("errors", "warnings"):
+        diagnostics = payload[field]
+        if type(diagnostics) is not list or len(diagnostics) > 256:
+            return False
+        if not all(
+            isinstance(diagnostic, dict)
+            and set(diagnostic) == {"rule", "element", "message"}
+            and all(
+                isinstance(diagnostic[name], str)
+                for name in ("rule", "element", "message")
+            )
+            for diagnostic in diagnostics
+        ):
+            return False
+    return payload["valid"] == (not payload["errors"])
+
+
 def _numeric_vector(value: Any, width: int) -> bool:
     return (
         type(value) is list
@@ -1010,6 +1032,25 @@ class PinnedMujocoClient:
             raise
         slot.state = SlotState.READY
         return slot
+
+    async def validate(self, xml_string: str) -> bool:
+        if (
+            not isinstance(xml_string, str)
+            or not xml_string
+            or len(xml_string.encode("utf-8")) > MAX_XML_BYTES
+        ):
+            raise ValueError("xml_string is invalid")
+        result = await self._invoke(
+            None,
+            "validate_mjcf",
+            {"xml_string": xml_string},
+        )
+        payload = normalize_json_result(
+            result,
+            _matches_validation,
+            max_text_chars=64 * 1024,
+        )
+        return payload["valid"]
 
     async def reset(self, slot: SimulationSlot) -> None:
         async with slot._operation_lock:
