@@ -528,7 +528,7 @@ On success it returns:
 - public pass count;
 - hidden aggregate pass count and violated clause IDs only;
 - no hidden mean, worst value, target, seed, control, scenario ID, or trace;
-- a server-recorded, digest-bound promotion ticket containing a human-readable canonical diff, public/holdout counts, exact revision hash, fixed export name, and qualified-core hash.
+- a server-recorded, digest-bound promotion ticket containing the cumulative root-to-qualified canonical diff, public/holdout counts, exact revision hash, fixed export name, and qualified-core hash. SC1 qualification requires exactly two child revisions; each individual revision stores a canonical diff of exactly one attribute, while the promotion ticket contains both entries in lineage order.
 
 The holdout is three scenarios and requires 3/3. Qualification is one case-level attempt. RUNNING commits the attempt ID, revision, suite commitment, and exact scenario hashes before execution. No partial result is agent-visible. An infrastructure interruption fails closed: no partial hidden result or ticket is exposed, the case cannot auto-recover or retry, and a new attempt requires a fresh pre-provisioned case. A repeated call after a terminal result returns the stored result; any attempt to qualify another revision is rejected. A completed failure creates no ticket and ends qualification for that case.
 
@@ -546,7 +546,10 @@ Input:
     "case_id":"case_compound_arm_01",
     "revision_id":"r002",
     "asset_sha256":"...",
-    "canonical_diff":[{"target":"joint_b","attribute":"...","before":"...","after":"..."}],
+    "canonical_diff":[
+      {"revision_id":"r001","target":"joint_a","attribute":"...","before":"...","after":"..."},
+      {"revision_id":"r002","target":"joint_b","attribute":"...","before":"...","after":"..."}
+    ],
     "public_result":{"passed":1,"total":1},
     "holdout_result":{"passed":3,"total":3},
     "export_name":"compound-arm-01-repaired",
