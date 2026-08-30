@@ -20,6 +20,7 @@ from asset_autopsy.storage import (
     RevisionConflictError,
     RevisionRecord,
     RunRecord,
+    StorageError,
     ValidationError,
     canonical_json_bytes,
 )
@@ -468,10 +469,11 @@ def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
             )
 
     assert store.ledger_events("case-1") == before
+    published = store.objects.put_bytes(b"x")
     valid_reference = {
-        "sha256": "f" * 64,
+        "sha256": published.sha256,
         "kind": "trace",
-        "size": 1,
+        "size": published.bytes,
         "media_type": "text/plain",
     }
     store.append_event(
@@ -485,6 +487,177 @@ def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
         )
     )
     assert store.ledger_events("case-1")[-1].artifact_refs == (valid_reference,)
+
+
+@pytest.mark.parametrize("failure", ["missing", "wrong_hash", "wrong_size"])
+def test_event_artifact_reference_must_match_stored_object(
+    tmp_path: Path, failure: str
+) -> None:
+    store = make_store(tmp_path)
+    payload = b"expected"
+    digest = hashlib.sha256(payload).hexdigest()
+    size = len(payload)
+    if failure == "wrong_hash":
+        path = store.objects.path_for(digest)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"corrupt!")
+    elif failure == "wrong_size":
+        store.objects.put_bytes(payload)
+        size += 1
+    before = store.ledger_events("case-1")
+
+    with pytest.raises(ObjectIntegrityError):
+        store.append_event(
+            LedgerEventRecord(
+                event_id=f"evt-{failure}-artifact",
+                case_id="case-1",
+                revision_id="r000",
+                event_type="EVIDENCE_RECORDED",
+                payload={},
+                artifact_refs=(
+                    {
+                        "sha256": digest,
+                        "kind": "trace",
+                        "size": size,
+                        "media_type": "application/octet-stream",
+                    },
+                ),
+            )
+        )
+
+    assert store.ledger_events("case-1") == before
+
+
+def test_record_run_accepts_a_valid_artifact_reference(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    published = store.objects.put_bytes(b"trace")
+    reference = {
+        "sha256": published.sha256,
+        "kind": "trace",
+        "size": published.bytes,
+        "media_type": "application/octet-stream",
+    }
+
+    run = store.record_run(
+        run=RunRecord(
+            run_id="run-with-artifact",
+            case_id="case-1",
+            revision_id="r000",
+            run_kind="probe",
+            probe_kind="joint_pulse",
+            condition_hash="condition-artifact",
+            execution_fingerprint="execution-artifact",
+            trace_sha256=published.sha256,
+            passed=True,
+        ),
+        event=LedgerEventRecord(
+            event_id="evt-run-with-artifact",
+            case_id="case-1",
+            revision_id="r000",
+            event_type="RUN_RECORDED",
+            payload={"run_id": "run-with-artifact"},
+            artifact_refs=(reference,),
+        ),
+    )
+
+    assert run.run_id == "run-with-artifact"
+    assert store.ledger_events("case-1")[-1].artifact_refs == (reference,)
+
+
+def test_record_run_missing_artifact_rolls_back_run_and_ledger(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    missing_digest = hashlib.sha256(b"missing").hexdigest()
+    before = store.ledger_events("case-1")
+
+    with pytest.raises(ObjectIntegrityError):
+        store.record_run(
+            run=RunRecord(
+                run_id="run-missing-artifact",
+                case_id="case-1",
+                revision_id="r000",
+                run_kind="probe",
+                probe_kind="joint_pulse",
+                condition_hash="condition-missing",
+                execution_fingerprint="execution-missing",
+                trace_sha256=missing_digest,
+                passed=False,
+            ),
+            event=LedgerEventRecord(
+                event_id="evt-run-missing-artifact",
+                case_id="case-1",
+                revision_id="r000",
+                event_type="RUN_RECORDED",
+                payload={"run_id": "run-missing-artifact"},
+                artifact_refs=(
+                    {
+                        "sha256": missing_digest,
+                        "kind": "trace",
+                        "size": len(b"missing"),
+                        "media_type": "application/octet-stream",
+                    },
+                ),
+            ),
+        )
+
+    with pytest.raises(StorageError, match="run was not found"):
+        store.get_run("run-missing-artifact")
+    assert store.ledger_events("case-1") == before
+
+
+@pytest.mark.parametrize("artifact_exists", [False, True])
+def test_revision_commit_validates_artifact_before_mutation(
+    tmp_path: Path, artifact_exists: bool
+) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    payload = b"patch"
+    digest = hashlib.sha256(payload).hexdigest()
+    if artifact_exists:
+        store.objects.put_bytes(payload)
+    revision = RevisionRecord(
+        case_id="case-1",
+        revision_id="r001",
+        parent_revision_id="r000",
+        ordinal=1,
+        asset_sha256="2" * 64,
+        patch_manifest_sha256="3" * 64,
+        hypothesis_event_id="evt-hypothesis-1",
+        probe_run_id="run-probe-1",
+    )
+    reference = {
+        "sha256": digest,
+        "kind": "patch-manifest",
+        "size": len(payload),
+        "media_type": "application/json",
+    }
+    event = LedgerEventRecord(
+        event_id="evt-revision-r001",
+        case_id="case-1",
+        revision_id="r001",
+        event_type="REVISION_CREATED",
+        payload=revision_event_payload(revision, store.get_run("run-probe-1")),
+        artifact_refs=(reference,),
+    )
+    before = store.ledger_events("case-1")
+
+    if artifact_exists:
+        assert store.commit_revision_with_event(
+            revision=revision,
+            event=event,
+            expected_head_revision_id="r000",
+        ).revision_id == "r001"
+        assert store.ledger_events("case-1")[-1].artifact_refs == (reference,)
+    else:
+        with pytest.raises(ObjectIntegrityError):
+            store.commit_revision_with_event(
+                revision=revision,
+                event=event,
+                expected_head_revision_id="r000",
+            )
+        with pytest.raises(StorageError, match="revision was not found"):
+            store.get_revision("case-1", "r001")
+        assert store.get_case("case-1").head_revision_id == "r000"
+        assert store.ledger_events("case-1") == before
 
 
 @pytest.mark.parametrize(

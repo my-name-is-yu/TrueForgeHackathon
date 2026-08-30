@@ -737,6 +737,14 @@ class EvidenceStore:
         _id(request_id, "request_id")
         return request_id, payload_json, artifact_refs_json
 
+    def _validate_artifact_objects(
+        self, artifact_refs: Sequence[Mapping[str, Any]]
+    ) -> None:
+        for reference in artifact_refs:
+            data = self.objects.read_bytes(reference["sha256"])
+            if len(data) != reference["size"]:
+                raise ObjectIntegrityError("object size does not match artifact reference")
+
     @classmethod
     def _append_event(
         cls,
@@ -1039,6 +1047,7 @@ class EvidenceStore:
                 (event.case_id, event.revision_id),
             ).fetchone() is None:
                 raise StorageError("revision was not found")
+            self._validate_artifact_objects(event.artifact_refs)
             return self._append_event(connection, event)
 
     append_ledger_event = append_event
@@ -1125,6 +1134,7 @@ class EvidenceStore:
             if case is None:
                 raise CaseNotFoundError("case was not found")
             self._validate_case_lifecycle_from_connection(connection, revision.case_id)
+            self._validate_artifact_objects(event.artifact_refs)
             existing = connection.execute(
                 """
                 SELECT * FROM revisions
@@ -1262,6 +1272,8 @@ class EvidenceStore:
             self._validate_generic_event_type(event.event_type)
         with self._transaction() as connection:
             self._validate_case_lifecycle_from_connection(connection, run.case_id)
+            if event is not None:
+                self._validate_artifact_objects(event.artifact_refs)
             if connection.execute(
                 "SELECT 1 FROM runs WHERE run_id = ?", (run.run_id,)
             ).fetchone() is not None:
