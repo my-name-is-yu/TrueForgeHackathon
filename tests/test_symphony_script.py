@@ -153,6 +153,19 @@ def test_review_protocol_requests_each_missing_source_once_per_head() -> None:
     assert "A timeout does not authorize another request" in template
 
 
+def test_review_protocol_uses_pr_coverage_then_one_current_reviewer() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    assert "Derive reviewer\n     coverage from GitHub every time; do not store it in the Workpad" in template
+    assert "request only the missing source or both missing sources in\n     parallel" in template
+    assert "Once both have coverage, require only Qodo" in template
+    assert "one-time exact-head fallback" in template
+    assert "a timeout from a missing source cannot be replaced" in template
+    assert "Current reviewer: codex|qodo|both" in template
+    assert "PR history contains at least one completed Codex review and one\n   completed Qodo review" in template
+    assert "at least one completed current-head review" in template
+
+
 def test_review_packet_uses_authoritative_contract_context_and_separates_resolved_findings() -> None:
     template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
 

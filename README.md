@@ -83,9 +83,10 @@ exact head branch. Symphony then fetches and checks out that branch with local G
 Codex GitHub connector to inspect and update the same pull request; incomplete or conflicting
 references become blockers instead of creating a duplicate branch or pull request.
 
-OpenAI Codex and Qodo continue to generate reviews externally. The repository-owned workflow waits
-for both results for each PR head, asks GPT-5.6 Sol to deduplicate and adjudicate them, and sends only
-`fix_now` findings back to GPT-5.6 Luna for at most nine same-PR rework rounds and ten distinct
+OpenAI Codex and Qodo continue to generate reviews externally. The repository-owned workflow gets
+one completed review from each source across the PR, then uses Qodo alone on later heads with one
+Codex fallback on timeout. GPT-5.6 Sol deduplicates and adjudicates current-head findings and sends
+only `fix_now` findings back to GPT-5.6 Luna for at most nine same-PR rework rounds and ten distinct
 reviewed heads. Linear holds one
 durable Workpad comment so retries and model boundaries do not depend on a long-lived session.
 The merge-ready gate and deduplicated, non-executing Backlog candidate creation are documented in
