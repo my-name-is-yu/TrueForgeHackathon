@@ -950,7 +950,7 @@ class EvidenceStore:
     def get_revision(self, case_id: str, revision_id: str) -> RevisionRecord:
         _id(case_id, "case_id")
         _id(revision_id, "revision_id")
-        with self._read_connection() as connection:
+        with self._read_transaction() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM revisions
@@ -958,17 +958,19 @@ class EvidenceStore:
                 """,
                 (case_id, revision_id),
             ).fetchone()
-        if row is None:
-            raise StorageError("revision was not found")
-        return self._revision_from_row(row)
+            if row is None:
+                raise StorageError("revision was not found")
+            self._validate_case_lifecycle_from_connection(connection, case_id)
+            return self._revision_from_row(row)
 
     def list_revisions(self, case_id: str) -> tuple[RevisionRecord, ...]:
         _id(case_id, "case_id")
-        with self._read_connection() as connection:
+        with self._read_transaction() as connection:
             rows = connection.execute(
                 "SELECT * FROM revisions WHERE case_id = ? ORDER BY ordinal", (case_id,)
             ).fetchall()
-        return tuple(self._revision_from_row(row) for row in rows)
+            self._validate_case_lifecycle_from_connection(connection, case_id)
+            return tuple(self._revision_from_row(row) for row in rows)
 
     def get_run(self, run_id: str) -> RunRecord:
         _id(run_id, "run_id")
@@ -1392,6 +1394,7 @@ class EvidenceStore:
         created = tuple(event for event in events if event.event_type == "CASE_CREATED")
         if (
             len(created) != 1
+            or created[0].revision_id != case.root_revision_id
             or created[0].payload.get("root_revision_id") != case.root_revision_id
         ):
             raise IntegrityError("case creation state does not match the ledger")
@@ -1490,11 +1493,73 @@ class EvidenceStore:
         if row is None:
             raise CaseNotFoundError("case was not found")
         case = self._case_from_row(row)
+        case_events = tuple(event for event in events if event.case_id == case_id)
         self._replay_case_lifecycle(
             case,
-            tuple(event for event in events if event.case_id == case_id),
+            case_events,
             self._stored_commitment_payload(row),
         )
+        revision_rows = connection.execute(
+            "SELECT * FROM revisions WHERE case_id = ?", (case_id,)
+        ).fetchall()
+        run_rows = connection.execute(
+            "SELECT * FROM runs WHERE case_id = ?", (case_id,)
+        ).fetchall()
+        revisions_by_id = {revision["revision_id"]: revision for revision in revision_rows}
+        runs_by_id = {run["run_id"]: run for run in run_rows}
+        events_by_id = {event.event_id: event for event in case_events}
+        root = revisions_by_id.get(case.root_revision_id)
+        if root is None or root["asset_sha256"] != case.source_asset_sha256:
+            raise IntegrityError("root revision state is invalid")
+        try:
+            self._validate_revision(self._revision_from_row(root))
+        except ValidationError as exc:
+            raise IntegrityError("root revision state is invalid") from exc
+        head_revision_id = case.root_revision_id
+        head_ordinal = 0
+        replayed_revision_ids = {case.root_revision_id}
+        for event in case_events:
+            if event.event_type != "REVISION_CREATED":
+                continue
+            if event.revision_id is None:
+                raise IntegrityError("revision event identity is invalid")
+            revision = revisions_by_id.get(event.revision_id)
+            if revision is None:
+                raise IntegrityError("revision event state is not linear")
+            try:
+                self._validate_revision(self._revision_from_row(revision))
+            except ValidationError as exc:
+                raise IntegrityError("revision row is invalid") from exc
+            if (
+                revision["parent_revision_id"] != head_revision_id
+                or revision["ordinal"] != head_ordinal + 1
+                or not self._payload_contains(
+                    event.payload, self._revision_event_payload(revision)
+                )
+            ):
+                raise IntegrityError("revision row does not match its ledger event")
+            hypothesis = events_by_id.get(revision["hypothesis_event_id"])
+            probe = runs_by_id.get(revision["probe_run_id"])
+            if (
+                hypothesis is None
+                or hypothesis.event_type != "HYPOTHESIS_RECORDED"
+                or hypothesis.revision_id != head_revision_id
+                or probe is None
+                or probe["revision_id"] != head_revision_id
+                or probe["run_kind"] != "probe"
+                or not self._payload_contains(
+                    event.payload, {"probe_run": self._run_event_payload(probe)}
+                )
+            ):
+                raise IntegrityError("revision causal citations are invalid")
+            head_revision_id = event.revision_id
+            head_ordinal = revision["ordinal"]
+            replayed_revision_ids.add(event.revision_id)
+        if (
+            replayed_revision_ids != set(revisions_by_id)
+            or case.head_revision_id != head_revision_id
+        ):
+            raise IntegrityError("revision rows do not match the ledger replay")
 
     @classmethod
     def _identity_matches(
