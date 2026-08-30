@@ -95,6 +95,7 @@ class _FakeSession:
         wrong_width_run: bool = False,
         block_on_run: bool = False,
         synchronize_two_runs: bool = False,
+        oversized_run_response: bool = False,
         block_on_initialize: bool = False,
         render_is_error: bool = False,
         invalid_render_png: bool = False,
@@ -119,6 +120,7 @@ class _FakeSession:
         self.wrong_width_run = wrong_width_run
         self.block_on_run = block_on_run
         self.synchronize_two_runs = synchronize_two_runs
+        self.oversized_run_response = oversized_run_response
         self.block_on_initialize = block_on_initialize
         self.render_is_error = render_is_error
         self.invalid_render_png = invalid_render_png
@@ -208,6 +210,11 @@ class _FakeSession:
                 time = self.set_state_time
             return _text_result({"status": "ok", "time": time})
         if name == "run_and_analyze":
+            if self.oversized_run_response:
+                return SimpleNamespace(
+                    isError=False,
+                    content=[SimpleNamespace(type="text", text=" " * 5_000)],
+                )
             steps = arguments["n_steps"]
             if self.block_on_run:
                 self.run_started.set()
@@ -302,6 +309,7 @@ def _fake_client(
     wrong_width_run: bool = False,
     block_on_run: bool = False,
     synchronize_two_runs: bool = False,
+    oversized_run_response: bool = False,
     block_on_initialize: bool = False,
     render_is_error: bool = False,
     invalid_render_png: bool = False,
@@ -332,6 +340,7 @@ def _fake_client(
             wrong_width_run=wrong_width_run,
             block_on_run=block_on_run,
             synchronize_two_runs=synchronize_two_runs,
+            oversized_run_response=oversized_run_response,
             block_on_initialize=block_on_initialize,
             render_is_error=render_is_error,
             invalid_render_png=invalid_render_png,
@@ -612,6 +621,30 @@ def test_run_response_requires_requested_signals_and_model_widths() -> None:
                 assert caught.value.code == UPSTREAM_BAD_RESPONSE
                 assert slot.state is SlotState.POISONED
             assert get_session().closed is True
+
+    asyncio.run(check())
+
+
+def test_run_response_is_bounded_before_json_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(oversized_run_response=True)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            monkeypatch.setattr(
+                "asset_autopsy.mujoco_client.json.loads",
+                lambda _text: pytest.fail("oversized response reached json.loads"),
+            )
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.run_segment(slot, ctrl=[], n_steps=1)
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert slot.state is SlotState.POISONED
 
     asyncio.run(check())
 
@@ -1125,6 +1158,61 @@ def test_concurrent_first_runner_startup_shares_lifecycle_without_early_close() 
         assert session_count == 1
         assert client.ready is False
         assert transport.closed is True
+
+    asyncio.run(check())
+
+
+def test_concurrent_calls_on_one_slot_are_serialized() -> None:
+    async def check() -> None:
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        session: SerializedSession | None = None
+
+        class SerializedSession(_FakeSession):
+            def __init__(self, read: object, write: object) -> None:
+                super().__init__(read, write)
+                self.run_active = False
+                self.overlapped = False
+                self.run_count = 0
+
+            async def call_tool(
+                self, name: str, *, arguments: dict[str, object]
+            ) -> SimpleNamespace:
+                if name != "run_and_analyze":
+                    return await super().call_tool(name, arguments=arguments)
+                if self.run_active:
+                    self.overlapped = True
+                self.run_active = True
+                self.run_count += 1
+                if self.run_count == 1:
+                    first_started.set()
+                    await release_first.wait()
+                try:
+                    return await super().call_tool(name, arguments=arguments)
+                finally:
+                    self.run_active = False
+
+        def make_session(read: object, write: object) -> SerializedSession:
+            nonlocal session
+            session = SerializedSession(read, write)
+            return session
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: _FakeTransport(),
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            first = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
+            await first_started.wait()
+            second = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
+            await asyncio.sleep(0)
+            assert session is not None and session.overlapped is False
+            release_first.set()
+            first_payload, second_payload = await asyncio.gather(first, second)
+            assert first_payload["sim_time"][1] < second_payload["sim_time"][0]
+            assert session.overlapped is False
 
     asyncio.run(check())
 

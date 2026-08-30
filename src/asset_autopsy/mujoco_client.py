@@ -207,6 +207,7 @@ class SimulationSlot:
     state: SlotState = SlotState.READY
     _session_token: object | None = field(default=None, repr=False)
     _time: float = field(default=0.0, repr=False)
+    _operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @property
     def poisoned(self) -> bool:
@@ -322,10 +323,14 @@ def _wrapped_error() -> UpstreamToolError:
 def normalize_json_result(
     result: Any,
     validate: Callable[[dict[str, Any]], bool],
+    *,
+    max_text_chars: int | None = None,
 ) -> dict[str, Any]:
     if _is_error_result(result):
         raise _wrapped_error()
     text = _text_block(result)
+    if max_text_chars is not None and len(text) > max_text_chars:
+        raise _bad_response("Upstream response was too large.")
     try:
         payload = json.loads(text)
     except (TypeError, json.JSONDecodeError):
@@ -851,6 +856,10 @@ class PinnedMujocoClient:
         return slot
 
     async def reset(self, slot: SimulationSlot) -> None:
+        async with slot._operation_lock:
+            await self._reset(slot)
+
+    async def _reset(self, slot: SimulationSlot) -> None:
         result = await self._invoke(slot, "sim_reset", {"sim_name": slot._name})
         try:
             payload = normalize_json_result(
@@ -863,6 +872,17 @@ class PinnedMujocoClient:
         slot._time = payload["time"]
 
     async def set_state(
+        self,
+        slot: SimulationSlot,
+        *,
+        qpos: list[float] | None = None,
+        qvel: list[float] | None = None,
+        ctrl: list[float] | None = None,
+    ) -> None:
+        async with slot._operation_lock:
+            await self._set_state(slot, qpos=qpos, qvel=qvel, ctrl=ctrl)
+
+    async def _set_state(
         self,
         slot: SimulationSlot,
         *,
@@ -903,6 +923,16 @@ class PinnedMujocoClient:
         ctrl: list[float],
         n_steps: int,
     ) -> dict[str, Any]:
+        async with slot._operation_lock:
+            return await self._run_segment(slot, ctrl=ctrl, n_steps=n_steps)
+
+    async def _run_segment(
+        self,
+        slot: SimulationSlot,
+        *,
+        ctrl: list[float],
+        n_steps: int,
+    ) -> dict[str, Any]:
         if type(n_steps) is not int or not 1 <= n_steps <= MAX_STEPS:
             raise ValueError(f"n_steps must be between 1 and {MAX_STEPS}")
         self._require_ready_slot(slot)
@@ -934,6 +964,8 @@ class PinnedMujocoClient:
                     timestep=slot.summary["timestep"],
                     expected_start=slot._time + slot.summary["timestep"],
                 ),
+                max_text_chars=4096
+                + n_steps * (512 + 64 * (slot.summary["nq"] + slot.summary["nv"])),
             )
         except UpstreamToolError:
             slot.state = SlotState.POISONED
