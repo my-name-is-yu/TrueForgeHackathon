@@ -3,8 +3,8 @@
 Asset Autopsy is a tools-first 3D repair harness built on TrueForge for the
 [Agent Harness Hackathon](https://www.wemakedevs.org/hackathons/trueforge). An agent must
 observe a failing MuJoCo asset, choose experiments that distinguish competing causal
-explanations, analyze each 256-row trace in the TrueForge Sandbox, and support every
-single-attribute revision with that evidence.
+explanations, choose how to analyze the resulting 256-row traces in the TrueForge Sandbox,
+and support every single-attribute revision with that evidence.
 
 SC1 is a submission candidate, not a published product. Its accepted product contract ends at
 TrueForge's `tool.approval_required` event for `publish_revision`: the submission does not click
@@ -66,8 +66,11 @@ reaches the domain boundary, it fails closed with the sanitized, non-retryable
 `PUBLICATION_DEFERRED` error and performs no storage or filesystem mutation.
 
 The demo fixture has budgets of 10 total runs, 5 experiments, 2 child revisions, and 1 hidden
-qualification. `run_experiment` accepts named joint positions, one to sixteen constant-control
-segments, and one to eight public observables. It returns a deterministic, evenly sampled
+qualification. `run_experiment` requires every hinge joint and every position actuator exactly
+once in each applicable input. For `compound-arm-01`, all joint positions and control values must
+stay within the ranges advertised by `open_case` (`-1.2` to `1.2` radians/control units). The
+model may choose one to sixteen constant-control segments totaling 256 to 100,000 simulation
+steps and one to eight public observables. The tool returns a deterministic, evenly sampled
 256-row trace for Sandbox analysis. Every row is a named object with `time_s` and a `values`
 mapping, using canonical keys such as `qpos:<joint>`, `energy:potential`,
 `body_position:<body>:x`, and `control:<actuator>`. The tool does not decide whether the agent's
