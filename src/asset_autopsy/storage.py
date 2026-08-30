@@ -33,6 +33,19 @@ REVISION_EVENT_FIELDS = (
     "hypothesis_event_id",
     "probe_run_id",
 )
+RUN_EVENT_FIELDS = (
+    "run_id",
+    "case_id",
+    "revision_id",
+    "run_kind",
+    "probe_kind",
+    "condition_hash",
+    "execution_fingerprint",
+    "trace_sha256",
+    "metrics_sha256",
+    "passed",
+    "created_at",
+)
 TABLE_NAMES = ("cases", "revisions", "runs", "ledger_events")
 TRANSACTIONAL_EVENT_TYPES = {
     "CASE_CREATED",
@@ -542,6 +555,27 @@ class EvidenceStore:
         return {field: revision[field] for field in REVISION_EVENT_FIELDS}
 
     @staticmethod
+    def _run_event_payload(run: RunRecord | sqlite3.Row) -> dict[str, Any]:
+        if isinstance(run, RunRecord):
+            return {field: getattr(run, field) for field in RUN_EVENT_FIELDS}
+        payload = {field: run[field] for field in RUN_EVENT_FIELDS}
+        payload["passed"] = bool(payload["passed"])
+        return payload
+
+    @staticmethod
+    def _payload_contains(
+        payload: Mapping[str, Any], required: Mapping[str, Any]
+    ) -> bool:
+        try:
+            return all(
+                field in payload
+                and canonical_json_bytes(payload[field]) == canonical_json_bytes(value)
+                for field, value in required.items()
+            )
+        except ValidationError:
+            return False
+
+    @staticmethod
     def _run_from_row(row: sqlite3.Row) -> RunRecord:
         values = dict(row)
         values["passed"] = bool(values["passed"])
@@ -858,10 +892,7 @@ class EvidenceStore:
                 ):
                     raise IntegrityError("revision event state is not linear")
                 required_payload = self._revision_event_payload(revision)
-                if any(
-                    field not in event.payload or event.payload[field] != value
-                    for field, value in required_payload.items()
-                ):
+                if not self._payload_contains(event.payload, required_payload):
                     raise IntegrityError("revision row does not match its ledger event")
                 hypothesis = events_by_id.get(revision["hypothesis_event_id"])
                 probe = runs_by_id.get(revision["probe_run_id"])
@@ -874,6 +905,11 @@ class EvidenceStore:
                     or probe["run_kind"] != "probe"
                 ):
                     raise IntegrityError("revision causal citations are invalid")
+                if not self._payload_contains(
+                    event.payload,
+                    {"probe_run": self._run_event_payload(probe)},
+                ):
+                    raise IntegrityError("probe run does not match its ledger event")
                 head_revision_id = event.revision_id
                 head_ordinal = revision["ordinal"]
                 replayed_revision_ids.add(event.revision_id)
@@ -998,6 +1034,8 @@ class EvidenceStore:
             _id(revision.parent_revision_id, "parent_revision_id")
             if revision.ordinal <= 0:
                 raise ValidationError("child revision ordinal must be positive")
+            if revision.patch_manifest_sha256 is None:
+                raise ValidationError("child revision requires a patch manifest")
             if revision.hypothesis_event_id is None or revision.probe_run_id is None:
                 raise ValidationError("child revision requires hypothesis and probe citations")
             _id(revision.hypothesis_event_id, "hypothesis_event_id")
@@ -1042,11 +1080,10 @@ class EvidenceStore:
         if event.event_type != "REVISION_CREATED":
             raise ValidationError("revision transaction requires REVISION_CREATED")
         required_payload = self._revision_event_payload(revision)
-        if any(
-            field not in event.payload or event.payload[field] != value
-            for field, value in required_payload.items()
-        ):
+        if not self._payload_contains(event.payload, required_payload):
             raise ValidationError("revision event does not bind the revision")
+        if not isinstance(event.payload.get("probe_run"), Mapping):
+            raise ValidationError("revision event does not bind the probe run")
         _id(expected_head_revision_id, "expected_head_revision_id")
         with self._transaction() as connection:
             case = connection.execute(
@@ -1113,6 +1150,11 @@ class EvidenceStore:
                 or probe["passed"] is None
             ):
                 raise RevisionConflictError("probe citation is invalid")
+            if not self._payload_contains(
+                event.payload,
+                {"probe_run": self._run_event_payload(probe)},
+            ):
+                raise ValidationError("revision event does not bind the probe run")
             try:
                 connection.execute(
                     """

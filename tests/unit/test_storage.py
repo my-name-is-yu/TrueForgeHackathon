@@ -33,7 +33,25 @@ COMMITMENTS = {
 }
 
 
-def revision_event_payload(revision: RevisionRecord) -> dict[str, object]:
+def run_event_payload(run: RunRecord) -> dict[str, object]:
+    return {
+        "run_id": run.run_id,
+        "case_id": run.case_id,
+        "revision_id": run.revision_id,
+        "run_kind": run.run_kind,
+        "probe_kind": run.probe_kind,
+        "condition_hash": run.condition_hash,
+        "execution_fingerprint": run.execution_fingerprint,
+        "trace_sha256": run.trace_sha256,
+        "metrics_sha256": run.metrics_sha256,
+        "passed": run.passed,
+        "created_at": run.created_at,
+    }
+
+
+def revision_event_payload(
+    revision: RevisionRecord, probe: RunRecord
+) -> dict[str, object]:
     return {
         "parent_revision_id": revision.parent_revision_id,
         "ordinal": revision.ordinal,
@@ -41,6 +59,7 @@ def revision_event_payload(revision: RevisionRecord) -> dict[str, object]:
         "patch_manifest_sha256": revision.patch_manifest_sha256,
         "hypothesis_event_id": revision.hypothesis_event_id,
         "probe_run_id": revision.probe_run_id,
+        "probe_run": run_event_payload(probe),
     }
 
 
@@ -98,7 +117,7 @@ def add_child(store: EvidenceStore, revision_id: str = "r001") -> None:
             case_id="case-1",
             revision_id=revision_id,
             event_type="REVISION_CREATED",
-            payload=revision_event_payload(revision),
+            payload=revision_event_payload(revision, store.get_run("run-probe-1")),
         ),
         expected_head_revision_id="r000",
     )
@@ -417,7 +436,9 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
     assert store.get_case("case-1").head_revision_id == "r001"
     revision_event = store.ledger_events("case-1")[-1]
     assert revision_event.event_id == "evt-revision-r001"
-    assert revision_event.payload == revision_event_payload(child)
+    assert revision_event.payload == revision_event_payload(
+        child, store.get_run("run-probe-1")
+    )
 
     store.append_event(
         LedgerEventRecord(
@@ -449,6 +470,7 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
                 parent_revision_id="r001",
                 ordinal=2,
                 asset_sha256="8" * 64,
+                patch_manifest_sha256="7" * 64,
                 hypothesis_event_id="evt-hypothesis-2",
                 probe_run_id="run-probe-2",
             ),
@@ -461,9 +483,10 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
                     "parent_revision_id": "r001",
                     "ordinal": 2,
                     "asset_sha256": "8" * 64,
-                    "patch_manifest_sha256": None,
+                    "patch_manifest_sha256": "7" * 64,
                     "hypothesis_event_id": "evt-hypothesis-2",
                     "probe_run_id": "run-probe-2",
+                    "probe_run": run_event_payload(store.get_run("run-probe-2")),
                 },
             ),
             expected_head_revision_id="r001",
@@ -481,6 +504,7 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
                 parent_revision_id="r001",
                 ordinal=2,
                 asset_sha256="9" * 64,
+                patch_manifest_sha256="a" * 64,
                 hypothesis_event_id="evt-hypothesis-1",
                 probe_run_id="run-probe-1",
             ),
@@ -493,9 +517,10 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
                     "parent_revision_id": "r001",
                     "ordinal": 2,
                     "asset_sha256": "9" * 64,
-                    "patch_manifest_sha256": None,
+                    "patch_manifest_sha256": "a" * 64,
                     "hypothesis_event_id": "evt-hypothesis-1",
                     "probe_run_id": "run-probe-1",
+                    "probe_run": run_event_payload(store.get_run("run-probe-1")),
                 },
             ),
             expected_head_revision_id="r000",
@@ -563,7 +588,7 @@ def test_revision_retry_accepts_omitted_generated_event_metadata(tmp_path: Path)
             case_id="case-1",
             revision_id="r001",
             event_type="REVISION_CREATED",
-            payload=revision_event_payload(child),
+            payload=revision_event_payload(child, store.get_run("run-probe-1")),
         ),
         expected_head_revision_id="r001",
     ) == child
@@ -593,7 +618,7 @@ def test_revision_retry_rejects_changed_explicit_timestamp(tmp_path: Path) -> No
                 case_id="case-1",
                 revision_id="r001",
                 event_type="REVISION_CREATED",
-                payload=revision_event_payload(child),
+                payload=revision_event_payload(child, store.get_run("run-probe-1")),
             ),
             expected_head_revision_id="r001",
         )
@@ -647,7 +672,64 @@ def test_child_revision_requires_probe_run(tmp_path: Path) -> None:
                     "patch_manifest_sha256": "3" * 64,
                     "hypothesis_event_id": "evt-task-hypothesis",
                     "probe_run_id": "run-task-1",
+                    "probe_run": run_event_payload(store.get_run("run-task-1")),
                 },
+            ),
+            expected_head_revision_id="r000",
+        )
+
+
+def test_child_revision_requires_patch_manifest(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+
+    with pytest.raises(ValidationError, match="requires a patch manifest"):
+        store.commit_revision_with_event(
+            revision=RevisionRecord(
+                case_id="case-1",
+                revision_id="r001",
+                parent_revision_id="r000",
+                ordinal=1,
+                asset_sha256="2" * 64,
+                hypothesis_event_id="evt-hypothesis-1",
+                probe_run_id="run-probe-1",
+            ),
+            event=LedgerEventRecord(
+                event_id="evt-revision-r001",
+                case_id="case-1",
+                revision_id="r001",
+                event_type="REVISION_CREATED",
+                payload={},
+            ),
+            expected_head_revision_id="r000",
+        )
+
+
+def test_revision_event_binding_preserves_json_types(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    revision = RevisionRecord(
+        case_id="case-1",
+        revision_id="r001",
+        parent_revision_id="r000",
+        ordinal=1,
+        asset_sha256="2" * 64,
+        patch_manifest_sha256="3" * 64,
+        hypothesis_event_id="evt-hypothesis-1",
+        probe_run_id="run-probe-1",
+    )
+    payload = revision_event_payload(revision, store.get_run("run-probe-1"))
+    payload["ordinal"] = True
+
+    with pytest.raises(ValidationError, match="does not bind the revision"):
+        store.commit_revision_with_event(
+            revision=revision,
+            event=LedgerEventRecord(
+                event_id="evt-revision-r001",
+                case_id="case-1",
+                revision_id="r001",
+                event_type="REVISION_CREATED",
+                payload=payload,
             ),
             expected_head_revision_id="r000",
         )
@@ -789,6 +871,10 @@ def test_restore_rejects_unqualified_case_commitment_corruption(
             "does not match its ledger event",
         ),
         ("DELETE FROM runs WHERE run_id = 'run-probe-1'", "causal citations"),
+        (
+            "UPDATE runs SET condition_hash = 'changed' WHERE run_id = 'run-probe-1'",
+            "probe run does not match",
+        ),
         (
             """INSERT INTO revisions (
                 case_id, revision_id, parent_revision_id, ordinal,
@@ -1107,6 +1193,7 @@ def test_new_child_revision_is_rejected_after_lifecycle_seal(
                     "patch_manifest_sha256": "a" * 64,
                     "hypothesis_event_id": "evt-hypothesis-2",
                     "probe_run_id": "run-probe-2",
+                    "probe_run": run_event_payload(store.get_run("run-probe-2")),
                 },
             ),
             expected_head_revision_id="r001",
