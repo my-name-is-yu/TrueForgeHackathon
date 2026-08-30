@@ -478,6 +478,44 @@ def test_rejects_revision_without_large_tool_response_provenance() -> None:
     )
 
 
+def test_rejects_unrelated_successful_exec_as_revision_evidence() -> None:
+    events = _successful_events()
+    _set_arguments(
+        events,
+        "sandbox-1",
+        {"intent": "Inspect the sandbox environment.", "command": "pwd"},
+    )
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert (
+        "a revision lacks successful Sandbox analysis of a preceding offloaded current-base experiment"
+        in evidence["failures"]
+    )
+
+
+def test_rejects_exec_that_references_a_different_experiment_path() -> None:
+    events = _successful_events()
+    _set_arguments(
+        events,
+        "sandbox-1",
+        _analysis_arguments(
+            "shell_command",
+            "/sandbox/large_tool_responses/experiment-damping.json",
+            "qvel:joint_c",
+        ),
+    )
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert (
+        "a revision lacks successful Sandbox analysis of a preceding offloaded current-base experiment"
+        in evidence["failures"]
+    )
+
+
 @pytest.mark.parametrize("violation", ["missing", "failed"])
 def test_rejects_revision_without_successful_sandbox_outcome(violation: str) -> None:
     events = _successful_events()

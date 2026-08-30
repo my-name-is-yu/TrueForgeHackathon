@@ -594,6 +594,26 @@ def _large_tool_response_path(record: Mapping[str, Any]) -> str | None:
     return match.group(1).rstrip(".\"')") if match is not None else None
 
 
+def _exec_arguments_reference_path(
+    value: Any, path: str, *, depth: int = 0
+) -> bool:
+    if depth > 8:
+        return False
+    if isinstance(value, str):
+        return path in value
+    if isinstance(value, Mapping):
+        return any(
+            _exec_arguments_reference_path(child, path, depth=depth + 1)
+            for child in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            _exec_arguments_reference_path(child, path, depth=depth + 1)
+            for child in value
+        )
+    return False
+
+
 def _sandbox_response_succeeded(record: Mapping[str, Any]) -> bool:
     event = record.get("event")
     if not isinstance(event, Mapping) or event.get("is_error") is True:
@@ -683,12 +703,17 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
                 continue
             experiment_arguments = _call_arguments(experiment["call"])
             experiment_response = responses.get(experiment["id"])
+            offloaded_path = (
+                _large_tool_response_path(experiment_response)
+                if experiment_response is not None
+                else None
+            )
             if (
                 experiment_arguments.get("revision_id") != base_revision_id
                 or experiment_response is None
                 or experiment_response["event_index"] <= experiment["event_index"]
                 or experiment_response["event_index"] >= revision["event_index"]
-                or _large_tool_response_path(experiment_response) is None
+                or offloaded_path is None
             ):
                 continue
             successful_execs = []
@@ -700,6 +725,9 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
                     and exec_response is not None
                     and exec_response["event_index"] > exec_record["event_index"]
                     and exec_response["event_index"] < revision["event_index"]
+                    and _exec_arguments_reference_path(
+                        _call_arguments(exec_record["call"]), offloaded_path
+                    )
                     and _sandbox_response_succeeded(exec_response)
                 ):
                     successful_execs.append((exec_record, exec_response))
