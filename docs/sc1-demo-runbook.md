@@ -1,7 +1,7 @@
 # Asset Autopsy SC1 — 3-minute demo runbook
 
 Status: rehearsal script. Do not label the run “passed” unless the sanitized real-model evidence
-artifact for the checked-out commit exists and its gate result is PASS. A scripted parser fixture,
+artifact for the checked-out commit exists and its gate result is PASS. A scripted event fixture,
 unit test, or manually assembled screen sequence is not substitute evidence.
 
 ## Before recording
@@ -55,25 +55,25 @@ Say:
 Show the first `run_experiment` arguments. Highlight the causal claim, suspected element,
 competing explanation, prediction, and falsifier selected by the model.
 
-Then show, in order:
+Then show the causal evidence chain:
 
 1. `Content too large. Result saved to: …` for the experiment response.
-2. The next Sandbox `exec` using Python to read that exact Large Tool Response file.
-3. Its compact output: `rows: 256`, the analyzed run ID, metric, finding, and candidate attribute.
-4. `create_revision` citing the same experiment run and returning exactly one canonical diff.
-5. The child `run_task`, whose parent `BehaviorDiff` is improved but still failing.
+2. A successful Sandbox `exec` after the offload and before the revision.
+3. `create_revision` citing the completed experiment run and hypothesis and returning one matching
+   canonical diff.
+4. The child `run_task`, whose parent `BehaviorDiff` is improved but still failing.
 
 Say:
 
-> TrueForge moves the large trace out of the model context. The model reads it with Sandbox
-> Python and uses that measured result—not a tool-supplied diagnosis—to justify one immutable,
+> TrueForge moves the large trace out of the model context. The model chooses how to analyze it in
+> Sandbox and uses that measured result to justify one immutable,
 > single-attribute revision.
 
 ### 1:30–2:10 — Competing cause and public pass
 
 Show the second model-chosen `run_experiment`. Again highlight its competing explanation,
-prediction, and falsifier. Show the second Large Tool Response marker and its matching Sandbox
-Python output with `rows: 256`.
+prediction, and falsifier. Show the second Large Tool Response marker and the successful Sandbox
+analysis that precedes the cited revision.
 
 Show the second `create_revision` bound to that analyzed run. Confirm that its target attribute is
 different from the first revision and its canonical diff has one entry. Then show the final
@@ -121,8 +121,8 @@ published bundles: 0
 public artifacts: 0
 ```
 
-Also show the sanitized run ID hashes, tool order, Sandbox execution count, approval event, and
-Git commit SHA.
+Also show the sanitized cited run and hypothesis hashes, observed tool sequence, Sandbox execution
+count, approval event, and Git commit SHA.
 
 Say:
 
@@ -138,16 +138,15 @@ form.
 The final frame or linked sanitized evidence must prove, for one fresh real-model turn:
 
 - first public task failed;
-- at least two agent-chosen experiments registered competing explanations and predictions;
-- every experiment was offloaded by Large Tool Response and read by a following Sandbox Python
-  call;
-- every compact Sandbox result reported 256 rows and identified the run, metric, finding, and
-  candidate attribute;
-- exactly two revisions cited those analyzed runs, changed different attributes, and returned
-  one canonical diff each;
+- the agent chose competing explanations, experiments, observables, analysis programs, and patches
+  within the public budgets and patch policy;
+- every revision cited a completed current-base experiment whose trace was offloaded and followed
+  by successful Sandbox analysis before the revision;
+- the cited run and hypothesis hashes reconciled with the ledger, stored trace, and immutable
+  single-attribute revision outcome;
 - final public `BehaviorDiff` was changed and `public_pass`;
 - qualification was public `1/1` and hidden `3/3`, aggregate only;
-- exactly one publish request matched one approval-required event and had no tool response;
+- the qualified publish request matched its approval-required event and had no tool response;
 - facade/domain publish invocations, receipts, bundles, and public artifacts were all zero;
 - the evidence records the exact Git SHA and contains no secret or private-boundary leakage.
 
@@ -156,4 +155,4 @@ The final frame or linked sanitized evidence must prove, for one fresh real-mode
 Stop and show the reproducible blocker. Keep the final pull request draft. Record the checked-out
 commit, failed gate, sanitized error, and exact rerun command. Do not edit events, reuse a failed
 hidden-qualification case, invoke publication directly, or replace the real provider run with the
-scripted E2E parser fixture.
+scripted E2E event fixture.

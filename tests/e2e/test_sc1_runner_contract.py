@@ -135,15 +135,31 @@ def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -
     ]
     invoked = tool_order[:-1]
     run_ids = ["run_axis_evidence", "run_damping_evidence"]
+    hypothesis_ids = ["hyp_axis_evidence", "hyp_damping_evidence"]
+    hypothesis_event_ids = ["evt_hyp_axis", "evt_hyp_damping"]
+    trace_hashes: dict[str, str | None] = {
+        run_ids[0]: "a" * 64,
+        run_ids[1]: "b" * 64,
+    }
     events = [
         SimpleNamespace(event_type="TASK_COMPLETED", payload={}),
         SimpleNamespace(
-            event_type="EXPERIMENT_COMPLETED", payload={"run_id": run_ids[0]}
+            event_type="EXPERIMENT_COMPLETED",
+            payload={
+                "run_id": run_ids[0],
+                "hypothesis_id": hypothesis_ids[0],
+                "hypothesis_event_id": hypothesis_event_ids[0],
+            },
         ),
         SimpleNamespace(event_type="REVISION_CREATED", payload={}),
         SimpleNamespace(event_type="TASK_COMPLETED", payload={}),
         SimpleNamespace(
-            event_type="EXPERIMENT_COMPLETED", payload={"run_id": run_ids[1]}
+            event_type="EXPERIMENT_COMPLETED",
+            payload={
+                "run_id": run_ids[1],
+                "hypothesis_id": hypothesis_ids[1],
+                "hypothesis_event_id": hypothesis_event_ids[1],
+            },
         ),
         SimpleNamespace(event_type="REVISION_CREATED", payload={}),
         SimpleNamespace(event_type="TASK_COMPLETED", payload={}),
@@ -156,16 +172,45 @@ def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -
             return tuple(events)
 
         def list_revisions(self, _case_id):
-            return (object(), object(), object())
+            return (
+                SimpleNamespace(
+                    parent_revision_id=None,
+                    probe_run_id=None,
+                    hypothesis_event_id=None,
+                ),
+                SimpleNamespace(
+                    parent_revision_id="r000",
+                    probe_run_id=run_ids[0],
+                    hypothesis_event_id=hypothesis_event_ids[0],
+                ),
+                SimpleNamespace(
+                    parent_revision_id="r001",
+                    probe_run_id=run_ids[1],
+                    hypothesis_event_id=hypothesis_event_ids[1],
+                ),
+            )
+
+        def get_run(self, run_id):
+            index = run_ids.index(run_id)
+            return SimpleNamespace(
+                passed=True,
+                trace_sha256=trace_hashes[run_id],
+                revision_id=("r000" if index == 0 else "r001"),
+            )
 
     evidence = {
         "tool_order": tool_order,
         "sandbox": {
             "runs": [
                 {
+                    "revision_index": index,
+                    "experiment_index": index,
                     "run_id_hash": e2e_runner._sha256_text(run_id)[:12],
+                    "hypothesis_id_hash": e2e_runner._sha256_text(
+                        hypothesis_ids[index]
+                    )[:12],
                 }
-                for run_id in run_ids
+                for index, run_id in enumerate(run_ids)
             ]
         },
     }
@@ -177,6 +222,13 @@ def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -
 
     assert all(gates.values())
     evidence["sandbox"]["runs"][1]["run_id_hash"] = "mismatch"
+    assert not _runtime_state_gates(
+        evidence, facade=facade, service=service
+    )["ledger_experiment_evidence_matches"]
+    evidence["sandbox"]["runs"][1]["run_id_hash"] = e2e_runner._sha256_text(
+        run_ids[1]
+    )[:12]
+    trace_hashes[run_ids[1]] = None
     assert not _runtime_state_gates(
         evidence, facade=facade, service=service
     )["ledger_experiment_evidence_matches"]

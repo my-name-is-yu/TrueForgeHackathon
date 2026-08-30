@@ -8,7 +8,7 @@ single-attribute revision with that evidence.
 
 SC1 is a submission candidate, not a published product. Its real-model gate is complete only
 when a sanitized evidence record from the fixed one-prompt run proves every acceptance check
-below. Unit, integration, and scripted event-parser tests exercise the contracts but do not
+below. Unit, integration, and scripted event-evaluator tests exercise the contracts but do not
 stand in for that run. If the saved provider, TrueForge, MuJoCo, or review services block the
 gate, the pull request stays draft and reports the reproducible blocker; it must not present a
 scripted success as real-model evidence.
@@ -36,7 +36,7 @@ pinned stdio MuJoCo MCP -> MuJoCo 3.5.0
 The HTTP handler does not invoke a CLI. It validates the request boundary and calls the Python
 domain service directly. Only physics execution is delegated to the private, commit-pinned
 MuJoCo MCP child. TrueForge remains the general agent harness: it supplies the model loop,
-Large Tool Response handling, Sandbox Python execution, saved session state, and the approval
+Large Tool Response handling, Sandbox execution, saved session state, and the approval
 pause.
 
 SC1 deliberately does not add a product CLI, a Skill, a TrueForge fork, a separate UI, arbitrary
@@ -124,8 +124,8 @@ git diff --check
 
 The Phase 0 TrueForge test exercises its original transport placeholder and historical measured
 boundary. The SC1 contract is the generic `run_experiment` flow implemented by the current
-domain, MCP, integration, and E2E parser tests. Neither Phase 0 nor a fully green local suite is a
-claim that the saved real model completed SC1.
+domain, MCP, integration, and E2E event-evaluator tests. Neither Phase 0 nor a fully green local
+suite is a claim that the saved real model completed SC1.
 
 ## Run the real one-prompt gate
 
@@ -152,21 +152,23 @@ The gate passes only if the resulting raw TrueForge events prove all of the foll
 sanitization:
 
 1. The first public task fails.
-2. The model chooses competing hypotheses and at least two experiments.
-3. Both experiment traces are offloaded by Large Tool Response and read by Sandbox Python.
-4. The Sandbox emits compact evidence with 256 rows, the run ID, analyzed metric, finding, and
-   candidate attribute; each of two revisions cites its matching analyzed run.
-5. Two immutable revisions change two different attributes, one attribute per revision.
-6. The final public task passes and its `BehaviorDiff` says `public_pass` with a real change.
-7. Qualification reports public `1/1` and hidden `3/3` without hidden details.
-8. One `publish_revision` request produces the matching approval-required event and no tool
-   response; the facade publish count and all publication/receipt/artifact counts remain zero.
-9. No bearer, private path, fixture XML, hidden target, or hidden trace leaked into the event or
+2. The model chooses competing hypotheses, experiment conditions, observables, Sandbox analysis,
+   and patches within the public budgets and patch policy.
+3. Before each revision, the cited current-base experiment completes, its trace is offloaded by
+   Large Tool Response, and a successful Sandbox analysis occurs after the offload.
+4. Each revision cites that run and hypothesis, returns one matching canonical diff, and reconciles
+   with the completed ledger run and stored trace hash.
+5. The final public task passes and its `BehaviorDiff` says `public_pass` with a real change.
+6. Qualification reports public `1/1` and hidden `3/3` without hidden details.
+7. The qualified `publish_revision` request produces the matching approval-required event and no
+   tool response; the facade publish count and all publication/receipt/artifact counts remain zero.
+8. No bearer, private path, fixture XML, hidden target, or hidden trace leaked into the event or
    Sandbox boundary.
 
-Only a sanitized artifact that records the run ID hashes, tool order, Sandbox executions,
-approval event, zero-publication counters, and exact Git commit can support a PASS claim. If the
-driver or evidence artifact is absent, or any check fails, report SC1 as draft/blocked.
+Only a sanitized artifact that records the cited run and hypothesis hashes, observed tool sequence,
+Sandbox executions, approval event, zero-publication counters, and exact Git commit can support a
+PASS claim. If the driver or evidence artifact is absent, or any check fails, report SC1 as
+draft/blocked.
 
 The three-minute walkthrough is in
 [`docs/sc1-demo-runbook.md`](docs/sc1-demo-runbook.md). Development and review rules, including

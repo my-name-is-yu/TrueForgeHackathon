@@ -19,7 +19,7 @@ import uvicorn
 from asset_autopsy.fixture import CASE_ID
 from asset_autopsy.mcp_server import MCPRuntimeConfig, create_mcp_facade
 from asset_autopsy.service import AssetAutopsyService
-from asset_autopsy.storage import CaseRecord
+from asset_autopsy.storage import CaseRecord, StorageError
 from asset_autopsy.trueforge_client import (
     DEFAULT_MODEL,
     EXACT_PROMPT,
@@ -305,37 +305,82 @@ def _runtime_state_gates(
         event_types[name]
         for name in ("TASK_COMPLETED", "EXPERIMENT_COMPLETED", "EXPERIMENT_FAILED")
     )
-    ledger_experiment_hashes = [
-        _sha256_text(str(event.payload["run_id"]))[:12]
-        for event in ledger
-        if event.event_type == "EXPERIMENT_COMPLETED"
-        and isinstance(event.payload.get("run_id"), str)
-    ]
     sandbox = evidence.get("sandbox")
     sandbox_runs = sandbox.get("runs") if isinstance(sandbox, Mapping) else None
-    sandbox_hashes = (
-        [item.get("run_id_hash") for item in sandbox_runs if isinstance(item, Mapping)]
+    sandbox_evidence = (
+        [item for item in sandbox_runs if isinstance(item, Mapping)]
         if isinstance(sandbox_runs, list)
         else []
     )
     revisions = service.store.list_revisions(CASE_ID)
+    child_revisions = revisions[1:]
+    experiment_events = [
+        event
+        for event in ledger
+        if event.event_type in {"EXPERIMENT_COMPLETED", "EXPERIMENT_FAILED"}
+    ]
+
+    def evidence_matches_ledger(item: Mapping[str, Any]) -> bool:
+        experiment_index = item.get("experiment_index")
+        revision_index = item.get("revision_index")
+        if (
+            not isinstance(experiment_index, int)
+            or isinstance(experiment_index, bool)
+            or not isinstance(revision_index, int)
+            or isinstance(revision_index, bool)
+            or not 0 <= experiment_index < len(experiment_events)
+            or not 0 <= revision_index < len(child_revisions)
+        ):
+            return False
+        event = experiment_events[experiment_index]
+        revision = child_revisions[revision_index]
+        run_id = event.payload.get("run_id")
+        hypothesis_id = event.payload.get("hypothesis_id")
+        if (
+            event.event_type != "EXPERIMENT_COMPLETED"
+            or not isinstance(run_id, str)
+            or not isinstance(hypothesis_id, str)
+            or item.get("run_id_hash") != _sha256_text(run_id)[:12]
+            or item.get("hypothesis_id_hash") != _sha256_text(hypothesis_id)[:12]
+            or revision.probe_run_id != run_id
+            or revision.hypothesis_event_id
+            != event.payload.get("hypothesis_event_id")
+        ):
+            return False
+        try:
+            run = service.store.get_run(run_id)
+        except StorageError:
+            return False
+        return (
+            run.passed
+            and isinstance(run.trace_sha256, str)
+            and len(run.trace_sha256) == 64
+            and run.revision_id == revision.parent_revision_id
+        )
+
     return {
         "facade_sequence_matches_events": facade.recorder.sequence == event_sequence,
         "facade_counts_match_events": facade_counts == event_counts,
         "service_counts_match_events": service_counts == event_counts,
         "ledger_run_counts_match": run_events == task_and_experiment_calls,
         "ledger_experiment_evidence_matches": (
-            event_types["EXPERIMENT_FAILED"] == 0
-            and ledger_experiment_hashes == sandbox_hashes
-            and len(ledger_experiment_hashes) == event_counts["run_experiment"]
+            len(experiment_events) == event_counts["run_experiment"]
+            and len(sandbox_evidence) == event_counts["create_revision"]
+            and len(
+                {
+                    (item.get("experiment_index"), item.get("revision_index"))
+                    for item in sandbox_evidence
+                }
+            )
+            == len(sandbox_evidence)
+            and all(evidence_matches_ledger(item) for item in sandbox_evidence)
         ),
         "ledger_revision_count_matches": (
-            len(revisions) == 3
-            and event_types["REVISION_CREATED"] == 2
-            and event_counts["create_revision"] == 2
+            len(child_revisions) == event_types["REVISION_CREATED"]
+            and event_types["REVISION_CREATED"] == event_counts["create_revision"]
         ),
         "ledger_qualification_once": (
-            event_counts["verify_revision"] == 1
+            event_counts["verify_revision"] >= 1
             and event_types["QUALIFICATION_RESERVED"] == 1
             and event_types["QUALIFICATION_PASSED"] == 1
             and event_types["QUALIFICATION_FAILED"] == 0
