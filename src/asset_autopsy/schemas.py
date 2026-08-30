@@ -580,7 +580,7 @@ class PublicEventSummary(StrictModel):
 
 
 class OpenCaseOutput(CommonOutput):
-    qualification_state: Literal["unused", "running", "recovering", "passed", "failed"]
+    qualification_state: Literal["unused", "running", "passed", "failed"]
     original_revision_id: RevisionId
     original_asset_sha256: AssetHash
     controller_sha256: AssetHash

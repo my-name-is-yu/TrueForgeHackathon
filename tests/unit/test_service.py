@@ -100,7 +100,7 @@ def test_service_requires_strict_models_and_a_same_revision_baseline(tmp_path) -
     assert service.publish_invocation_count == 0
 
 
-def test_removed_materialization_surface_has_no_production_references() -> None:
+def test_removed_surfaces_have_no_production_references() -> None:
     package = Path(__file__).resolve().parents[2] / "src" / "asset_autopsy"
     assert not (package / "publisher.py").exists()
     production = "\n".join(
@@ -122,6 +122,18 @@ def test_removed_materialization_surface_has_no_production_references() -> None:
         "public_artifact_count",
         "publication_root",
         '"PROMOTED"',
+        "QUALIFICATION_RECOVERING",
+        "QUALIFICATION_RECOVERED",
+        '"recovering"',
+        "mark_qualification_recovering",
+        "recover_qualification",
+        "StorageIntegrityError =",
+        "restore_case_state =",
+        "append_ledger_event =",
+        "commit_revision_and_event =",
+        "complete_qualification =",
+        "SQLiteEvidenceStore =",
+        "Storage = EvidenceStore",
     ):
         assert removed not in production
 

@@ -385,8 +385,6 @@ def _runtime_state_gates(
             and event_types["QUALIFICATION_RESERVED"] == 1
             and event_types["QUALIFICATION_PASSED"] == 1
             and event_types["QUALIFICATION_FAILED"] == 0
-            and event_types["QUALIFICATION_RECOVERING"] == 0
-            and event_types["QUALIFICATION_RECOVERED"] == 0
         ),
     }
 
