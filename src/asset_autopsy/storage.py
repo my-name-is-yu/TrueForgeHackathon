@@ -582,6 +582,17 @@ class EvidenceStore:
         values["passed"] = bool(values["passed"])
         return RunRecord(**values)
 
+    @classmethod
+    def _validated_run_from_row(cls, row: sqlite3.Row) -> RunRecord:
+        if row["passed"] not in {0, 1}:
+            raise IntegrityError("stored run result is invalid")
+        run = cls._run_from_row(row)
+        try:
+            cls._validate_run(run)
+        except ValidationError as exc:
+            raise IntegrityError("stored run is invalid") from exc
+        return run
+
     @staticmethod
     def _event_without_hash(row: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -974,11 +985,12 @@ class EvidenceStore:
 
     def get_run(self, run_id: str) -> RunRecord:
         _id(run_id, "run_id")
-        with self._read_connection() as connection:
+        with self._read_transaction() as connection:
             row = connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-        if row is None:
-            raise StorageError("run was not found")
-        return self._run_from_row(row)
+            if row is None:
+                raise StorageError("run was not found")
+            self._validate_case_lifecycle_from_connection(connection, row["case_id"])
+            return self._validated_run_from_row(row)
 
     def append_event(self, event: LedgerEventRecord) -> LedgerEvent:
         self._validate_event_record(event)
@@ -988,6 +1000,7 @@ class EvidenceStore:
                 "SELECT 1 FROM cases WHERE case_id = ?", (event.case_id,)
             ).fetchone() is None:
                 raise CaseNotFoundError("case was not found")
+            self._validate_case_lifecycle_from_connection(connection, event.case_id)
             if event.revision_id is not None and connection.execute(
                 """
                 SELECT 1 FROM revisions WHERE case_id = ? AND revision_id = ?
@@ -1216,6 +1229,7 @@ class EvidenceStore:
                 raise ValidationError("run and event identities do not match")
             self._validate_generic_event_type(event.event_type)
         with self._transaction() as connection:
+            self._validate_case_lifecycle_from_connection(connection, run.case_id)
             if connection.execute(
                 "SELECT 1 FROM runs WHERE run_id = ?", (run.run_id,)
             ).fetchone() is not None:
@@ -1547,9 +1561,11 @@ class EvidenceStore:
                 or probe is None
                 or probe["revision_id"] != head_revision_id
                 or probe["run_kind"] != "probe"
-                or not self._payload_contains(
-                    event.payload, {"probe_run": self._run_event_payload(probe)}
-                )
+            ):
+                raise IntegrityError("revision causal citations are invalid")
+            probe_record = self._validated_run_from_row(probe)
+            if not self._payload_contains(
+                event.payload, {"probe_run": self._run_event_payload(probe_record)}
             ):
                 raise IntegrityError("revision causal citations are invalid")
             head_revision_id = event.revision_id
