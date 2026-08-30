@@ -7,17 +7,42 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Mapping
-from xml.parsers import expat
 
 from pydantic import TypeAdapter, ValidationError
 
 from .schemas import AttributePatch, AxisPatch, ScalarPatch
 
 
-MAX_XML_BYTES = 1_048_576
+MAX_XML_BYTES = 65_536
+MAX_XML_DEPTH = 32
+MAX_XML_ELEMENTS = 256
 _EXTERNAL_URI = re.compile(r"(?:data|file|ftp|https?):", re.IGNORECASE)
-_XML_DECLARATION = re.compile(rb"\A<\?xml(?:[ \t\r\n]+[^?]*)\?>")
+_DOCTYPE = re.compile(rb"<!\s*doctype\b", re.IGNORECASE)
+_NAMESPACE_DECLARATION = re.compile(
+    rb"(?:\A|[\s<])xmlns(?::[A-Za-z_][\w.-]*)?\s*=", re.IGNORECASE
+)
+_XML_DECLARATION = re.compile(rb"\A[ \t\r\n]*<\?xml\b", re.IGNORECASE)
 _DOCUMENT_TAG = "__asset_autopsy_document"
+_SUPPORTED_ELEMENT = {
+    "actuator",
+    "body",
+    "compiler",
+    "geom",
+    "joint",
+    "mujoco",
+    "option",
+    "position",
+    "worldbody",
+}
+_UNSAFE_ELEMENT = {
+    "asset",
+    "hfield",
+    "include",
+    "mesh",
+    "plugin",
+    "skin",
+    "texture",
+}
 _UNSAFE_ATTRIBUTE = {
     "contentdir",
     "file",
@@ -30,10 +55,6 @@ _UNSAFE_ATTRIBUTE = {
     "uri",
     "url",
 }
-
-
-class _UnsafeXMLFeature(Exception):
-    pass
 
 
 class PatcherError(ValueError):
@@ -58,29 +79,33 @@ class PatchedArtifact:
     canonical_diff: tuple[CanonicalChange, ...]
 
 
-@dataclass(frozen=True)
-class _ParsedDocument:
-    document_root: ET.Element
-    root: ET.Element
-    prefix: bytes
-
-
-def _as_xml_bytes(xml: bytes | str) -> bytes:
-    if isinstance(xml, str):
-        source = xml.encode("utf-8")
-    elif isinstance(xml, bytes):
-        source = bytes(xml)
-    else:
-        raise PatcherError("INVALID_XML", "XML must be bytes or text")
-    if not source or len(source) > MAX_XML_BYTES or b"\x00" in source:
-        raise PatcherError("INVALID_XML", "XML is empty or outside the size limit")
+def _as_xml_bytes(xml: object) -> bytes:
+    if not isinstance(xml, bytes):
+        raise PatcherError("INVALID_XML", "MJCF source must be UTF-8 bytes")
+    source = bytes(xml)
+    if not source:
+        raise PatcherError("INVALID_XML", "MJCF source is empty")
+    if len(source) > MAX_XML_BYTES:
+        raise PatcherError(
+            "INVALID_XML", f"MJCF source exceeds the {MAX_XML_BYTES}-byte limit"
+        )
+    if source.startswith(b"\xef\xbb\xbf") or b"\x00" in source:
+        raise PatcherError(
+            "INVALID_XML", "MJCF source must be UTF-8 without a byte-order mark"
+        )
+    try:
+        source.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise PatcherError("INVALID_XML", "MJCF source must be UTF-8 bytes") from None
+    if _XML_DECLARATION.match(source):
+        raise PatcherError("INVALID_XML", "XML declarations are not supported")
+    if _NAMESPACE_DECLARATION.search(source):
+        raise PatcherError("INVALID_XML", "XML namespaces are not supported")
+    if _DOCTYPE.search(source):
+        raise PatcherError(
+            "UNSAFE_XML", "DOCTYPE and entity declarations are not supported"
+        )
     return source
-
-
-def _local_name(tag: object) -> str:
-    if not isinstance(tag, str):
-        return ""
-    return tag.rsplit("}", 1)[-1]
 
 
 def _node_kind(tag: object) -> str:
@@ -91,63 +116,50 @@ def _node_kind(tag: object) -> str:
     return tag if isinstance(tag, str) else ""
 
 
-def _reject_external_features(source: bytes) -> None:
-    source.decode("utf-8", errors="strict")
-    parser = expat.ParserCreate()
+def _validate_tree(root: ET.Element) -> None:
+    if root.tag != "mujoco":
+        raise PatcherError(
+            "INVALID_XML", "MJCF root must be a non-namespaced mujoco element"
+        )
+    element_count = 0
+    pending = [(root, 1)]
+    while pending:
+        element, depth = pending.pop()
+        element_count += 1
+        if element_count > MAX_XML_ELEMENTS:
+            raise PatcherError(
+                "INVALID_XML", f"MJCF exceeds the {MAX_XML_ELEMENTS}-element limit"
+            )
+        if depth > MAX_XML_DEPTH:
+            raise PatcherError(
+                "INVALID_XML", f"MJCF exceeds the {MAX_XML_DEPTH}-level depth limit"
+            )
+        if not isinstance(element.tag, str) or element.tag.startswith("{"):
+            raise PatcherError("INVALID_XML", "XML namespaces are not supported")
+        if element.tag in _UNSAFE_ELEMENT:
+            raise PatcherError("UNSAFE_XML", "external MJCF features are not supported")
+        if element.tag not in _SUPPORTED_ELEMENT:
+            raise PatcherError("INVALID_XML", "MJCF element is outside the fixture contract")
+        for name, value in element.attrib.items():
+            if name.startswith("{"):
+                raise PatcherError("INVALID_XML", "XML namespaces are not supported")
+            if name.lower() in _UNSAFE_ATTRIBUTE or _EXTERNAL_URI.search(value):
+                raise PatcherError(
+                    "UNSAFE_XML", "external MJCF references are not supported"
+                )
+        for child in element:
+            if child.tag is ET.ProcessingInstruction:
+                raise PatcherError(
+                    "INVALID_XML", "processing instructions are not supported"
+                )
+            if isinstance(child.tag, str):
+                pending.append((child, depth + 1))
 
-    def reject(*_args: object) -> None:
-        raise _UnsafeXMLFeature
 
-    parser.StartDoctypeDeclHandler = reject
-    parser.EntityDeclHandler = reject
-    parser.ExternalEntityRefHandler = reject
-    try:
-        parser.Parse(source, True)
-    except _UnsafeXMLFeature:
-        raise PatcherError("UNSAFE_XML", "external XML features are not allowed") from None
-    except (LookupError, ValueError):
-        raise PatcherError("INVALID_XML", "XML declares an unsupported encoding") from None
-    except expat.ExpatError:
-        return
-
-
-def _document_element(document_root: ET.Element) -> ET.Element:
-    elements = [child for child in document_root if isinstance(child.tag, str)]
-    if len(elements) != 1:
-        raise PatcherError("INVALID_XML", "XML must contain one document element")
-    return elements[0]
-
-
-def _split_xml_prefix(source: bytes) -> tuple[bytes, bytes]:
-    prefix = b""
-    body = source
-    if body.startswith(b"\xef\xbb\xbf"):
-        prefix = body[:3]
-        body = body[3:]
-    declaration = _XML_DECLARATION.match(body)
-    if declaration is not None:
-        prefix += declaration.group(0)
-        body = body[declaration.end() :]
-    return prefix, body
-
-
-def _parse_safe(xml: bytes | str) -> _ParsedDocument:
-    source = _as_xml_bytes(xml)
-    try:
-        _reject_external_features(source)
-    except UnicodeDecodeError:
-        raise PatcherError("INVALID_XML", "XML must be UTF-8") from None
-    try:
-        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
-        root = ET.fromstring(source, parser=parser)
-    except ET.ParseError:
-        raise PatcherError("INVALID_XML", "XML is not well formed") from None
-    if _local_name(root.tag) != "mujoco":
-        raise PatcherError("INVALID_XML", "XML root must be mujoco")
-    prefix, body = _split_xml_prefix(source)
+def _parse_safe(source: bytes) -> ET.Element:
     wrapped_source = (
         f"<{_DOCUMENT_TAG}>".encode("ascii")
-        + body
+        + source
         + f"</{_DOCUMENT_TAG}>".encode("ascii")
     )
     try:
@@ -157,39 +169,24 @@ def _parse_safe(xml: bytes | str) -> _ParsedDocument:
         document_root = ET.fromstring(wrapped_source, parser=wrapper_parser)
     except ET.ParseError:
         raise PatcherError("INVALID_XML", "XML is not well formed") from None
-    document_element = _document_element(document_root)
-    if _local_name(document_element.tag) != "mujoco":
-        raise PatcherError("INVALID_XML", "XML root must be mujoco")
-    for element in document_element.iter():
-        if _local_name(element.tag) in {"include", "plugin", "mesh", "texture", "hfield", "skin"}:
-            raise PatcherError("UNSAFE_XML", "external XML features are not allowed")
-        for name, value in element.attrib.items():
-            local_name = _local_name(name).lower()
-            if local_name in _UNSAFE_ATTRIBUTE or _EXTERNAL_URI.search(value):
-                raise PatcherError("UNSAFE_XML", "external XML references are not allowed")
-    return _ParsedDocument(document_root, document_element, prefix)
+    document_nodes = list(document_root)
+    if (
+        len(document_nodes) != 1
+        or not isinstance(document_nodes[0].tag, str)
+        or (document_root.text or "").strip()
+        or (document_nodes[0].tail or "").strip()
+    ):
+        raise PatcherError("INVALID_XML", "MJCF must contain only one document element")
+    root = document_nodes[0]
+    _validate_tree(root)
+    return root
 
 
-def _serialize_document(document_root: ET.Element, prefix: bytes) -> bytes:
-    serialized = ET.tostring(document_root, encoding="utf-8", short_empty_elements=True)
-    opening = f"<{_DOCUMENT_TAG}>".encode("ascii")
-    closing = f"</{_DOCUMENT_TAG}>".encode("ascii")
-    if not serialized.startswith(opening) or not serialized.endswith(closing):
-        raise PatcherError("INVALID_XML", "XML document could not be serialized")
-    return prefix + serialized[len(opening) : -len(closing)]
+def _serialize_document(root: ET.Element) -> bytes:
+    return ET.tostring(root, encoding="utf-8", short_empty_elements=True)
 
 
-def canonicalize_xml(xml: bytes | str) -> bytes:
-    source = _as_xml_bytes(xml)
-    _parse_safe(source)
-    try:
-        canonical = ET.canonicalize(xml_data=source, with_comments=True, strip_text=False)
-    except (ET.ParseError, UnicodeDecodeError):
-        raise PatcherError("INVALID_XML", "XML cannot be canonicalized") from None
-    return canonical.encode("utf-8")
-
-
-def provision_fixture(xml: bytes | str) -> bytes:
+def provision_fixture(xml: bytes) -> bytes:
     source = _as_xml_bytes(xml)
     _parse_safe(source)
     return source
@@ -231,9 +228,23 @@ def _compare_nodes(
                 )
             )
     if _node_text(before.text) != _node_text(after.text):
-        changes.append(CanonicalChange(before_path, "<text>", _node_text(before.text), _node_text(after.text)))
+        changes.append(
+            CanonicalChange(
+                before_path,
+                "<text>",
+                _node_text(before.text),
+                _node_text(after.text),
+            )
+        )
     if _node_text(before.tail) != _node_text(after.tail):
-        changes.append(CanonicalChange(before_path, "<tail>", _node_text(before.tail), _node_text(after.tail)))
+        changes.append(
+            CanonicalChange(
+                before_path,
+                "<tail>",
+                _node_text(before.tail),
+                _node_text(after.tail),
+            )
+        )
     before_children = list(before)
     after_children = list(after)
     if len(before_children) != len(after_children):
@@ -246,29 +257,24 @@ def _compare_nodes(
             )
         )
         return
-    for index, (before_child, after_child) in enumerate(zip(before_children, after_children)):
+    for index, (before_child, after_child) in enumerate(
+        zip(before_children, after_children)
+    ):
         child_name = _node_kind(before_child.tag)
         child_path = f"{before_path}/{child_name}[{index + 1}]"
         _compare_nodes(before_child, after_child, child_path, changes)
 
 
 def canonical_document_diff(
-    before_xml: bytes | str,
-    after_xml: bytes | str,
+    before_xml: bytes,
+    after_xml: bytes,
 ) -> tuple[CanonicalChange, ...]:
     before_source = _as_xml_bytes(before_xml)
     after_source = _as_xml_bytes(after_xml)
-    before_document = _parse_safe(before_source)
-    after_document = _parse_safe(after_source)
+    before_root = _parse_safe(before_source)
+    after_root = _parse_safe(after_source)
     changes: list[CanonicalChange] = []
-    _compare_nodes(
-        before_document.document_root,
-        after_document.document_root,
-        "/document",
-        changes,
-    )
-    if not changes and canonicalize_xml(before_source) != canonicalize_xml(after_source):
-        changes.append(CanonicalChange("/mujoco", "<document>", "different", "different"))
+    _compare_nodes(before_root, after_root, "/mujoco", changes)
     return tuple(changes)
 
 
@@ -319,25 +325,26 @@ def _validate_patch(patch: AttributePatch | Mapping[str, object]) -> AxisPatch |
 
 def apply_one_attribute_patch(
     *,
-    base_xml: bytes | str,
+    base_xml: bytes,
     expected_base_sha256: str,
     patch: AttributePatch | Mapping[str, object],
 ) -> PatchedArtifact:
     source = _as_xml_bytes(base_xml)
+    base_root = _parse_safe(source)
     actual_base_sha256 = hashlib.sha256(source).hexdigest()
-    if not isinstance(expected_base_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_base_sha256):
+    if not isinstance(expected_base_sha256, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", expected_base_sha256
+    ):
         raise PatcherError("BASE_HASH_MISMATCH", "base hash is invalid")
     if actual_base_sha256 != expected_base_sha256:
         raise PatcherError("BASE_HASH_MISMATCH", "base hash does not match")
     validated_patch = _validate_patch(patch)
-    base_document = _parse_safe(source)
-    revised_document_root = copy.deepcopy(base_document.document_root)
-    revised_root = _document_element(revised_document_root)
+    revised_root = copy.deepcopy(base_root)
     target = validated_patch.target
     matches = [
         element
         for element in revised_root.iter()
-        if _local_name(element.tag) == "joint" and element.attrib.get("name") == target.name
+        if element.tag == "joint" and element.attrib.get("name") == target.name
     ]
     if len(matches) != 1:
         raise PatcherError("SELECTOR_MISMATCH", "patch selector did not match exactly one joint")
@@ -360,25 +367,22 @@ def apply_one_attribute_patch(
         if current_value == validated_patch.new_value:
             raise PatcherError("NO_CHANGE", "patch does not change the authored document")
         replacement = _format_float(validated_patch.new_value)
-    if authored_value == replacement:
-        raise PatcherError("NO_CHANGE", "patch does not change the authored document")
     joint.set(xml_attribute, replacement)
-    revised_xml = _serialize_document(revised_document_root, base_document.prefix)
-    changes = canonical_document_diff(source, revised_xml)
+    changes: list[CanonicalChange] = []
+    _compare_nodes(base_root, revised_root, "/mujoco", changes)
     if len(changes) != 1 or changes[0].attribute != xml_attribute:
         raise PatcherError("UNDECLARED_EDIT", "candidate changes more than the declared attribute")
-    if canonicalize_xml(source) == canonicalize_xml(revised_xml):
-        raise PatcherError("NO_CHANGE", "patch does not change the canonical document")
+    revised_xml = _serialize_document(revised_root)
     return PatchedArtifact(
         xml=revised_xml,
         base_sha256=actual_base_sha256,
         asset_sha256=hashlib.sha256(revised_xml).hexdigest(),
-        canonical_diff=changes,
+        canonical_diff=tuple(changes),
     )
 
 
 def apply_patch(
-    base_xml: bytes | str,
+    base_xml: bytes,
     patch: AttributePatch | Mapping[str, object],
     *,
     expected_base_sha256: str,
@@ -393,11 +397,12 @@ def apply_patch(
 __all__ = [
     "CanonicalChange",
     "MAX_XML_BYTES",
+    "MAX_XML_DEPTH",
+    "MAX_XML_ELEMENTS",
     "PatchedArtifact",
     "PatcherError",
     "apply_one_attribute_patch",
     "apply_patch",
     "canonical_document_diff",
-    "canonicalize_xml",
     "provision_fixture",
 ]
