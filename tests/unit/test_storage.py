@@ -32,6 +32,14 @@ COMMITMENTS = {
 }
 
 
+def directory_chain_to_root(path: Path) -> list[Path]:
+    chain = [path]
+    while path.parent != path:
+        path = path.parent
+        chain.append(path)
+    return chain
+
+
 def make_store(tmp_path: Path) -> EvidenceStore:
     store = EvidenceStore(tmp_path / "ledger.sqlite", tmp_path / "objects")
     store.create_preprovisioned_case(
@@ -201,12 +209,7 @@ def test_object_store_syncs_new_shard_and_hash_root_parent(
 
     hash_root = tmp_path / "objects" / "sha256"
     shard = hash_root / digest[:2]
-    assert synchronized == [
-        shard,
-        hash_root,
-        hash_root.parent,
-        hash_root.parent.parent,
-    ]
+    assert synchronized == directory_chain_to_root(shard)
 
 
 def test_new_object_syncs_ancestors_even_when_they_already_exist(
@@ -226,12 +229,7 @@ def test_new_object_syncs_ancestors_even_when_they_already_exist(
     object_store.put_bytes(payload, expected_sha256=digest)
 
     hash_root = tmp_path / "objects" / "sha256"
-    assert synchronized == [
-        hash_root / digest[:2],
-        hash_root,
-        hash_root.parent,
-        hash_root.parent.parent,
-    ]
+    assert synchronized == directory_chain_to_root(hash_root / digest[:2])
 
 
 def test_object_store_syncs_every_recursively_created_ancestor(
@@ -250,14 +248,7 @@ def test_object_store_syncs_every_recursively_created_ancestor(
     object_store.put_bytes(payload, expected_sha256=digest)
 
     shard = object_store.hash_root / digest[:2]
-    assert synchronized == [
-        shard,
-        object_store.hash_root,
-        object_store.root,
-        object_store.root.parent,
-        object_store.root.parent.parent,
-        tmp_path,
-    ]
+    assert synchronized == directory_chain_to_root(shard)
 
 
 def test_concurrent_object_publication_syncs_existing_destination(
@@ -301,12 +292,7 @@ def test_concurrent_object_publication_syncs_existing_destination(
     assert first_errors == []
     hash_root = tmp_path / "objects" / "sha256"
     shard = hash_root / digest[:2]
-    assert second_synchronized == [
-        shard,
-        hash_root,
-        hash_root.parent,
-        hash_root.parent.parent,
-    ]
+    assert second_synchronized == directory_chain_to_root(shard)
 
 
 def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
