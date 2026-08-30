@@ -8,6 +8,7 @@ import json
 import math
 import os
 import sys
+import zlib
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ UPSTREAM_COMMIT = "ce9bed80ec3698d7b778230abc21f2228a3ce94b"
 UPSTREAM_PACKAGE = "mujoco-mcp-server"
 MAX_STEPS = 100_000
 MAX_XML_BYTES = 2_000_000
+MAX_RENDER_DIMENSION = 4096
+MAX_RENDER_BYTES = 64 * 1024 * 1024
 
 UPSTREAM_UNAVAILABLE = "UPSTREAM_UNAVAILABLE"
 UPSTREAM_BAD_RESPONSE = "UPSTREAM_BAD_RESPONSE"
@@ -172,7 +175,7 @@ class SlotState(str, Enum):
     CLOSED = "closed"
 
 
-@dataclass(frozen=True)
+@dataclass
 class UpstreamToolError(Exception):
     code: str
     message: str
@@ -359,7 +362,11 @@ def _matches_status(payload: dict[str, Any], status: str) -> bool:
     return set(payload) == {"status", "time"} and payload["status"] == status and _strict_float(payload["time"])
 
 
-def _matches_run(payload: dict[str, Any]) -> bool:
+def _numeric_vector(value: Any, width: int) -> bool:
+    return type(value) is list and len(value) == width and all(_strict_float(item) for item in value)
+
+
+def _matches_run(payload: dict[str, Any], *, qpos_width: int, qvel_width: int) -> bool:
     if set(payload) != {"n_steps", "sim_time", "final_state", "timeseries"}:
         return False
     if type(payload["n_steps"]) is not int or payload["n_steps"] < 0:
@@ -376,13 +383,11 @@ def _matches_run(payload: dict[str, Any]) -> bool:
     if set(final_state) != {"qpos", "qvel", "n_contacts", "energy"}:
         return False
     if (
-        type(final_state["qpos"]) is not list
-        or type(final_state["qvel"]) is not list
+        not _numeric_vector(final_state["qpos"], qpos_width)
+        or not _numeric_vector(final_state["qvel"], qvel_width)
         or type(final_state["energy"]) is not list
         or len(final_state["energy"]) != 2
         or type(final_state["n_contacts"]) is not int
-        or not _numeric_tree(final_state["qpos"])
-        or not _numeric_tree(final_state["qvel"])
         or not _numeric_tree(final_state["energy"])
     ):
         return False
@@ -391,11 +396,65 @@ def _matches_run(payload: dict[str, Any]) -> bool:
         return False
     return all(
         isinstance(row, dict)
-        and "t" in row
+        and {"t", "E_pot", "E_kin", "qpos", "qvel"}.issubset(row)
         and set(row).issubset({"t", "E_pot", "E_kin", "ncon", "qpos", "qvel"})
-        and all(_numeric_tree(value) for value in row.values())
+        and _strict_float(row["t"])
+        and _strict_float(row["E_pot"])
+        and _strict_float(row["E_kin"])
+        and ("ncon" not in row or type(row["ncon"]) is int)
+        and _numeric_vector(row["qpos"], qpos_width)
+        and _numeric_vector(row["qvel"], qvel_width)
         for row in timeseries
     )
+
+
+def _valid_png(data: bytes) -> bool:
+    signature = b"\x89PNG\r\n\x1a\n"
+    if len(data) > MAX_RENDER_BYTES or not data.startswith(signature):
+        return False
+    offset = len(signature)
+    saw_ihdr = False
+    saw_idat = False
+    saw_iend = False
+    while offset < len(data):
+        if len(data) - offset < 12:
+            return False
+        length = int.from_bytes(data[offset : offset + 4], "big")
+        chunk_type = data[offset + 4 : offset + 8]
+        chunk_start = offset + 8
+        chunk_end = chunk_start + length
+        chunk_record_end = chunk_end + 4
+        if (
+            not all(65 <= byte <= 90 or 97 <= byte <= 122 for byte in chunk_type)
+            or chunk_record_end > len(data)
+        ):
+            return False
+        chunk_data = data[chunk_start:chunk_end]
+        expected_crc = int.from_bytes(data[chunk_end:chunk_record_end], "big")
+        actual_crc = zlib.crc32(chunk_type)
+        actual_crc = zlib.crc32(chunk_data, actual_crc) & 0xFFFFFFFF
+        if actual_crc != expected_crc:
+            return False
+        if not saw_ihdr:
+            if chunk_type != b"IHDR" or length != 13:
+                return False
+            width = int.from_bytes(chunk_data[0:4], "big")
+            height = int.from_bytes(chunk_data[4:8], "big")
+            if not 1 <= width <= MAX_RENDER_DIMENSION or not 1 <= height <= MAX_RENDER_DIMENSION:
+                return False
+            saw_ihdr = True
+        elif chunk_type == b"IHDR":
+            return False
+        if chunk_type == b"IDAT":
+            saw_idat = True
+        if chunk_type == b"IEND":
+            if length != 0 or not saw_idat:
+                return False
+            saw_iend = True
+            offset = chunk_record_end
+            break
+        offset = chunk_record_end
+    return saw_ihdr and saw_idat and saw_iend and offset == len(data)
 
 
 def _render_png(result: Any) -> bytes:
@@ -411,11 +470,13 @@ def _render_png(result: Any) -> bytes:
         or not isinstance(getattr(summary, "text", None), str)
     ):
         raise _bad_response("Upstream render response was unexpected.")
+    if len(image.data) > ((MAX_RENDER_BYTES + 2) // 3) * 4:
+        raise _bad_response("Upstream render response was too large.")
     try:
         data = base64.b64decode(image.data, validate=True)
     except (ValueError, base64.binascii.Error):
         raise _bad_response("Upstream render response was invalid.") from None
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+    if not _valid_png(data):
         raise _bad_response("Upstream render response was invalid.")
     return data
 
@@ -576,6 +637,11 @@ class PinnedMujocoClient:
                 session.call_tool(tool_name, arguments=arguments),
                 timeout=timeout or self.call_timeout,
             )
+        except asyncio.CancelledError:
+            if slot is not None:
+                slot.state = SlotState.POISONED
+            await self._shutdown_child()
+            raise
         except (TimeoutError, asyncio.TimeoutError):
             if slot is not None:
                 slot.state = SlotState.POISONED
@@ -666,7 +732,14 @@ class PinnedMujocoClient:
             },
         )
         try:
-            payload = normalize_json_result(result, _matches_run)
+            payload = normalize_json_result(
+                result,
+                lambda value: _matches_run(
+                    value,
+                    qpos_width=slot.summary["nq"],
+                    qvel_width=slot.summary["nv"],
+                ),
+            )
         except UpstreamToolError:
             slot.state = SlotState.POISONED
             raise
@@ -687,7 +760,12 @@ class PinnedMujocoClient:
         width: int = 160,
         height: int = 120,
     ) -> bytes:
-        if type(width) is not int or type(height) is not int or not 1 <= width <= 4096 or not 1 <= height <= 4096:
+        if (
+            type(width) is not int
+            or type(height) is not int
+            or not 1 <= width <= MAX_RENDER_DIMENSION
+            or not 1 <= height <= MAX_RENDER_DIMENSION
+        ):
             raise ValueError("render dimensions are invalid")
         result = await self._invoke(
             slot,

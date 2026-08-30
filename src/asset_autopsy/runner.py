@@ -5,9 +5,20 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from .mujoco_client import MAX_STEPS, PinnedMujocoClient
+from .mujoco_client import (
+    MAX_RENDER_DIMENSION,
+    MAX_STEPS,
+    PinnedMujocoClient,
+    UPSTREAM_BAD_RESPONSE,
+    UPSTREAM_TIMEOUT,
+    UPSTREAM_UNAVAILABLE,
+    UpstreamToolError,
+)
 
 MAX_TOTAL_STEPS = MAX_STEPS
+_RENDER_FALLBACK_CODES = frozenset(
+    {UPSTREAM_BAD_RESPONSE, UPSTREAM_TIMEOUT, UPSTREAM_UNAVAILABLE}
+)
 
 
 def _number(value: Any) -> bool:
@@ -70,20 +81,27 @@ class RunConfiguration:
             raise ValueError("initial state must contain finite numbers")
         if self.initial_ctrl is not None and not all(_number(value) for value in self.initial_ctrl):
             raise ValueError("initial control must contain finite numbers")
-        if type(self.render_width) is not int or type(self.render_height) is not int:
-            raise ValueError("render dimensions must be integers")
+        if (
+            type(self.render_width) is not int
+            or type(self.render_height) is not int
+            or not 1 <= self.render_width <= MAX_RENDER_DIMENSION
+            or not 1 <= self.render_height <= MAX_RENDER_DIMENSION
+        ):
+            raise ValueError("render dimensions are invalid")
 
 
 @dataclass(frozen=True)
 class SegmentRecord:
     label: str
     step_count: int
+    ctrl: tuple[float, ...]
     timeseries: tuple[dict[str, Any], ...]
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "label": self.label,
             "step_count": self.step_count,
+            "ctrl": list(self.ctrl),
             "timeseries": [dict(row) for row in self.timeseries],
         }
 
@@ -139,7 +157,9 @@ class DeterministicRunner:
                 ctrl=list(segment.ctrl),
                 n_steps=segment.n_steps,
             )
-            rows = tuple(payload["timeseries"])
+            rows = tuple(
+                {**row, "ctrl": list(segment.ctrl)} for row in payload["timeseries"]
+            )
             if len(rows) != segment.n_steps or payload["n_steps"] != segment.n_steps:
                 raise ValueError("runner received an unexpected step count")
             if not all(
@@ -151,6 +171,7 @@ class DeterministicRunner:
                 SegmentRecord(
                     label=segment.label,
                     step_count=segment.n_steps,
+                    ctrl=segment.ctrl,
                     timeseries=rows,
                 )
             )
@@ -164,7 +185,9 @@ class DeterministicRunner:
                     width=configuration.render_width,
                     height=configuration.render_height,
                 )
-            except Exception:
+            except UpstreamToolError as error:
+                if error.code not in _RENDER_FALLBACK_CODES:
+                    raise
                 render_fallback = True
 
         return RunRecord(

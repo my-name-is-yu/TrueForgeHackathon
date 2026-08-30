@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import struct
 from types import SimpleNamespace
+import zlib
 
 import pytest
 
@@ -45,10 +47,29 @@ class _FakeTransport:
 
 
 class _FakeSession:
-    def __init__(self, _read: object, _write: object, *, timeout_on_reset: bool = False) -> None:
+    def __init__(
+        self,
+        _read: object,
+        _write: object,
+        *,
+        timeout_on_reset: bool = False,
+        incomplete_run: bool = False,
+        wrong_width_run: bool = False,
+        block_on_run: bool = False,
+        nq: int = 0,
+        nv: int = 0,
+        nu: int = 0,
+    ) -> None:
         self.closed = False
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.timeout_on_reset = timeout_on_reset
+        self.incomplete_run = incomplete_run
+        self.wrong_width_run = wrong_width_run
+        self.block_on_run = block_on_run
+        self.nq = nq
+        self.nv = nv
+        self.nu = nu
+        self.run_started = asyncio.Event()
 
     async def __aenter__(self) -> _FakeSession:
         return self
@@ -74,9 +95,9 @@ class _FakeSession:
                 {
                     "name": "synthetic",
                     "mujoco_version": "3.5.0",
-                    "nq": 0,
-                    "nv": 0,
-                    "nu": 0,
+                    "nq": self.nq,
+                    "nv": self.nv,
+                    "nu": self.nu,
                     "nbody": 1,
                     "ngeom": 0,
                     "njnt": 0,
@@ -100,12 +121,20 @@ class _FakeSession:
             return _text_result({"status": "ok", "time": 0.0})
         if name == "run_and_analyze":
             steps = arguments["n_steps"]
+            if self.block_on_run:
+                self.run_started.set()
+                await asyncio.Event().wait()
+            qpos = [0.0] if self.wrong_width_run else [0.0] * self.nq
+            qvel = [0.0] if self.wrong_width_run else [0.0] * self.nv
+            row = {"t": 0.002, "E_pot": 0.0, "E_kin": 0.0, "ncon": 0}
+            if not self.incomplete_run:
+                row.update({"qpos": qpos, "qvel": qvel})
             return _text_result(
                 {
                     "n_steps": steps,
                     "sim_time": [0.0, 0.002],
-                    "final_state": {"qpos": [], "qvel": [], "n_contacts": 0, "energy": [0.0, 0.0]},
-                    "timeseries": [{"t": 0.002, "E_pot": 0.0, "E_kin": 0.0, "ncon": 0} for _ in range(steps)],
+                    "final_state": {"qpos": qpos, "qvel": qvel, "n_contacts": 0, "energy": [0.0, 0.0]},
+                    "timeseries": [row for _ in range(steps)],
                 }
             )
         if name == "render_snapshot":
@@ -113,13 +142,32 @@ class _FakeSession:
         raise AssertionError(name)
 
 
-def _fake_client(*, timeout_on_reset: bool = False):
+def _fake_client(
+    *,
+    timeout_on_reset: bool = False,
+    incomplete_run: bool = False,
+    wrong_width_run: bool = False,
+    block_on_run: bool = False,
+    nq: int = 0,
+    nv: int = 0,
+    nu: int = 0,
+):
     transport = _FakeTransport()
     session: _FakeSession | None = None
 
     def make_session(read: object, write: object) -> _FakeSession:
         nonlocal session
-        session = _FakeSession(read, write, timeout_on_reset=timeout_on_reset)
+        session = _FakeSession(
+            read,
+            write,
+            timeout_on_reset=timeout_on_reset,
+            incomplete_run=incomplete_run,
+            wrong_width_run=wrong_width_run,
+            block_on_run=block_on_run,
+            nq=nq,
+            nv=nv,
+            nu=nu,
+        )
         return session
 
     return transport, make_session, lambda: session
@@ -244,9 +292,34 @@ def test_timeout_terminates_child_and_poisoned_slot() -> None:
     asyncio.run(check())
 
 
+def test_run_response_requires_requested_signals_and_model_widths() -> None:
+    async def check() -> None:
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        for incomplete_run, wrong_width_run in ((True, False), (False, True)):
+            transport, make_session, get_session = _fake_client(
+                incomplete_run=incomplete_run,
+                wrong_width_run=wrong_width_run,
+                nq=0,
+                nv=0,
+            )
+            async with PinnedMujocoClient(
+                transport_factory=lambda _parameters: transport,
+                session_factory=make_session,
+            ) as client:
+                slot = await client.load("<mujoco model=\"synthetic\"/>")
+                with pytest.raises(UpstreamToolError) as caught:
+                    await client.run_segment(slot, ctrl=[], n_steps=1)
+                assert caught.value.code == UPSTREAM_BAD_RESPONSE
+                assert slot.state is SlotState.POISONED
+            assert get_session().closed is True
+
+    asyncio.run(check())
+
+
 def test_render_failure_returns_one_numeric_only_fallback() -> None:
     async def run() -> None:
-        transport, make_session, _get_session = _fake_client()
+        transport, make_session, _get_session = _fake_client(nu=1)
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
         record = await DeterministicRunner(
@@ -257,7 +330,7 @@ def test_render_failure_returns_one_numeric_only_fallback() -> None:
         ).run(
             RunConfiguration(
                 xml_string="<mujoco model=\"synthetic\"/>",
-                segments=(ConstantSegment((), 2, "numeric"),),
+                segments=(ConstantSegment((0.25,), 2, "numeric"),),
                 render=True,
             )
         )
@@ -265,8 +338,45 @@ def test_render_failure_returns_one_numeric_only_fallback() -> None:
         assert record.image_png is None
         assert record.render_fallback is True
         assert record.as_dict()["render"]["numeric_only_fallback"] is True
+        assert record.segments[0].ctrl == (0.25,)
+        assert record.as_dict()["segments"][0]["ctrl"] == [0.25]
+        assert record.as_dict()["segments"][0]["timeseries"][0]["ctrl"] == [0.25]
 
     asyncio.run(run())
+
+
+def test_invalid_render_configuration_is_not_a_fallback() -> None:
+    with pytest.raises(ValueError):
+        RunConfiguration(
+            xml_string="<mujoco/>",
+            segments=(ConstantSegment((), 1),),
+            render=True,
+            render_width=0,
+        )
+
+
+def test_cancelled_upstream_call_poisoned_slot_and_closes_child() -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client(block_on_run=True)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        async with client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            task = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
+            await get_session().run_started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert slot.state is SlotState.POISONED
+            assert client.ready is False
+            assert transport.closed is True
+            assert get_session().closed is True
+
+    asyncio.run(check())
 
 
 @pytest.mark.phase0_upstream
@@ -302,9 +412,31 @@ def test_step_mismatch_error_is_typed() -> None:
     assert error.envelope()["code"] == UPSTREAM_STEP_MISMATCH
 
 
-def test_render_payload_is_not_a_text_fallback() -> None:
-    png = base64.b64encode(b"\x89PNG\r\n\x1a\nsynthetic").decode()
-    assert png
+def test_render_payload_requires_complete_png_structure() -> None:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(kind)
+        crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", crc)
+
+    png = b"\x89PNG\r\n\x1a\n" + chunk(
+        b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    ) + chunk(b"IDAT", b"synthetic") + chunk(b"IEND", b"")
+    encoded = base64.b64encode(png).decode()
+    assert encoded
+    from asset_autopsy.mujoco_client import _render_png
+
+    result = SimpleNamespace(
+        isError=False,
+        content=[
+            SimpleNamespace(type="image", mimeType="image/png", data=encoded),
+            SimpleNamespace(type="text", text="synthetic"),
+        ],
+    )
+    assert _render_png(result) == png
+    result.content[0].data = base64.b64encode(png[:-1]).decode()
+    with pytest.raises(UpstreamToolError) as caught:
+        _render_png(result)
+    assert caught.value.code == UPSTREAM_BAD_RESPONSE
     assert set(REQUIRED_TOOL_NAMES) == {
         "validate_mjcf",
         "sim_load",
