@@ -134,6 +134,7 @@ def test_agent_spec_is_the_exact_serial_approval_contract() -> None:
         "remaining budgets",
         "allowed patch attributes",
         "successful Sandbox analysis",
+        "Do not use Sandbox to rediscover tool schemas",
         "public 1/1 and hidden 3/3",
         "Stop at the publication approval request",
         "Do not ask the user questions",
