@@ -130,6 +130,45 @@ def test_fixture_allows_urls_in_comments_and_processing_instructions() -> None:
     assert provision_fixture(xml) == xml
 
 
+def test_fixture_ignores_unsafe_tokens_in_comments_and_processing_instructions() -> None:
+    xml = b'''<!-- &copyright; <include file="x"/> -->
+<?documentation &copyright; <include file="x"/>?>
+<mujoco><worldbody><body name="arm"><joint name="elbow" damping="0.3"/></body></worldbody></mujoco>'''
+
+    assert provision_fixture(xml) == xml
+
+
+def test_numeric_no_op_patches_are_rejected_before_serialization() -> None:
+    scalar_xml = BASE_XML.replace(b'damping="0.3"', b'damping="0.30"')
+    scalar_patch = {
+        "target": {"kind": "joint", "name": "elbow"},
+        "attribute": "damping",
+        "expected_old_value": 0.3,
+        "new_value": 0.3,
+    }
+    with pytest.raises(PatcherError) as scalar_exc_info:
+        apply_one_attribute_patch(
+            base_xml=scalar_xml,
+            expected_base_sha256=hashlib.sha256(scalar_xml).hexdigest(),
+            patch=scalar_patch,
+        )
+    assert scalar_exc_info.value.code == "NO_CHANGE"
+
+    axis_patch = {
+        "target": {"kind": "joint", "name": "elbow"},
+        "attribute": "axis",
+        "expected_old_value": [0.0, 0.0, 1.0],
+        "new_value": [0.0, 0.0, 4.0],
+    }
+    with pytest.raises(PatcherError) as axis_exc_info:
+        apply_one_attribute_patch(
+            base_xml=BASE_XML,
+            expected_base_sha256=_base_hash(),
+            patch=axis_patch,
+        )
+    assert axis_exc_info.value.code == "NO_CHANGE"
+
+
 def test_axis_expected_value_allows_only_normalization_roundoff() -> None:
     component = 1.0 / (2.0**0.5)
     xml = BASE_XML.replace(b'axis="0 0 2"', b'axis="1 1 0"')

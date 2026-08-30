@@ -316,6 +316,47 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
         }
     )
 
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(
+            {
+                "schema_version": "asset-autopsy/v1",
+                "request_id": "req_demo",
+                "case_id": "case_demo",
+                "revision_id": "r000",
+                "scenario_id": "public_center",
+                "result": "fail",
+                "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+                "behavior_diff": {
+                    "changed": False,
+                    "metric_deltas": [
+                        {"metric": "hold_error_p95_m", "before": 0.02, "after": 0.02, "delta": 0.0}
+                    ],
+                    "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                    "verdict": "public_pass",
+                },
+            }
+        )
+
+    RunTaskOutput.model_validate(
+        {
+            "schema_version": "asset-autopsy/v1",
+            "request_id": "req_demo",
+            "case_id": "case_demo",
+            "revision_id": "r000",
+            "scenario_id": "public_center",
+            "result": "fail",
+            "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+            "behavior_diff": {
+                "changed": False,
+                "metric_deltas": [
+                    {"metric": "hold_error_p95_m", "before": 0.02, "after": 0.02, "delta": 0.0}
+                ],
+                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                "verdict": "changed",
+            },
+        }
+    )
+
 
 def test_public_event_tail_accepts_hypothesis_preregistration() -> None:
     event = PublicEventSummary.model_validate(

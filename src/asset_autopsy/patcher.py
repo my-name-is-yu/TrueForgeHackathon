@@ -7,6 +7,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Mapping
+from xml.parsers import expat
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -14,12 +15,6 @@ from .schemas import AttributePatch, AxisPatch, ScalarPatch
 
 
 MAX_XML_BYTES = 1_048_576
-_UNSAFE_DECLARATION = re.compile(r"<!\s*(?:doctype|entity)\b", re.IGNORECASE)
-_UNSAFE_ELEMENT = re.compile(
-    r"<\s*(?:[A-Za-z_][\w.-]*:)?(?:include|plugin|mesh|texture|hfield|skin)\b",
-    re.IGNORECASE,
-)
-_UNKNOWN_ENTITY = re.compile(r"&(?!(?:amp|lt|gt|quot|apos);)[A-Za-z_][A-Za-z0-9_.-]*;")
 _EXTERNAL_URI = re.compile(r"(?:data|file|ftp|https?):", re.IGNORECASE)
 _XML_DECLARATION = re.compile(rb"\A<\?xml(?:[ \t\r\n]+[^?]*)\?>")
 _DOCUMENT_TAG = "__asset_autopsy_document"
@@ -35,6 +30,10 @@ _UNSAFE_ATTRIBUTE = {
     "uri",
     "url",
 }
+
+
+class _UnsafeXMLFeature(Exception):
+    pass
 
 
 class PatcherError(ValueError):
@@ -93,11 +92,21 @@ def _node_kind(tag: object) -> str:
 
 
 def _reject_external_features(source: bytes) -> None:
-    text = source.decode("utf-8", errors="strict")
-    if _UNSAFE_DECLARATION.search(text):
-        raise PatcherError("UNSAFE_XML", "XML declarations are not allowed")
-    if _UNSAFE_ELEMENT.search(text) or _UNKNOWN_ENTITY.search(text):
-        raise PatcherError("UNSAFE_XML", "external XML features are not allowed")
+    source.decode("utf-8", errors="strict")
+    parser = expat.ParserCreate()
+
+    def reject(*_args: object) -> None:
+        raise _UnsafeXMLFeature
+
+    parser.StartDoctypeDeclHandler = reject
+    parser.EntityDeclHandler = reject
+    parser.ExternalEntityRefHandler = reject
+    try:
+        parser.Parse(source, True)
+    except _UnsafeXMLFeature:
+        raise PatcherError("UNSAFE_XML", "external XML features are not allowed") from None
+    except expat.ExpatError:
+        return
 
 
 def _document_element(document_root: ET.Element) -> ET.Element:
@@ -339,11 +348,15 @@ def apply_one_attribute_patch(
         current_value = _normalize_axis(_parse_finite_values(authored_value, 3))
         if not _axis_matches(current_value, validated_patch.expected_old_value):
             raise PatcherError("OLD_VALUE_MISMATCH", "expected authored value does not match")
+        if _axis_matches(current_value, validated_patch.new_value):
+            raise PatcherError("NO_CHANGE", "patch does not change the authored document")
         replacement = _format_axis(validated_patch.new_value)
     else:
         current_value = _parse_finite_values(authored_value, 1)[0]
         if current_value != validated_patch.expected_old_value:
             raise PatcherError("OLD_VALUE_MISMATCH", "expected authored value does not match")
+        if current_value == validated_patch.new_value:
+            raise PatcherError("NO_CHANGE", "patch does not change the authored document")
         replacement = _format_float(validated_patch.new_value)
     if authored_value == replacement:
         raise PatcherError("NO_CHANGE", "patch does not change the authored document")

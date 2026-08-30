@@ -502,8 +502,8 @@ class BehaviorDiff(StrictModel):
         if not self.changed:
             if self.first_divergence is not None:
                 raise ValueError("unchanged behavior cannot report first divergence")
-            if self.verdict in {"regressed", "changed", "improved"}:
-                raise ValueError("unchanged behavior must have the public_pass verdict")
+            if self.verdict in {"regressed", "improved"}:
+                raise ValueError("unchanged behavior cannot report an outcome verdict")
         return self
 
 
@@ -514,6 +514,16 @@ class RunTaskOutput(CommonOutput):
     observations: list[MetricObservation] = Field(min_length=1, max_length=64)
     trace: list[TracePoint] = Field(default_factory=list, max_length=51)
     behavior_diff: BehaviorDiff | None = None
+
+    @model_validator(mode="after")
+    def validate_behavior_diff_result(self) -> RunTaskOutput:
+        if self.behavior_diff is None or self.behavior_diff.changed:
+            return self
+        if self.result == "pass" and self.behavior_diff.verdict != "public_pass":
+            raise ValueError("a passing unchanged task must have the public_pass verdict")
+        if self.result == "fail" and self.behavior_diff.verdict != "changed":
+            raise ValueError("a failing unchanged task must have the changed verdict")
+        return self
 
 
 class ProbeObservation(StrictModel):
