@@ -2,43 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["head_sha", "review_head_number", "rework_round", "sources", "findings", "uncertain", "gate", "summary"],
+  "required": ["findings", "summary"],
   "properties": {
-    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "review_head_number": {"type": "integer", "minimum": 1, "maximum": 10},
-    "rework_round": {"type": "integer", "minimum": 0, "maximum": 9},
-    "sources": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["codex", "qodo"],
-      "properties": {
-        "codex": {"enum": ["complete", "timeout"]},
-        "qodo": {"enum": ["complete", "timeout"]}
-      }
-    },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["fingerprint", "title", "sources", "severity", "acceptance_required", "followup_alignment", "yagni_risk", "classification", "rationale", "requested_change", "backlog_title"],
+        "required": ["id", "disposition", "rationale", "instruction", "backlog_title"],
         "properties": {
-          "fingerprint": {"type": "string", "minLength": 1},
-          "title": {"type": "string", "minLength": 1},
-          "sources": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["codex", "qodo"]}},
-          "severity": {"enum": ["P0", "P1", "P2", "P3", "unspecified"]},
-          "acceptance_required": {"type": "boolean"},
-          "followup_alignment": {"enum": ["aligned", "conflicts", "unknown", "not_applicable"]},
-          "yagni_risk": {"enum": ["none", "low", "high"]},
-          "classification": {"enum": ["accept", "backlog", "reject", "conflict", "human"]},
+          "id": {"type": "string", "minLength": 1},
+          "disposition": {"enum": ["fix_now", "backlog", "reject"]},
           "rationale": {"type": "string", "minLength": 1},
-          "requested_change": {"type": "string", "minLength": 1},
+          "instruction": {"type": "string"},
           "backlog_title": {"type": "string"}
         }
       }
     },
-    "uncertain": {"type": "boolean"},
-    "gate": {"enum": ["rework", "merge_ready", "blocked"]},
     "summary": {"type": "string", "minLength": 1}
   }
 }
