@@ -5,6 +5,7 @@ import base64
 from io import BytesIO
 from itertools import repeat
 import json
+import math
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -12,6 +13,7 @@ import pytest
 from PIL import Image, PngImagePlugin
 
 from asset_autopsy.mujoco_client import (
+    PinnedMujocoClient,
     REQUIRED_TOOL_SCHEMAS,
     REQUIRED_ENVIRONMENT,
     REQUIRED_TOOL_NAMES,
@@ -635,9 +637,9 @@ def test_unknown_body_track_is_rejected_before_upstream_run() -> None:
 
 
 @pytest.mark.parametrize(
-    "invalid_body_xpos", ("missing", "wrong_width", "nested", "nonfinite")
+    "invalid_body_xpos", ("missing", "wrong_width", "nested")
 )
-def test_body_position_response_requires_three_finite_scalars(
+def test_body_position_response_requires_three_numeric_scalars(
     invalid_body_xpos: str,
 ) -> None:
     async def check() -> None:
@@ -660,6 +662,29 @@ def test_body_position_response_requires_three_finite_scalars(
                 )
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
             assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
+def test_nonfinite_body_position_reaches_the_domain_runner() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(
+            invalid_body_xpos="nonfinite"
+        )
+        record = await DeterministicRunner(
+            PinnedMujocoClient(
+                transport_factory=lambda _parameters: transport,
+                session_factory=make_session,
+            )
+        ).run(
+            RunConfiguration(
+                xml_string='<mujoco model="synthetic"/>',
+                segments=(ConstantSegment(ctrl=(), n_steps=1),),
+                track=("body_xpos:world",),
+            )
+        )
+
+        assert math.isinf(record.segments[0].timeseries[0]["body_xpos:world"][2])
 
     asyncio.run(check())
 
