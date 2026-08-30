@@ -386,6 +386,21 @@ def test_child_environment_is_allowlisted_and_pinned() -> None:
     assert UPSTREAM_COMMIT == "ce9bed80ec3698d7b778230abc21f2228a3ce94b"
 
 
+def test_pin_verification_ignores_forged_checkout_metadata(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    forged = tmp_path / "mujoco_mcp_server-999.dist-info"
+    forged.mkdir()
+    (forged / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: mujoco-mcp-server\nVersion: 999\n"
+    )
+    (forged / "direct_url.json").write_text(
+        json.dumps({"vcs_info": {"commit_id": UPSTREAM_COMMIT}})
+    )
+    monkeypatch.chdir(tmp_path)
+    verify_pinned_upstream()
+
+
 def test_normalizer_rejects_wrapped_error_and_unexpected_content() -> None:
     with pytest.raises(UpstreamToolError) as wrapped:
         normalize_json_result(
@@ -1110,6 +1125,7 @@ def test_render_payload_accepts_only_observed_profile_and_bounds_data(monkeypatc
         base64.b64encode(_png_bytes(width=1, height=1)).decode(),
         base64.b64encode(_png_bytes(mode="RGBA")).decode(),
         base64.b64encode(png[:8] + b"malformed").decode(),
+        base64.b64encode(png + b"private trailing data").decode(),
     ):
         result.content[0].data = invalid_data
         with pytest.raises(UpstreamToolError) as caught:

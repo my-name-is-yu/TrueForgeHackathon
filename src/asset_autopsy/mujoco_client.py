@@ -9,6 +9,7 @@ import json
 import math
 import os
 import sys
+import sysconfig
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -233,7 +234,21 @@ def server_parameters(*, no_render: bool = False) -> StdioServerParameters:
 
 def verify_pinned_upstream() -> None:
     try:
-        distribution = importlib.metadata.distribution(UPSTREAM_PACKAGE)
+        site_paths = {
+            path
+            for name in ("purelib", "platlib")
+            if (path := sysconfig.get_path(name)) is not None
+        }
+        matches = [
+            distribution
+            for path in site_paths
+            for distribution in importlib.metadata.distributions(path=[path])
+            if distribution.metadata.get("Name", "").lower().replace("_", "-")
+            == UPSTREAM_PACKAGE
+        ]
+        if len(matches) != 1:
+            raise ValueError("pinned distribution metadata was ambiguous")
+        distribution = matches[0]
         direct_url = distribution.read_text("direct_url.json")
         metadata = json.loads(direct_url or "")
     except (
@@ -526,6 +541,8 @@ def _render_png(result: Any, *, width: int, height: int) -> bytes:
     except (ValueError, base64.binascii.Error):
         raise _bad_response("Upstream render response was invalid.") from None
     if len(data) > MAX_RENDER_BYTES:
+        raise _bad_response("Upstream render response was invalid.")
+    if not data.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82"):
         raise _bad_response("Upstream render response was invalid.")
     try:
         with Image.open(BytesIO(data)) as decoded:
