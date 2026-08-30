@@ -228,6 +228,65 @@ def test_full_two_revision_service_flow_qualifies_and_direct_publication_emits_o
             predicates=[Predicate(metric="hold_error_p95_m", op="lt", value=0.03)],
         ),
     )
+    unrelated_request = axis_revision_request.model_copy(
+        update={
+            "patch": ScalarPatch(
+                target=PatchTarget(kind="joint", name="joint_a"),
+                attribute="armature",
+                expected_old_value=0.01,
+                new_value=0.02,
+            )
+        }
+    )
+    before_events = len(service.store.ledger_events(CASE_ID))
+    with pytest.raises(DomainError) as exc_info:
+        run(service.create_revision(unrelated_request))
+    assert exc_info.value.code == "CAUSAL_PATCH_UNBOUND"
+    assert len(service.store.ledger_events(CASE_ID)) == before_events
+    assert len(service.store.list_revisions(CASE_ID)) == 1
+    wrong_kind_run = run(
+        service.run_experiment(
+            experiment(
+                "r000",
+                    hypothesis("joint_b", "axis", "joint_b", "axis").model_copy(
+                        update={
+                        "suspected_elements": [
+                            ElementReference(
+                                kind="body", name="end_effector", attributes=["axis"]
+                            )
+                        ],
+                        "competing_explanation": CompetingExplanation(
+                            claim="The response instead comes from body end_effector axis.",
+                            suspected_elements=[
+                                ElementReference(
+                                    kind="body", name="end_effector", attributes=["axis"]
+                                )
+                            ],
+                            discriminating_reason="The element kind distinguishes the explanations.",
+                        )
+                    }
+                ),
+            )
+        )
+    )
+    wrong_kind_request = axis_revision_request.model_copy(
+        update={
+            "basis_hypothesis_id": wrong_kind_run.hypothesis_id,
+            "basis_experiment_run_id": wrong_kind_run.run_id,
+            "patch": AxisPatch(
+                target=PatchTarget(kind="joint", name="end_effector"),
+                attribute="axis",
+                expected_old_value=(0.0, 0.0, 1.0),
+                new_value=(0.0, 1.0, 0.0),
+            ),
+        }
+    )
+    before_events = len(service.store.ledger_events(CASE_ID))
+    with pytest.raises(DomainError) as exc_info:
+        run(service.create_revision(wrong_kind_request))
+    assert exc_info.value.code == "CAUSAL_PATCH_UNBOUND"
+    assert len(service.store.ledger_events(CASE_ID)) == before_events
+    assert len(service.store.list_revisions(CASE_ID)) == 1
     r001 = run(service.create_revision(axis_revision_request))
     assert r001.revision_id == "r001"
     assert (
