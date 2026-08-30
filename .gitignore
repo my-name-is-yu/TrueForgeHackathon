@@ -1,7 +1,7 @@
 node_modules/
+.venv/
 .env
 .env.*
-!.env.example
 
 # Logs and local runtime artifacts
 *.log
