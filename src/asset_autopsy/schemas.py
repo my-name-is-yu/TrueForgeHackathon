@@ -404,6 +404,7 @@ class PublicEventSummary(StrictModel):
     kind: Literal[
         "CASE_OPENED",
         "TASK_COMPLETED",
+        "HYPOTHESIS_RECORDED",
         "PROBE_COMPLETED",
         "PROBE_FAILED",
         "REVISION_CREATED",
@@ -446,9 +447,39 @@ class TracePoint(StrictModel):
     values: tuple[StrictFiniteFloat, ...] = Field(min_length=1, max_length=64)
 
 
+class AnalysisTracePoint(StrictModel):
+    time_s: StrictFiniteFloat = Field(ge=0.0)
+    qpos: tuple[StrictFiniteFloat, ...] = Field(min_length=1, max_length=64)
+    qvel: tuple[StrictFiniteFloat, ...] = Field(min_length=1, max_length=64)
+    control: tuple[StrictFiniteFloat, ...] = Field(min_length=1, max_length=64)
+    end_effector_xyz: tuple[StrictFiniteFloat, StrictFiniteFloat, StrictFiniteFloat]
+
+
+class FirstDivergence(StrictModel):
+    step: StrictInt = Field(ge=0)
+    time_s: StrictFiniteFloat = Field(ge=0.0)
+    signal: MetricName
+    magnitude: StrictFiniteFloat = Field(ge=0.0)
+
+
+class MetricDelta(StrictModel):
+    metric: MetricName
+    before: StrictFiniteFloat
+    after: StrictFiniteFloat
+    delta: StrictFiniteFloat
+
+
+class ClauseResult(StrictModel):
+    clause_id: ElementName
+    outcome: Literal["improved", "regressed", "unchanged"]
+
+
 class BehaviorDiff(StrictModel):
     changed: StrictBool
-    metrics: list[MetricObservation] = Field(default_factory=list, max_length=64)
+    first_divergence: FirstDivergence | None = None
+    metric_deltas: list[MetricDelta] = Field(default_factory=list, max_length=64)
+    clause_results: list[ClauseResult] = Field(default_factory=list, max_length=32)
+    verdict: Literal["regressed", "changed", "improved", "public_pass"]
 
 
 class RunTaskOutput(CommonOutput):
@@ -474,7 +505,27 @@ class RunProbeOutput(CommonOutput):
     inconclusive: StrictBool
     conflicting: StrictBool
     observations: list[ProbeObservation] = Field(min_length=1, max_length=128)
-    trace: list[TracePoint] = Field(min_length=256, max_length=256)
+    trace: list[AnalysisTracePoint] = Field(min_length=256, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_analysis_trace(self) -> RunProbeOutput:
+        first = self.trace[0]
+        widths = (len(first.qpos), len(first.qvel), len(first.control))
+        for point in self.trace[1:]:
+            if (len(point.qpos), len(point.qvel), len(point.control)) != widths:
+                raise ValueError("analysis trace signal widths must remain constant")
+
+        intervals = [
+            current.time_s - previous.time_s
+            for previous, current in zip(self.trace, self.trace[1:])
+        ]
+        if not intervals or intervals[0] <= 0.0 or any(
+            interval <= 0.0
+            or not math.isclose(interval, intervals[0], rel_tol=1e-9, abs_tol=1e-12)
+            for interval in intervals[1:]
+        ):
+            raise ValueError("analysis trace timestamps must be uniformly sampled")
+        return self
 
 
 class CanonicalDiffEntry(StrictModel):

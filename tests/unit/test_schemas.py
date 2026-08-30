@@ -6,8 +6,11 @@ from pydantic import ValidationError
 from asset_autopsy.schemas import (
     AxisPatch,
     AggregateResult,
+    BehaviorDiff,
     CreateRevisionInput,
     OpenCaseInput,
+    PublicEventSummary,
+    RunTaskOutput,
     ScalarPatch,
     RunProbeOutput,
     TOOL_INPUT_MODELS,
@@ -115,7 +118,7 @@ def test_patch_and_basis_probe_are_single_objects() -> None:
 def test_run_probe_output_supplies_both_revision_basis_identifiers() -> None:
     payload = _run_probe_output_payload()
     payload["trace"] = [
-        {"time_s": float(index), "values": (0.0,)} for index in range(256)
+        _analysis_trace_point(index) for index in range(256)
     ]
     run = RunProbeOutput.model_validate(payload)
     revision = CreateRevisionInput.model_validate(
@@ -172,6 +175,89 @@ def test_run_probe_output_rejects_incomplete_analysis_trace(trace: list[dict[str
 def test_run_probe_output_requires_analysis_trace() -> None:
     with pytest.raises(ValidationError):
         RunProbeOutput.model_validate(_run_probe_output_payload())
+
+
+def _analysis_trace_point(index: int, *, time_s: float | None = None) -> dict[str, object]:
+    return {
+        "time_s": float(index) if time_s is None else time_s,
+        "qpos": (0.0, 0.1),
+        "qvel": (0.0, 0.2),
+        "control": (0.0,),
+        "end_effector_xyz": (0.0, 0.1, 0.2),
+    }
+
+
+def test_run_probe_output_rejects_inconsistent_analysis_trace_rows() -> None:
+    payload = _run_probe_output_payload()
+    payload["trace"] = [_analysis_trace_point(index) for index in range(256)]
+    payload["trace"][12]["qvel"] = (0.0,)
+    with pytest.raises(ValidationError):
+        RunProbeOutput.model_validate(payload)
+
+
+def test_run_probe_output_rejects_nonuniform_analysis_trace_timestamps() -> None:
+    payload = _run_probe_output_payload()
+    payload["trace"] = [
+        _analysis_trace_point(index, time_s=float(index) + (0.1 if index > 128 else 0.0))
+        for index in range(256)
+    ]
+    with pytest.raises(ValidationError):
+        RunProbeOutput.model_validate(payload)
+
+
+def test_behavior_diff_encodes_frozen_comparison_evidence() -> None:
+    behavior_diff = BehaviorDiff.model_validate(
+        {
+            "changed": True,
+            "first_divergence": {
+                "step": 12,
+                "time_s": 0.12,
+                "signal": "qpos",
+                "magnitude": 0.002,
+            },
+            "metric_deltas": [
+                {"metric": "hold_error_p95_m", "before": 0.04, "after": 0.02, "delta": -0.02}
+            ],
+            "clause_results": [{"clause_id": "hold_error", "outcome": "improved"}],
+            "verdict": "improved",
+        }
+    )
+    assert behavior_diff.first_divergence is not None
+    assert behavior_diff.metric_deltas[0].delta == -0.02
+    assert behavior_diff.clause_results[0].outcome == "improved"
+
+    with pytest.raises(ValidationError):
+        behavior_diff.model_validate({"changed": True, "verdict": "unknown"})
+
+
+def test_run_task_output_accepts_behavior_diff_evidence() -> None:
+    RunTaskOutput.model_validate(
+        {
+            "schema_version": "asset-autopsy/v1",
+            "request_id": "req_demo",
+            "case_id": "case_demo",
+            "event_ids": [],
+            "warnings": [],
+            "artifacts": [],
+            "revision_id": "r000",
+            "scenario_id": "public_center",
+            "result": "pass",
+            "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+            "behavior_diff": {
+                "changed": False,
+                "metric_deltas": [],
+                "clause_results": [],
+                "verdict": "public_pass",
+            },
+        }
+    )
+
+
+def test_public_event_tail_accepts_hypothesis_preregistration() -> None:
+    event = PublicEventSummary.model_validate(
+        {"event_id": "evt_demo", "kind": "HYPOTHESIS_RECORDED", "summary": "Hypothesis recorded."}
+    )
+    assert event.kind == "HYPOTHESIS_RECORDED"
 
 
 def test_axis_is_normalized_and_family_ranges_are_enforced() -> None:
