@@ -110,7 +110,7 @@ def test_wrapper_does_not_accept_head_metadata_outside_trusted_line(tmp_path: Pa
 
 def test_wrapper_runs_sol_without_file_reading_tools(tmp_path: Path) -> None:
     packet = tmp_path / "packet.md"
-    packet.write_text(valid_header())
+    packet.write_text(valid_header(review_head=11, rework_round=10))
     decision = tmp_path / "source-decision.json"
     decision.write_text(
         json.dumps(
