@@ -281,9 +281,15 @@ def _text_block(result: Any) -> str:
     return blocks[0].text
 
 
-async def _close_stack(stack: AsyncExitStack) -> None:
+async def _finish_resource_task(task: asyncio.Task[None]) -> None:
     try:
-        await stack.aclose()
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        raise
     except Exception:
         pass
 
@@ -517,7 +523,8 @@ class PinnedMujocoClient:
         self.no_render = no_render
         self._transport_factory = transport_factory
         self._session_factory = session_factory
-        self._stack: AsyncExitStack | None = None
+        self._resource_task: asyncio.Task[None] | None = None
+        self._stop_resources: asyncio.Event | None = None
         self._session: ClientSession | None = None
         self._session_token: object | None = None
         self._slots: list[SimulationSlot] = []
@@ -528,7 +535,41 @@ class PinnedMujocoClient:
 
     @property
     def ready(self) -> bool:
-        return self._session is not None and self._stack is not None
+        return self._session is not None and self._resource_task is not None
+
+    async def _own_resources(
+        self,
+        started: asyncio.Future[tuple[ClientSession, Any]],
+        stop: asyncio.Event,
+    ) -> None:
+        stack = AsyncExitStack()
+        try:
+            read, write = await asyncio.wait_for(
+                stack.enter_async_context(
+                    self._transport_factory(server_parameters(no_render=self.no_render))
+                ),
+                timeout=self.startup_timeout,
+            )
+            session = await asyncio.wait_for(
+                stack.enter_async_context(self._session_factory(read, write)),
+                timeout=self.startup_timeout,
+            )
+            await asyncio.wait_for(session.initialize(), timeout=self.startup_timeout)
+            tools = await asyncio.wait_for(session.list_tools(), timeout=self.startup_timeout)
+            started.set_result((session, tools))
+            await stop.wait()
+        except asyncio.CancelledError:
+            if not started.done():
+                started.cancel()
+            raise
+        except BaseException as exc:
+            if not started.done():
+                started.set_exception(exc)
+        finally:
+            try:
+                await stack.aclose()
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def __aenter__(self) -> PinnedMujocoClient:
         async with self._lifecycle_lock:
@@ -536,20 +577,13 @@ class PinnedMujocoClient:
                 self._record_context_owner()
                 return self
             verify_pinned_upstream()
-            stack = AsyncExitStack()
+            started: asyncio.Future[tuple[ClientSession, Any]] = (
+                asyncio.get_running_loop().create_future()
+            )
+            stop = asyncio.Event()
+            resource_task = asyncio.create_task(self._own_resources(started, stop))
             try:
-                read, write = await asyncio.wait_for(
-                    stack.enter_async_context(
-                        self._transport_factory(server_parameters(no_render=self.no_render))
-                    ),
-                    timeout=self.startup_timeout,
-                )
-                session = await asyncio.wait_for(
-                    stack.enter_async_context(self._session_factory(read, write)),
-                    timeout=self.startup_timeout,
-                )
-                await asyncio.wait_for(session.initialize(), timeout=self.startup_timeout)
-                tools = await asyncio.wait_for(session.list_tools(), timeout=self.startup_timeout)
+                session, tools = await started
                 try:
                     actual = {tool.name: tool.inputSchema for tool in tools.tools}
                 except Exception:
@@ -567,13 +601,19 @@ class PinnedMujocoClient:
                         "Install the pinned upstream dependency.",
                     )
             except asyncio.CancelledError:
-                await _close_stack(stack)
+                resource_task.cancel()
+                try:
+                    await resource_task
+                except (asyncio.CancelledError, Exception):
+                    pass
                 raise
             except UpstreamToolError:
-                await _close_stack(stack)
+                stop.set()
+                await _finish_resource_task(resource_task)
                 raise
             except (TimeoutError, asyncio.TimeoutError):
-                await _close_stack(stack)
+                stop.set()
+                await _finish_resource_task(resource_task)
                 raise UpstreamToolError(
                     UPSTREAM_TIMEOUT,
                     SAFE_TIMEOUT_MESSAGE,
@@ -581,14 +621,16 @@ class PinnedMujocoClient:
                     SAFE_NEXT_ACTION,
                 ) from None
             except Exception:
-                await _close_stack(stack)
+                stop.set()
+                await _finish_resource_task(resource_task)
                 raise UpstreamToolError(
                     UPSTREAM_UNAVAILABLE,
                     SAFE_MESSAGE,
                     True,
                     SAFE_NEXT_ACTION,
                 ) from None
-            self._stack = stack
+            self._resource_task = resource_task
+            self._stop_resources = stop
             self._session = session
             self._session_token = object()
             self._record_context_owner()
@@ -622,7 +664,8 @@ class PinnedMujocoClient:
             await self._shutdown_child_locked(poison=poison)
 
     async def _shutdown_child_locked(self, *, poison: bool) -> None:
-        stack, self._stack = self._stack, None
+        resource_task, self._resource_task = self._resource_task, None
+        stop, self._stop_resources = self._stop_resources, None
         self._session = None
         self._session_token = None
         slots, self._slots = self._slots, []
@@ -631,8 +674,10 @@ class PinnedMujocoClient:
                 slot.state = SlotState.POISONED
             elif not poison and slot.state is SlotState.READY:
                 slot.state = SlotState.CLOSED
-        if stack is not None:
-            await _close_stack(stack)
+        if stop is not None:
+            stop.set()
+        if resource_task is not None:
+            await _finish_resource_task(resource_task)
 
     def _new_slot(self, xml_string: str) -> SimulationSlot:
         if self._session_token is None:
@@ -763,6 +808,14 @@ class PinnedMujocoClient:
         qvel: list[float] | None = None,
         ctrl: list[float] | None = None,
     ) -> None:
+        self._require_ready_slot(slot)
+        for value, width, name in (
+            (qpos, slot.summary["nq"], "qpos"),
+            (qvel, slot.summary["nv"], "qvel"),
+            (ctrl, slot.summary["nu"], "ctrl"),
+        ):
+            if value is not None and not _numeric_vector(value, width):
+                raise ValueError(f"{name} must match the loaded model width with finite values")
         arguments: dict[str, Any] = {"sim_name": slot._name}
         if qpos is not None:
             arguments["qpos"] = list(qpos)
@@ -787,6 +840,8 @@ class PinnedMujocoClient:
         if type(n_steps) is not int or not 1 <= n_steps <= MAX_STEPS:
             raise ValueError(f"n_steps must be between 1 and {MAX_STEPS}")
         self._require_ready_slot(slot)
+        if not _numeric_vector(ctrl, slot.summary["nu"]):
+            raise ValueError("ctrl must match the loaded model width with finite values")
         projected_scalars = n_steps * (
             slot.summary["nq"] + slot.summary["nv"] + slot.summary["nu"] + 4
         )

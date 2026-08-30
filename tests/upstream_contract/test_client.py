@@ -60,6 +60,18 @@ class _FakeTransport:
         self.closed = True
 
 
+class _BlockingCloseTransport(_FakeTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_started = asyncio.Event()
+        self.allow_close = asyncio.Event()
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        self.close_started.set()
+        await self.allow_close.wait()
+        self.closed = True
+
+
 class _FakeSession:
     def __init__(
         self,
@@ -880,6 +892,46 @@ def test_cancelled_partial_startup_closes_entered_resources() -> None:
     asyncio.run(check())
 
 
+def test_cancelled_shutdown_finishes_closing_child_before_propagating() -> None:
+    async def check() -> None:
+        transport = _BlockingCloseTransport()
+        session: _FakeSession | None = None
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        def make_session(read: object, write: object) -> _FakeSession:
+            nonlocal session
+            session = _FakeSession(read, write)
+            return session
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        entered = asyncio.Event()
+        begin_exit = asyncio.Event()
+
+        async def owner() -> None:
+            async with client:
+                entered.set()
+                await begin_exit.wait()
+
+        shutdown = asyncio.create_task(owner())
+        await entered.wait()
+        begin_exit.set()
+        await transport.close_started.wait()
+        shutdown.cancel()
+        await asyncio.sleep(0)
+        assert shutdown.done() is False
+        transport.allow_close.set()
+        with pytest.raises(asyncio.CancelledError):
+            await shutdown
+        assert transport.closed is True
+        assert session is not None and session.closed is True
+        assert client.ready is False
+
+    asyncio.run(check())
+
+
 def test_stale_context_exit_does_not_close_restarted_session() -> None:
     async def check() -> None:
         from asset_autopsy.mujoco_client import PinnedMujocoClient
@@ -1017,6 +1069,53 @@ def test_trace_budget_rejects_high_dimensional_run_before_upstream_call(
             slot = await client.load("<mujoco model=\"synthetic\"/>")
             with pytest.raises(ValueError, match="bounded numeric record budget"):
                 await client.run_segment(slot, ctrl=[0.0] * nu, n_steps=n_steps)
+            assert [name for name, _arguments in get_session().calls] == ["sim_load"]
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(("ctrl", "nu"), (([0.0], 0), ([float("nan")], 1)))
+def test_run_segment_rejects_invalid_control_before_upstream_call(
+    ctrl: list[float], nu: int
+) -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client(nu=nu)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            with pytest.raises(ValueError, match="ctrl must match"):
+                await client.run_segment(slot, ctrl=ctrl, n_steps=1)
+            assert [name for name, _arguments in get_session().calls] == ["sim_load"]
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "dimensions"),
+    (
+        ("qpos", [0.0], {}),
+        ("qvel", [float("inf")], {"nv": 1}),
+        ("ctrl", [0.0], {}),
+    ),
+)
+def test_set_state_rejects_invalid_vectors_before_upstream_call(
+    field_name: str, value: list[float], dimensions: dict[str, int]
+) -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client(**dimensions)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            with pytest.raises(ValueError, match="loaded model width"):
+                await client.set_state(slot, **{field_name: value})
             assert [name for name, _arguments in get_session().calls] == ["sim_load"]
 
     asyncio.run(check())
