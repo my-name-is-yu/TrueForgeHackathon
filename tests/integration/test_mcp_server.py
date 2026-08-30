@@ -16,6 +16,10 @@ from asset_autopsy.mcp_server import (
     serve,
 )
 from asset_autopsy.mujoco_client import UpstreamToolError
+from asset_autopsy.schemas import (
+    EXPERIMENT_OBSERVABLE_KINDS,
+    EXPERIMENT_OBSERVABLES_DESCRIPTION,
+)
 
 
 class FakeRunner:
@@ -262,6 +266,11 @@ def test_exact_strict_tool_schemas_and_annotations() -> None:
     ):
         assert experiment_schema["properties"][field]["minItems"] == 1
         assert experiment_schema["properties"][field]["maxItems"] == maximum
+    observable_schema = experiment_schema["properties"]["observables"]
+    assert observable_schema["description"] == EXPERIMENT_OBSERVABLES_DESCRIPTION
+    assert set(observable_schema["items"]["discriminator"]["mapping"]) == set(
+        EXPERIMENT_OBSERVABLE_KINDS
+    )
 
     inputs = json.dumps([tool.inputSchema for tool in tools], sort_keys=True)
     for prohibited in (
@@ -395,6 +404,78 @@ def test_validation_feedback_is_bounded_and_reports_missing_public_fields() -> N
 
     asyncio.run(call())
     assert facade.recorder.counts["create_revision"] == 0
+
+
+@pytest.mark.parametrize(
+    ("observable", "error_type"),
+    [
+        ({"kind": "private-canary-kind"}, "union_tag_invalid"),
+        ({}, "union_tag_not_found"),
+    ],
+)
+def test_validation_feedback_recovers_public_observable_discriminator(
+    observable: dict[str, str], error_type: str
+) -> None:
+    _, facade = make_facade()
+
+    async def call() -> None:
+        with pytest.raises(ToolError) as captured:
+            await facade.mcp.call_tool(
+                "run_experiment",
+                {
+                    "case_id": "case_compound_arm_01",
+                    "revision_id": "r000",
+                    "hypothesis": {
+                        "claim": "bounded claim",
+                        "suspected_elements": [
+                            {
+                                "kind": "joint",
+                                "name": "joint_a",
+                                "attributes": ["axis"],
+                            }
+                        ],
+                        "competing_explanation": {
+                            "claim": "bounded alternative",
+                            "suspected_elements": [
+                                {
+                                    "kind": "joint",
+                                    "name": "joint_b",
+                                    "attributes": ["axis"],
+                                }
+                            ],
+                            "discriminating_reason": "bounded reason",
+                        },
+                        "prediction": "bounded prediction",
+                        "falsifier": "bounded falsifier",
+                    },
+                    "initial_joint_positions": [
+                        {"joint_name": "joint_a", "position_rad": 0.0}
+                    ],
+                    "segments": [
+                        {
+                            "n_steps": 256,
+                            "controls": [{"actuator_name": "motor_a", "value": 0.0}],
+                        }
+                    ],
+                    "observables": [observable],
+                },
+            )
+        message = str(captured.value)
+        envelope = json.loads(message)
+        assert envelope["validation_errors"] == [
+            {
+                "path": "$.observables[0]",
+                "type": error_type,
+                "discriminator": "kind",
+                "allowed_values": list(EXPERIMENT_OBSERVABLE_KINDS),
+            }
+        ]
+        assert envelope["validation_errors_truncated"] is False
+        assert "private-canary-kind" not in message
+        assert len(message) < 1_500
+
+    asyncio.run(call())
+    assert facade.recorder.counts["run_experiment"] == 0
 
 
 def test_unexpected_service_errors_are_redacted_and_recorded() -> None:

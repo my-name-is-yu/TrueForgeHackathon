@@ -23,6 +23,7 @@ from .schemas import (
     CreateRevisionInput,
     CreateRevisionOutput,
     ExpectedEffect,
+    EXPERIMENT_OBSERVABLE_KINDS,
     ExperimentObservable,
     Hypothesis,
     HypothesisId,
@@ -382,13 +383,13 @@ def _safe_validation_path(location: tuple[Any, ...], *, unknown_field: bool) -> 
 
 def _safe_validation_feedback(
     error: PydanticValidationError,
-) -> tuple[list[dict[str, str]], bool]:
+) -> tuple[list[dict[str, Any]], bool]:
     raw_errors = error.errors(
         include_url=False,
         include_input=False,
         include_context=False,
     )
-    feedback: list[dict[str, str]] = []
+    feedback: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for item in raw_errors:
         raw_type = item.get("type")
@@ -407,7 +408,17 @@ def _safe_validation_feedback(
         if identity in seen:
             continue
         seen.add(identity)
-        feedback.append({"path": path, "type": error_type})
+        item_feedback: dict[str, Any] = {"path": path, "type": error_type}
+        if (
+            error_type in {"union_tag_invalid", "union_tag_not_found"}
+            and len(location) == 2
+            and location[0] == "observables"
+            and isinstance(location[1], int)
+            and not isinstance(location[1], bool)
+        ):
+            item_feedback["discriminator"] = "kind"
+            item_feedback["allowed_values"] = list(EXPERIMENT_OBSERVABLE_KINDS)
+        feedback.append(item_feedback)
         if len(feedback) == _MAX_VALIDATION_ERRORS:
             break
     return feedback, len(raw_errors) > len(feedback)
