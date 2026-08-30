@@ -443,7 +443,12 @@ Input shape:
       {"actuator_name":"motor_b","value":-0.1}
     ]}
   ],
-  "observables":["qpos","qvel","energy",{"body_position":{"name":"end_effector"}}],
+  "observables":[
+    {"kind":"qpos"},
+    {"kind":"qvel"},
+    {"kind":"energy"},
+    {"kind":"body_position","body_name":"end_effector"}
+  ],
   "capture_final_snapshot":true
 }
 ~~~
@@ -814,7 +819,7 @@ revisions(
   asset_sha256,
   patch_manifest_sha256,
   hypothesis_event_id,
-  experiment_run_id,
+  probe_run_id,
   created_at,
   PRIMARY KEY(case_id, revision_id),
   UNIQUE(case_id, ordinal)
@@ -825,7 +830,7 @@ runs(
   case_id,
   revision_id,
   run_kind,
-  experiment_kind,
+  probe_kind,
   condition_hash,
   execution_fingerprint,
   trace_sha256,
@@ -833,6 +838,8 @@ runs(
   passed,
   created_at
 )
+
+The public `basis_experiment_run_id` and `run_experiment` names are translated inside the service to the existing compatibility fields `run_kind="probe"` and `probe_kind="agent_defined"`, with the child citation stored physically as `probe_run_id`. These internal names never appear in MCP schemas or results; PR #14 storage columns are not renamed in this direction slice.
 
 ledger_events(
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -960,7 +967,7 @@ After approval:
 
 The exported ledger intentionally ends at qualification; the later PROMOTED receipt remains in SQLite and the TrueForge session trace. This avoids a bundle/ledger hash cycle. It is a locally reconcilable publication protocol, not a claim of general exactly-once effects.
 
-Recovery and reconciliation APIs may remain internal service operations. The SC1 MCP surface and TrueForge E2E do not call them; the demonstrated path stops at the approved public tool contract.
+Recovery and reconciliation APIs may remain as internal dormant service operations. The SC1 MCP surface and TrueForge E2E do not call them; the demonstrated runtime path stops at the approved public tool contract.
 
 ## 17. Planned repository shape
 
