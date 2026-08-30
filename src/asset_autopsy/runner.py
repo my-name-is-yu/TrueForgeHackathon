@@ -4,6 +4,7 @@ import asyncio
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from itertools import islice
 from types import MappingProxyType
 from typing import Any
 
@@ -27,6 +28,16 @@ _RENDER_FALLBACK_CODES = frozenset(
 
 def _number(value: Any) -> bool:
     return type(value) in (int, float) and math.isfinite(float(value))
+
+
+def _bounded_tuple(value: Any, *, limit: int, name: str) -> tuple[Any, ...]:
+    if isinstance(value, tuple):
+        result = value
+    else:
+        result = tuple(islice(iter(value), limit + 1))
+    if len(result) > limit:
+        raise ValueError(f"{name} exceeds its bounded size")
+    return result
 
 
 def _numbers(value: Any) -> bool:
@@ -58,8 +69,11 @@ class ConstantSegment:
     label: str = ""
 
     def __post_init__(self) -> None:
-        if not isinstance(self.ctrl, tuple):
-            object.__setattr__(self, "ctrl", tuple(self.ctrl))
+        object.__setattr__(
+            self,
+            "ctrl",
+            _bounded_tuple(self.ctrl, limit=MAX_TRACE_SCALARS, name="ctrl"),
+        )
         if not isinstance(self.label, str) or len(self.label) > 64:
             raise ValueError("segment label is invalid")
         if type(self.n_steps) is not int or not 1 <= self.n_steps <= MAX_STEPS:
@@ -83,20 +97,43 @@ class RunConfiguration:
     render_height: int = 120
 
     def __post_init__(self) -> None:
-        if not isinstance(self.segments, tuple):
-            object.__setattr__(self, "segments", tuple(self.segments))
-        if not isinstance(self.initial_qpos, tuple):
-            object.__setattr__(self, "initial_qpos", tuple(self.initial_qpos))
-        if not isinstance(self.initial_qvel, tuple):
-            object.__setattr__(self, "initial_qvel", tuple(self.initial_qvel))
-        if self.initial_ctrl is not None and not isinstance(self.initial_ctrl, tuple):
-            object.__setattr__(self, "initial_ctrl", tuple(self.initial_ctrl))
+        object.__setattr__(
+            self,
+            "segments",
+            _bounded_tuple(self.segments, limit=MAX_SEGMENTS, name="segments"),
+        )
+        object.__setattr__(
+            self,
+            "initial_qpos",
+            _bounded_tuple(
+                self.initial_qpos,
+                limit=MAX_TRACE_SCALARS,
+                name="initial_qpos",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "initial_qvel",
+            _bounded_tuple(
+                self.initial_qvel,
+                limit=MAX_TRACE_SCALARS,
+                name="initial_qvel",
+            ),
+        )
+        if self.initial_ctrl is not None:
+            object.__setattr__(
+                self,
+                "initial_ctrl",
+                _bounded_tuple(
+                    self.initial_ctrl,
+                    limit=MAX_TRACE_SCALARS,
+                    name="initial_ctrl",
+                ),
+            )
         if not isinstance(self.xml_string, str) or not self.xml_string:
             raise ValueError("xml_string is required")
         if not self.segments:
             raise ValueError("at least one constant segment is required")
-        if len(self.segments) > MAX_SEGMENTS:
-            raise ValueError(f"segment count must not exceed {MAX_SEGMENTS}")
         if sum(segment.n_steps for segment in self.segments) > MAX_TOTAL_STEPS:
             raise ValueError(f"total steps must not exceed {MAX_TOTAL_STEPS}")
         if not all(_number(value) for value in self.initial_qpos + self.initial_qvel):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from io import BytesIO
+from itertools import repeat
 import json
 from types import SimpleNamespace
 from typing import Any, cast
@@ -375,10 +376,15 @@ def test_runner_configuration_requires_constant_bounded_segments() -> None:
             segments=tuple(ConstantSegment((), 1) for _ in range(MAX_SEGMENTS)),
         ).segments
     ) == MAX_SEGMENTS
-    with pytest.raises(ValueError, match="segment count"):
+    with pytest.raises(ValueError, match="segments exceeds its bounded size"):
         RunConfiguration(
             xml_string="<mujoco/>",
             segments=tuple(ConstantSegment((), 1) for _ in range(MAX_SEGMENTS + 1)),
+        )
+    with pytest.raises(ValueError, match="segments exceeds its bounded size"):
+        RunConfiguration(
+            xml_string="<mujoco/>",
+            segments=repeat(ConstantSegment((), 1)),
         )
 
 
