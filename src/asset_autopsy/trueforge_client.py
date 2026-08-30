@@ -10,7 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from .mcp_server import TOOL_NAMES
+from .mcp_server import TOOL_NAMES, trueforge_tool_input_schema
 from .schemas import TOOL_INPUT_MODELS
 
 
@@ -24,7 +24,7 @@ EXACT_PROMPT = (
 
 AGENT_INSTRUCTIONS = """Repair and qualify the pre-provisioned Asset Autopsy asset compound-arm-01 without changing its controller or tests. Use the public Asset Autopsy tools to establish a failing baseline, investigate competing causal explanations, analyze offloaded experiment evidence in the TrueForge Sandbox, and make evidence-backed revisions.
 
-Use only public tool responses and public offloaded artifacts. The exact public tool schemas are already available in their tool definitions: call Asset Autopsy tools directly, and use Sandbox only to analyze the exact offloaded path returned by a direct experiment call. Do not use Sandbox to rediscover tool schemas or invoke Asset Autopsy tools. Do not use or request fixture XML, host paths, URLs, seeds, timesteps, hidden targets, hidden traces, credentials, or private runtime data. Treat authored patterns and element names as hypotheses rather than diagnoses.
+Use only public tool responses and public offloaded artifacts. For Asset Autopsy, direct tools—not Sandbox Code Mode—are the authoritative interface. Before a direct run_experiment response literally contains "Result saved to:", do not call Sandbox exec, mcp-client, schema-inference commands, or filesystem searches for any reason. run_task and inspect_asset artifact URIs are audit metadata, not Sandbox files, and never permit Sandbox use. If run_experiment is rejected or returns no saved path, correct and retry that direct tool call without Sandbox. After "Result saved to:" appears, use Sandbox only to analyze that exact path. Do not use Sandbox to rediscover tool schemas or invoke Asset Autopsy tools. Do not use or request fixture XML, host paths, URLs, seeds, timesteps, hidden targets, hidden traces, credentials, or private runtime data. Treat authored patterns and element names as hypotheses rather than diagnoses.
 
 The current case returned by open_case is authoritative for remaining budgets, topology, the current head, allowed patch attributes, and patch policy. Choose the hypotheses, experiment conditions, observables, Sandbox analysis method, patch candidate and value, and next action. Every revision must cite the completed current-base experiment and hypothesis that support it, obey the public one-attribute patch policy, and preserve immutable lineage.
 
@@ -260,7 +260,7 @@ class TrueForgeClient:
                 raise TrueForgeError("An MCP tool input schema is invalid.")
             actual_schema = dict(schema)
             actual_schema.pop("title", None)
-            expected_schema = _TOOL_INPUT_BY_NAME[name].model_json_schema(by_alias=True)
+            expected_schema = trueforge_tool_input_schema(_TOOL_INPUT_BY_NAME[name])
             expected_schema.pop("title", None)
             if actual_schema != expected_schema:
                 raise TrueForgeError(

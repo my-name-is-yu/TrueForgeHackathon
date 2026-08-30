@@ -318,7 +318,13 @@ class RunExperimentInput(StrictModel):
     revision_id: RevisionId
     hypothesis: Hypothesis
     initial_joint_positions: list[JointPosition] = Field(min_length=1, max_length=64)
-    segments: list[ConstantControlSegment] = Field(min_length=1, max_length=16)
+    segments: list[ConstantControlSegment] = Field(
+        min_length=1,
+        max_length=16,
+        description=(
+            "The sum of n_steps across all segments must be between 256 and 100000."
+        ),
+    )
     observables: list[ExperimentObservable] = Field(
         min_length=1,
         max_length=8,
