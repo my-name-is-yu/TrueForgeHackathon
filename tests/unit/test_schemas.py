@@ -13,6 +13,7 @@ from asset_autopsy.schemas import (
     RunTaskOutput,
     ScalarPatch,
     RunProbeOutput,
+    VerifyRevisionOutput,
     TOOL_INPUT_MODELS,
     TOOL_OUTPUT_MODELS,
 )
@@ -356,6 +357,123 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
             },
         }
     )
+
+
+def test_metric_observation_allows_only_nullable_settling_time() -> None:
+    RunTaskOutput.model_validate(
+        {
+            "schema_version": "asset-autopsy/v1",
+            "request_id": "req_demo",
+            "case_id": "case_demo",
+            "revision_id": "r000",
+            "scenario_id": "public_center",
+            "result": "fail",
+            "observations": [
+                {"metric": "settling_time_s", "value": None},
+                {"metric": "hold_error_p95_m", "value": 0.02},
+            ],
+        }
+    )
+
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(
+            {
+                "schema_version": "asset-autopsy/v1",
+                "request_id": "req_demo",
+                "case_id": "case_demo",
+                "revision_id": "r000",
+                "scenario_id": "public_center",
+                "result": "fail",
+                "observations": [{"metric": "hold_error_p95_m", "value": None}],
+            }
+        )
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(
+            {
+                "schema_version": "asset-autopsy/v1",
+                "request_id": "req_demo",
+                "case_id": "case_demo",
+                "revision_id": "r000",
+                "scenario_id": "public_center",
+                "result": "fail",
+                "observations": [{"metric": "settling_time_s", "value": float("nan")}],
+            }
+        )
+
+
+def _verify_revision_payload() -> dict[str, object]:
+    return {
+        "schema_version": "asset-autopsy/v1",
+        "request_id": "req_demo",
+        "case_id": "case_demo",
+        "revision_id": "r001",
+        "asset_sha256": "1" * 64,
+        "integrity": {
+            "original": True,
+            "controller": True,
+            "contract": True,
+            "runner": True,
+            "lineage": True,
+        },
+        "public_result": {"passed": 1, "total": 1},
+        "holdout_result": {"passed": 3, "total": 3},
+    }
+
+
+def _promotion_ticket_payload() -> dict[str, object]:
+    return {
+        "ticket_id": "evt_ticket",
+        "case_id": "case_demo",
+        "revision_id": "r001",
+        "asset_sha256": "1" * 64,
+        "canonical_diff": [
+            {"target": "elbow", "attribute": "damping", "before": "0.3", "after": "0.5"}
+        ],
+        "public_result": {"passed": 1, "total": 1},
+        "holdout_result": {"passed": 3, "total": 3},
+        "export_name": "repaired-asset",
+        "qualified_core_sha256": "2" * 64,
+        "ticket_digest": "3" * 64,
+    }
+
+
+def test_verify_revision_requires_successful_bound_promotion_ticket() -> None:
+    payload = _verify_revision_payload()
+    payload["promotion_ticket"] = _promotion_ticket_payload()
+    output = VerifyRevisionOutput.model_validate(payload)
+    assert output.promotion_ticket is not None
+
+    failed = _verify_revision_payload()
+    failed["public_result"] = {"passed": 0, "total": 1}
+    failed["promotion_ticket"] = _promotion_ticket_payload()
+    with pytest.raises(ValidationError):
+        VerifyRevisionOutput.model_validate(failed)
+
+    for field, value in (
+        ("case_id", "case_other"),
+        ("revision_id", "r002"),
+        ("asset_sha256", "4" * 64),
+    ):
+        mismatched = _verify_revision_payload()
+        ticket = _promotion_ticket_payload()
+        ticket[field] = value
+        mismatched["promotion_ticket"] = ticket
+        with pytest.raises(ValidationError):
+            VerifyRevisionOutput.model_validate(mismatched)
+
+
+def test_verify_revision_rejects_promotion_ticket_count_mismatches() -> None:
+    for result_name, result in (
+        ("public_result", {"passed": 0, "total": 1}),
+        ("holdout_result", {"passed": 2, "total": 3}),
+    ):
+        mismatched = _verify_revision_payload()
+        mismatched["promotion_ticket"] = _promotion_ticket_payload()
+        ticket = mismatched["promotion_ticket"]
+        assert isinstance(ticket, dict)
+        ticket[result_name] = result
+        with pytest.raises(ValidationError):
+            VerifyRevisionOutput.model_validate(mismatched)
 
 
 def test_public_event_tail_accepts_hypothesis_preregistration() -> None:

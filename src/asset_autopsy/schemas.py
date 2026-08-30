@@ -441,7 +441,13 @@ class OpenCaseOutput(CommonOutput):
 
 class MetricObservation(StrictModel):
     metric: MetricName
-    value: StrictFiniteFloat
+    value: StrictFiniteFloat | None
+
+    @model_validator(mode="after")
+    def validate_nullable_value(self) -> MetricObservation:
+        if self.value is None and self.metric != "settling_time_s":
+            raise ValueError("only settling_time_s may have a null value")
+        return self
 
 
 class TracePoint(StrictModel):
@@ -612,6 +618,53 @@ class VerifyRevisionOutput(CommonOutput):
     public_result: AggregateResult
     holdout_result: AggregateResult
     promotion_ticket: PromotionTicket | None = None
+
+    @model_validator(mode="after")
+    def validate_promotion_ticket(self) -> VerifyRevisionOutput:
+        qualification_passed = (
+            all(
+                (
+                    self.integrity.original,
+                    self.integrity.controller,
+                    self.integrity.contract,
+                    self.integrity.runner,
+                    self.integrity.lineage,
+                )
+            )
+            and self.public_result.total > 0
+            and self.public_result.passed == self.public_result.total
+            and self.holdout_result.total > 0
+            and self.holdout_result.passed == self.holdout_result.total
+        )
+        if self.promotion_ticket is None:
+            return self
+        if not qualification_passed:
+            raise ValueError("promotion ticket requires successful qualification")
+
+        ticket = self.promotion_ticket
+        if ticket.case_id != self.case_id:
+            raise ValueError("promotion ticket case must match verification case")
+        if ticket.revision_id != self.revision_id:
+            raise ValueError("promotion ticket revision must match verification revision")
+        if ticket.asset_sha256 != self.asset_sha256:
+            raise ValueError("promotion ticket asset hash must match verification asset hash")
+        if (
+            ticket.public_result.passed,
+            ticket.public_result.total,
+        ) != (
+            self.public_result.passed,
+            self.public_result.total,
+        ):
+            raise ValueError("promotion ticket public counts must match verification counts")
+        if (
+            ticket.holdout_result.passed,
+            ticket.holdout_result.total,
+        ) != (
+            self.holdout_result.passed,
+            self.holdout_result.total,
+        ):
+            raise ValueError("promotion ticket holdout counts must match verification counts")
+        return self
 
 
 class PublishRevisionOutput(CommonOutput):
