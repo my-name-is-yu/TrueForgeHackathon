@@ -1326,8 +1326,27 @@ def test_publish_input_requires_a_successful_same_case_ticket() -> None:
         )
 
 
-@pytest.mark.parametrize("diff_count", [1, 3])
-def test_promotion_ticket_requires_two_cumulative_diffs(diff_count: int) -> None:
+@pytest.mark.parametrize("diff_count", [1, 2])
+def test_promotion_ticket_accepts_each_qualifiable_diff_count(diff_count: int) -> None:
+    ticket = _promotion_ticket_payload()
+    ticket["canonical_diff"] = [
+        {
+            "target": f"joint_{index}",
+            "attribute": "damping",
+            "before": "0.3",
+            "after": "0.5",
+        }
+        for index in range(diff_count)
+    ]
+    PublishRevisionInput.model_validate(
+        {"case_id": "case_demo", "promotion_ticket": ticket}
+    )
+
+
+@pytest.mark.parametrize("diff_count", [0, 3])
+def test_promotion_ticket_rejects_diff_counts_outside_revision_budget(
+    diff_count: int,
+) -> None:
     ticket = _promotion_ticket_payload()
     ticket["canonical_diff"] = [
         {

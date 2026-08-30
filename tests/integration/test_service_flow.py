@@ -41,10 +41,11 @@ from asset_autopsy.service import AssetAutopsyService, DomainError
 
 
 class DeterministicFakeRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, require_damping: bool = True) -> None:
         self.validation_result = True
         self.validation_error: Exception | None = None
         self.validated_xml: list[str] = []
+        self.require_damping = require_damping
 
     async def validate(self, xml_string: str) -> bool:
         self.validated_xml.append(xml_string)
@@ -69,7 +70,7 @@ class DeterministicFakeRunner:
                 if segment.label in {"public_center", "qualification"}:
                     if not axis_repaired:
                         error, speed, q_offset = 0.1, 0.1, 0.1
-                    elif not damping_repaired:
+                    elif self.require_damping and not damping_repaired:
                         error, speed, q_offset = 0.001, 0.08, 0.02
                     else:
                         error, speed, q_offset = 0.0, 0.0, 0.0
@@ -262,6 +263,58 @@ def prepare_axis_revision(service: AssetAutopsyService) -> CreateRevisionInput:
     )
 
 
+def create_evidence_backed_revision_chain(
+    service: AssetAutopsyService, revision_count: int
+):
+    r001 = run(service.create_revision(prepare_axis_revision(service)))
+    if revision_count == 1:
+        return r001
+
+    run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id="r001",
+                scenario_id="public_center",
+                capture="metrics",
+            )
+        )
+    )
+    damping_run = run(
+        service.run_experiment(
+            experiment(
+                "r001",
+                hypothesis("joint_c", "damping", "joint_b", "axis"),
+                motor_b=-0.2,
+            )
+        )
+    )
+    return run(
+        service.create_revision(
+            CreateRevisionInput(
+                case_id=CASE_ID,
+                base_revision_id="r001",
+                expected_base_sha256=r001.asset_sha256,
+                basis_hypothesis_id=damping_run.hypothesis_id,
+                basis_experiment_run_id=damping_run.run_id,
+                patch=ScalarPatch(
+                    target=PatchTarget(kind="joint", name="joint_c"),
+                    attribute="damping",
+                    expected_old_value=0.01,
+                    new_value=0.4,
+                ),
+                rationale="The registered decay experiment isolates insufficient damping.",
+                expected_effect=ExpectedEffect(
+                    scenario_id="public_center",
+                    predicates=[
+                        Predicate(metric="joint_speed_rms_rad_s", op="lt", value=0.05)
+                    ],
+                ),
+            )
+        )
+    )
+
+
 def service_state(service: AssetAutopsyService) -> dict[str, object]:
     def files(root) -> dict[str, bytes]:
         if not root.exists():
@@ -373,6 +426,210 @@ def test_transient_compile_failure_preserves_primary_upstream_failure_and_state(
     assert "secret" not in caught.value.safe_message
     assert runner.validated_xml == [expected_xml]
     assert service_state(service) == before
+
+
+@pytest.mark.parametrize("revision_count", [1, 2])
+def test_current_evidence_backed_public_passing_head_qualifies_within_budget(
+    tmp_path, revision_count: int
+) -> None:
+    service = AssetAutopsyService(
+        tmp_path,
+        runner=DeterministicFakeRunner(require_damping=revision_count == 2),
+    )
+    head = create_evidence_backed_revision_chain(service, revision_count)
+    public = run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id=head.revision_id,
+                scenario_id="public_center",
+                capture="metrics",
+            )
+        )
+    )
+    assert public.result == "pass"
+    assert public.behavior_diff.verdict == "public_pass"
+
+    verified = run(
+        service.verify_revision(
+            VerifyRevisionInput(
+                case_id=CASE_ID,
+                revision_id=head.revision_id,
+                expected_asset_sha256=head.asset_sha256,
+            )
+        )
+    )
+
+    assert verified.public_result.model_dump() == {
+        "passed": 1,
+        "total": 1,
+        "violated_clause_ids": [],
+    }
+    assert verified.holdout_result.model_dump() == {
+        "passed": 3,
+        "total": 3,
+        "violated_clause_ids": [],
+    }
+    assert verified.promotion_ticket is not None
+    assert verified.promotion_ticket.revision_id == head.revision_id
+    assert verified.promotion_ticket.asset_sha256 == head.asset_sha256
+    assert len(verified.promotion_ticket.canonical_diff) == revision_count
+    assert "scenario" not in verified.model_dump_json().lower()
+
+    repeated = run(
+        service.verify_revision(
+            VerifyRevisionInput(
+                case_id=CASE_ID,
+                revision_id=head.revision_id,
+                expected_asset_sha256=head.asset_sha256,
+            )
+        )
+    )
+    assert repeated.promotion_ticket == verified.promotion_ticket
+    assert sum(
+        event.event_type == "QUALIFICATION_RESERVED"
+        for event in service.store.ledger_events(CASE_ID)
+    ) == 1
+
+
+def test_qualification_rejects_the_root_without_consuming_hidden_budget(tmp_path) -> None:
+    service = AssetAutopsyService(
+        tmp_path, runner=DeterministicFakeRunner(require_damping=False)
+    )
+    opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
+
+    with pytest.raises(DomainError) as caught:
+        run(
+            service.verify_revision(
+                VerifyRevisionInput(
+                    case_id=CASE_ID,
+                    revision_id="r000",
+                    expected_asset_sha256=opened.original_asset_sha256,
+                )
+            )
+        )
+
+    assert caught.value.code == "QUALIFICATION_NOT_READY"
+    assert service.store.get_case(CASE_ID).qualification_state == "unused"
+    assert not any(
+        event.event_type == "QUALIFICATION_RESERVED"
+        for event in service.store.ledger_events(CASE_ID)
+    )
+
+
+def test_qualification_rejects_a_public_failing_child_without_hidden_execution(
+    tmp_path,
+) -> None:
+    service = AssetAutopsyService(tmp_path, runner=DeterministicFakeRunner())
+    head = create_evidence_backed_revision_chain(service, 1)
+    public = run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id=head.revision_id,
+                scenario_id="public_center",
+                capture="metrics",
+            )
+        )
+    )
+    assert public.result == "fail"
+
+    with pytest.raises(DomainError) as caught:
+        run(
+            service.verify_revision(
+                VerifyRevisionInput(
+                    case_id=CASE_ID,
+                    revision_id=head.revision_id,
+                    expected_asset_sha256=head.asset_sha256,
+                )
+            )
+        )
+
+    assert caught.value.code == "PUBLIC_PASS_REQUIRED"
+    assert service.store.get_case(CASE_ID).qualification_state == "unused"
+    assert not any(
+        event.event_type == "QUALIFICATION_RESERVED"
+        for event in service.store.ledger_events(CASE_ID)
+    )
+
+
+def test_qualification_rejects_a_stale_non_head_revision(tmp_path) -> None:
+    service = AssetAutopsyService(tmp_path, runner=DeterministicFakeRunner())
+    create_evidence_backed_revision_chain(service, 2)
+    stale = service.store.get_revision(CASE_ID, "r001")
+
+    with pytest.raises(DomainError) as caught:
+        run(
+            service.verify_revision(
+                VerifyRevisionInput(
+                    case_id=CASE_ID,
+                    revision_id=stale.revision_id,
+                    expected_asset_sha256=stale.asset_sha256,
+                )
+            )
+        )
+
+    assert caught.value.code == "QUALIFICATION_NOT_READY"
+    assert service.store.get_case(CASE_ID).qualification_state == "unused"
+    assert not any(
+        event.event_type == "QUALIFICATION_RESERVED"
+        for event in service.store.ledger_events(CASE_ID)
+    )
+
+
+def test_third_child_revision_is_rejected_at_the_budget_boundary(tmp_path) -> None:
+    runner = DeterministicFakeRunner()
+    service = AssetAutopsyService(tmp_path, runner=runner)
+    head = create_evidence_backed_revision_chain(service, 2)
+    run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id=head.revision_id,
+                scenario_id="public_center",
+                capture="metrics",
+            )
+        )
+    )
+    basis = run(
+        service.run_experiment(
+            experiment(
+                head.revision_id,
+                hypothesis("joint_a", "armature", "joint_c", "damping"),
+            )
+        )
+    )
+
+    before = service_state(service)
+    with pytest.raises(DomainError) as caught:
+        run(
+            service.create_revision(
+                CreateRevisionInput(
+                    case_id=CASE_ID,
+                    base_revision_id=head.revision_id,
+                    expected_base_sha256=head.asset_sha256,
+                    basis_hypothesis_id=basis.hypothesis_id,
+                    basis_experiment_run_id=basis.run_id,
+                    patch=ScalarPatch(
+                        target=PatchTarget(kind="joint", name="joint_a"),
+                        attribute="armature",
+                        expected_old_value=0.01,
+                        new_value=0.02,
+                    ),
+                    rationale="The revision budget must reject a third child.",
+                    expected_effect=ExpectedEffect(
+                        scenario_id="public_center",
+                        predicates=[
+                            Predicate(metric="hold_error_p95_m", op="lt", value=0.03)
+                        ],
+                    ),
+                )
+            )
+        )
+
+    assert caught.value.code == "REVISION_BUDGET_EXHAUSTED"
+    assert service_state(service) == before
+    assert len(runner.validated_xml) == 2
 
 
 def test_full_two_revision_service_flow_qualifies_and_direct_publication_emits_one_bundle(
