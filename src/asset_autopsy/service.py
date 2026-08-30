@@ -1328,7 +1328,7 @@ class AssetAutopsyService:
             raise self._integrity_error(request_id)
         hypothesis_payload = hypothesis[0].payload.get("hypothesis")
         candidate_attributes = {
-            f"{element.get('name')}.{attribute}"
+            (element.get("kind"), element.get("name"), attribute)
             for container in (
                 hypothesis_payload,
                 hypothesis_payload.get("competing_explanation")
@@ -1340,7 +1340,11 @@ class AssetAutopsyService:
             if isinstance(element, Mapping)
             for attribute in element.get("attributes", [])
         }
-        patch_attribute = f"{value.patch.target.name}.{value.patch.attribute}"
+        patch_attribute = (
+            value.patch.target.kind,
+            value.patch.target.name,
+            value.patch.attribute,
+        )
         if patch_attribute not in candidate_attributes:
             raise self._error(
                 request_id,
