@@ -141,6 +141,13 @@ _CLAUSE_METRICS = {
 }
 
 AllowedAttribute: TypeAlias = Literal["axis", "damping", "armature", "frictionloss"]
+HypothesisAttribute: TypeAlias = Literal[
+    "axis", "damping", "armature", "frictionloss", "joint"
+]
+SegmentLabel: TypeAlias = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=64),
+]
 
 
 class StrictModel(BaseModel):
@@ -189,6 +196,18 @@ class ScalarPatch(StrictModel):
 AttributePatch: TypeAlias = Annotated[AxisPatch | ScalarPatch, Field(discriminator="attribute")]
 
 
+class ElementReference(StrictModel):
+    kind: Literal["joint", "actuator", "body", "site"]
+    name: ElementName
+    attributes: list[HypothesisAttribute] = Field(min_length=1, max_length=4)
+
+
+class CompetingExplanation(StrictModel):
+    claim: SafeText
+    suspected_elements: list[ElementReference] = Field(min_length=1, max_length=8)
+    discriminating_reason: SafeText
+
+
 PredicateOperator: TypeAlias = Literal["lt", "lte", "eq", "gte", "gt"]
 
 
@@ -199,13 +218,16 @@ class Predicate(StrictModel):
 
 
 class Hypothesis(StrictModel):
+    claim: SafeText
+    suspected_elements: list[ElementReference] = Field(min_length=1, max_length=8)
+    competing_explanation: CompetingExplanation
     prediction: SafeText
     falsifier: SafeText
 
 
 class JointPosition(StrictModel):
     joint_name: ElementName
-    position: StrictFiniteFloat
+    position_rad: StrictFiniteFloat
 
 
 class ActuatorControl(StrictModel):
@@ -214,7 +236,8 @@ class ActuatorControl(StrictModel):
 
 
 class ConstantControlSegment(StrictModel):
-    steps: StrictInt = Field(ge=1)
+    label: SegmentLabel | None = None
+    n_steps: StrictInt = Field(ge=1)
     controls: list[ActuatorControl] = Field(min_length=1, max_length=64)
 
     @field_validator("controls")
@@ -224,7 +247,7 @@ class ConstantControlSegment(StrictModel):
     ) -> list[ActuatorControl]:
         names = [control.actuator_name for control in value]
         if len(names) != len(set(names)):
-            raise ValueError("each position actuator must appear exactly once per segment")
+            raise ValueError("segment controls must not repeat actuator names")
         return value
 
 
@@ -246,7 +269,7 @@ class ContactCountObservable(StrictModel):
 
 class BodyPositionObservable(StrictModel):
     kind: Literal["body_position"]
-    name: ElementName
+    body_name: ElementName
 
 
 ExperimentObservable: TypeAlias = Annotated[
@@ -294,7 +317,7 @@ class RunExperimentInput(StrictModel):
     def validate_experiment(self) -> RunExperimentInput:
         joint_names = [position.joint_name for position in self.initial_joint_positions]
         if len(joint_names) != len(set(joint_names)):
-            raise ValueError("each hinge joint must appear exactly once in initial positions")
+            raise ValueError("initial joint positions must not repeat joint names")
 
         actuator_names = {
             control.actuator_name for control in self.segments[0].controls
@@ -305,12 +328,12 @@ class RunExperimentInput(StrictModel):
         ):
             raise ValueError("every segment must control the same position actuators")
 
-        total_steps = sum(segment.steps for segment in self.segments)
+        total_steps = sum(segment.n_steps for segment in self.segments)
         if not 256 <= total_steps <= 100_000:
             raise ValueError("experiment total steps must be between 256 and 100000")
 
         observable_keys = [
-            (observable.kind, getattr(observable, "name", None))
+            (observable.kind, getattr(observable, "body_name", None))
             for observable in self.observables
         ]
         if len(observable_keys) != len(set(observable_keys)):
@@ -340,7 +363,7 @@ class PromotionTicket(StrictModel):
     case_id: CaseId
     revision_id: RevisionId
     asset_sha256: AssetHash
-    canonical_diff: list["CanonicalDiffEntry"] = Field(min_length=1, max_length=1)
+    canonical_diff: list["CanonicalDiffEntry"] = Field(min_length=2, max_length=2)
     public_result: "AggregateResult"
     holdout_result: "AggregateResult"
     export_name: Annotated[
@@ -843,25 +866,104 @@ class SegmentBoundary(StrictModel):
         return self
 
 
-class ExperimentTraceColumn(StrictModel):
-    name: MetricName
-    values: list[StrictFiniteFloat] = Field(min_length=256, max_length=256)
+class JointTraceColumn(StrictModel):
+    kind: Literal["qpos", "qvel"]
+    joint_name: ElementName
+
+
+class TimeTraceColumn(StrictModel):
+    kind: Literal["time"]
+
+
+class EnergyTraceColumn(StrictModel):
+    kind: Literal["energy"]
+    component: Literal["potential", "kinetic"]
+
+
+class ContactCountTraceColumn(StrictModel):
+    kind: Literal["contact_count"]
+
+
+class BodyPositionTraceColumn(StrictModel):
+    kind: Literal["body_position"]
+    body_name: ElementName
+    axis: Literal["x", "y", "z"]
+
+
+class ActuatorControlTraceColumn(StrictModel):
+    kind: Literal["control"]
+    actuator_name: ElementName
+
+
+ExperimentTraceColumn: TypeAlias = Annotated[
+    TimeTraceColumn
+    | JointTraceColumn
+    | EnergyTraceColumn
+    | ContactCountTraceColumn
+    | BodyPositionTraceColumn
+    | ActuatorControlTraceColumn,
+    Field(discriminator="kind"),
+]
+
+ExperimentTraceRow: TypeAlias = Annotated[
+    list[StrictFiniteFloat],
+    Field(min_length=3, max_length=193),
+]
 
 
 class ExperimentTrace(StrictModel):
-    steps: list[StrictInt] = Field(min_length=256, max_length=256)
-    columns: list[ExperimentTraceColumn] = Field(min_length=1, max_length=128)
+    columns: list[ExperimentTraceColumn] = Field(min_length=3, max_length=193)
+    rows: list[ExperimentTraceRow] = Field(min_length=256, max_length=256)
 
     @model_validator(mode="after")
     def validate_trace(self) -> ExperimentTrace:
-        if self.steps[0] < 0 or any(
-            current <= previous
-            for previous, current in zip(self.steps, self.steps[1:])
+        if not isinstance(self.columns[0], TimeTraceColumn):
+            raise ValueError("the first experiment trace column must be time")
+        if any(isinstance(column, TimeTraceColumn) for column in self.columns[1:]):
+            raise ValueError("experiment trace must contain exactly one time column")
+        if not any(isinstance(column, ActuatorControlTraceColumn) for column in self.columns):
+            raise ValueError("experiment trace must contain actuator control columns")
+        if not any(
+            not isinstance(column, (TimeTraceColumn, ActuatorControlTraceColumn))
+            for column in self.columns
         ):
-            raise ValueError("trace steps must be nonnegative and strictly increasing")
-        names = [column.name for column in self.columns]
-        if len(names) != len(set(names)):
-            raise ValueError("trace column names must be unique")
+            raise ValueError("experiment trace must contain selected signal columns")
+
+        width = len(self.columns)
+        if any(len(row) != width for row in self.rows):
+            raise ValueError("experiment trace row width must match its columns")
+
+        time_s = [row[0] for row in self.rows]
+        intervals = [
+            current - previous
+            for previous, current in zip(time_s, time_s[1:])
+        ]
+        if time_s[0] < 0.0 or intervals[0] <= 0.0 or any(
+            interval <= 0.0
+            or not math.isclose(
+                interval,
+                intervals[0],
+                rel_tol=_METRIC_DELTA_REL_TOLERANCE,
+                abs_tol=_METRIC_DELTA_ABS_TOLERANCE,
+            )
+            for interval in intervals[1:]
+        ):
+            raise ValueError("experiment trace timestamps must be uniformly sampled")
+
+        column_keys: list[tuple[str, ...]] = []
+        for column in self.columns:
+            if isinstance(column, JointTraceColumn):
+                column_keys.append((column.kind, column.joint_name))
+            elif isinstance(column, EnergyTraceColumn):
+                column_keys.append((column.kind, column.component))
+            elif isinstance(column, BodyPositionTraceColumn):
+                column_keys.append((column.kind, column.body_name, column.axis))
+            elif isinstance(column, ActuatorControlTraceColumn):
+                column_keys.append((column.kind, column.actuator_name))
+            else:
+                column_keys.append((column.kind,))
+        if len(column_keys) != len(set(column_keys)):
+            raise ValueError("experiment trace columns must be unique")
         return self
 
 
@@ -879,18 +981,29 @@ class FinalSnapshotMetadata(StrictModel):
     sha256: AssetHash
     bytes: StrictInt = Field(ge=0)
     step: StrictInt = Field(ge=0)
+    width_px: Literal[160]
+    height_px: Literal[120]
+
+
+class ExperimentOutcome(StrictModel):
+    kind: Literal["completed", "non_finite_state"]
+    budget_consumed: Literal[True]
+    first_bad_step: StrictInt | None = Field(default=None, ge=0)
 
 
 class RunExperimentOutput(CommonOutput):
     revision_id: RevisionId
     hypothesis_id: HypothesisId
-    experiment_run_id: RunId
+    run_id: RunId
     asset_sha256: AssetHash
-    experiment_sha256: AssetHash
-    trace_sha256: AssetHash
-    outcome: Literal["completed"]
+    condition_sha256: AssetHash
+    execution_fingerprint_sha256: AssetHash
+    trace_sha256: AssetHash | None = None
+    outcome: ExperimentOutcome
+    requested_steps: StrictInt = Field(ge=256, le=100_000)
+    completed_steps: StrictInt = Field(ge=0, le=100_000)
     segment_boundaries: list[SegmentBoundary] = Field(min_length=1, max_length=16)
-    trace: ExperimentTrace
+    trace: ExperimentTrace | None = None
     final_snapshot: FinalSnapshotMetadata | None = None
 
     @model_validator(mode="after")
@@ -903,13 +1016,33 @@ class RunExperimentOutput(CommonOutput):
             )
             if boundary.start_step != expected_start:
                 raise ValueError("segment boundaries must be contiguous")
-        total_steps = self.segment_boundaries[-1].end_step
-        if not 256 <= total_steps <= 100_000:
-            raise ValueError("experiment total steps must be between 256 and 100000")
-        if self.trace.steps[-1] >= total_steps:
-            raise ValueError("trace steps must remain inside experiment boundaries")
-        if self.final_snapshot is not None and self.final_snapshot.step >= total_steps:
-            raise ValueError("final snapshot step must remain inside experiment boundaries")
+        if self.segment_boundaries[-1].end_step != self.requested_steps:
+            raise ValueError("segment boundaries must cover the requested steps")
+        if self.completed_steps > self.requested_steps:
+            raise ValueError("completed steps cannot exceed requested steps")
+        if self.outcome.kind == "completed":
+            if self.completed_steps != self.requested_steps:
+                raise ValueError("completed experiments must execute every requested step")
+            if self.outcome.first_bad_step is not None:
+                raise ValueError("completed experiments cannot report a bad step")
+            if self.trace_sha256 is None or self.trace is None:
+                raise ValueError("completed experiments require a finite trace and hash")
+            if (
+                self.final_snapshot is not None
+                and self.final_snapshot.step >= self.completed_steps
+            ):
+                raise ValueError("final snapshot step must remain inside experiment boundaries")
+        else:
+            if self.outcome.first_bad_step is None:
+                raise ValueError("non-finite outcomes require the first bad step")
+            if self.outcome.first_bad_step != self.completed_steps:
+                raise ValueError("the first bad step must follow the completed finite steps")
+            if (
+                self.trace_sha256 is not None
+                or self.trace is not None
+                or self.final_snapshot is not None
+            ):
+                raise ValueError("non-finite outcomes cannot expose a trace or snapshot")
         return self
 
 

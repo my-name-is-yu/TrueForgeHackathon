@@ -171,23 +171,40 @@ def _run_experiment_input_payload() -> dict[str, object]:
         "case_id": "case_demo",
         "revision_id": "r000",
         "hypothesis": {
+            "claim": "The elbow motion plane conflicts with the task plane.",
+            "suspected_elements": [
+                {"kind": "joint", "name": "elbow", "attributes": ["axis"]}
+            ],
+            "competing_explanation": {
+                "claim": "The elbow actuator mapping is inverted.",
+                "suspected_elements": [
+                    {
+                        "kind": "actuator",
+                        "name": "elbow_motor",
+                        "attributes": ["joint"],
+                    }
+                ],
+                "discriminating_reason": "The observed motion plane separates the causes.",
+            },
             "prediction": "The elbow moves toward the target.",
             "falsifier": "The elbow remains stationary.",
         },
         "initial_joint_positions": [
-            {"joint_name": "shoulder", "position": 0.0},
-            {"joint_name": "elbow", "position": 0.1},
+            {"joint_name": "shoulder", "position_rad": 0.0},
+            {"joint_name": "elbow", "position_rad": 0.1},
         ],
         "segments": [
             {
-                "steps": 128,
+                "label": "excitation",
+                "n_steps": 128,
                 "controls": [
                     {"actuator_name": "shoulder_motor", "value": 0.2},
                     {"actuator_name": "elbow_motor", "value": 0.3},
                 ],
             },
             {
-                "steps": 128,
+                "label": "recovery",
+                "n_steps": 128,
                 "controls": [
                     {"actuator_name": "shoulder_motor", "value": 0.0},
                     {"actuator_name": "elbow_motor", "value": 0.1},
@@ -199,7 +216,7 @@ def _run_experiment_input_payload() -> dict[str, object]:
             {"kind": "qvel"},
             {"kind": "energy"},
             {"kind": "contact_count"},
-            {"kind": "body_position", "name": "hand"},
+            {"kind": "body_position", "body_name": "hand"},
         ],
         "capture_final_snapshot": True,
     }
@@ -215,28 +232,51 @@ def _run_experiment_output_payload() -> dict[str, object]:
         "artifacts": [],
         "revision_id": "r000",
         "hypothesis_id": "hyp_demo",
-        "experiment_run_id": "run_demo",
+        "run_id": "run_demo",
         "asset_sha256": "1" * 64,
-        "experiment_sha256": "2" * 64,
-        "trace_sha256": "3" * 64,
-        "outcome": "completed",
+        "condition_sha256": "2" * 64,
+        "execution_fingerprint_sha256": "3" * 64,
+        "trace_sha256": "4" * 64,
+        "outcome": {"kind": "completed", "budget_consumed": True},
+        "requested_steps": 256,
+        "completed_steps": 256,
         "segment_boundaries": [
             {"segment_index": 0, "start_step": 0, "end_step": 128},
             {"segment_index": 1, "start_step": 128, "end_step": 256},
         ],
         "trace": {
-            "steps": list(range(256)),
             "columns": [
-                {"name": "qpos.elbow", "values": [0.0] * 256},
-                {"name": "energy", "values": [1.0] * 256},
+                {"kind": "time"},
+                {"kind": "qpos", "joint_name": "elbow"},
+                {"kind": "qvel", "joint_name": "elbow"},
+                {"kind": "energy", "component": "potential"},
+                {"kind": "contact_count"},
+                {"kind": "body_position", "body_name": "hand", "axis": "x"},
+                {"kind": "control", "actuator_name": "shoulder_motor"},
+                {"kind": "control", "actuator_name": "elbow_motor"},
+            ],
+            "rows": [
+                [
+                    index * 0.01,
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.2 if index < 128 else 0.0,
+                    0.3 if index < 128 else 0.1,
+                ]
+                for index in range(256)
             ],
         },
         "final_snapshot": {
             "artifact_id": "art_snapshot",
             "uri": "autopsy://case_demo/art_snapshot",
-            "sha256": "4" * 64,
+            "sha256": "5" * 64,
             "bytes": 42,
             "step": 255,
+            "width_px": 160,
+            "height_px": 120,
         },
     }
 
@@ -249,7 +289,7 @@ def test_run_experiment_output_supplies_revision_basis_identifiers() -> None:
             "base_revision_id": run.revision_id,
             "expected_base_sha256": "0" * 64,
             "basis_hypothesis_id": run.hypothesis_id,
-            "basis_experiment_run_id": run.experiment_run_id,
+            "basis_experiment_run_id": run.run_id,
             "patch": {
                 "target": {"kind": "joint", "name": "elbow"},
                 "attribute": "damping",
@@ -271,13 +311,91 @@ def test_run_experiment_accepts_bounded_generic_contract() -> None:
     experiment = RunExperimentInput.model_validate(_run_experiment_input_payload())
     assert len(experiment.segments) == 2
     assert experiment.observables[-1].kind == "body_position"
+    assert experiment.hypothesis.suspected_elements[0].name == "elbow"
+    assert experiment.hypothesis.competing_explanation.suspected_elements[0].name == (
+        "elbow_motor"
+    )
+
+
+def test_run_experiment_rejects_old_or_incomplete_input_names() -> None:
+    old_position = _run_experiment_input_payload()
+    old_position["initial_joint_positions"][0]["position"] = old_position[
+        "initial_joint_positions"
+    ][0].pop("position_rad")
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(old_position)
+
+    old_steps = _run_experiment_input_payload()
+    old_steps["segments"][0]["steps"] = old_steps["segments"][0].pop("n_steps")
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(old_steps)
+
+    old_body_name = _run_experiment_input_payload()
+    old_body_name["observables"][-1]["name"] = old_body_name["observables"][-1].pop(
+        "body_name"
+    )
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(old_body_name)
+
+    missing_claim = _run_experiment_input_payload()
+    del missing_claim["hypothesis"]["claim"]
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(missing_claim)
+
+
+def test_run_experiment_rejects_invalid_hypothesis_reference_or_segment_label() -> None:
+    invalid_attribute = _run_experiment_input_payload()
+    invalid_attribute["hypothesis"]["suspected_elements"][0]["attributes"] = ["target"]
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(invalid_attribute)
+
+    long_label = _run_experiment_input_payload()
+    long_label["segments"][0]["label"] = "x" * 65
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(long_label)
+
+    nonscalar_prediction = _run_experiment_input_payload()
+    nonscalar_prediction["hypothesis"]["prediction"] = {"matches": True}
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(nonscalar_prediction)
+
+
+def test_run_experiment_enforces_collection_bounds_and_finite_positions() -> None:
+    no_positions = _run_experiment_input_payload()
+    no_positions["initial_joint_positions"] = []
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(no_positions)
+
+    too_many_segments = _run_experiment_input_payload()
+    too_many_segments["segments"] = [
+        {
+            "n_steps": 16,
+            "controls": [{"actuator_name": "elbow_motor", "value": 0.0}],
+        }
+        for _ in range(17)
+    ]
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(too_many_segments)
+
+    too_many_observables = _run_experiment_input_payload()
+    too_many_observables["observables"] = [
+        {"kind": "body_position", "body_name": f"body_{index}"}
+        for index in range(9)
+    ]
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(too_many_observables)
+
+    nonfinite_position = _run_experiment_input_payload()
+    nonfinite_position["initial_joint_positions"][0]["position_rad"] = float("inf")
+    with pytest.raises(ValidationError):
+        RunExperimentInput.model_validate(nonfinite_position)
 
 
 def test_run_experiment_rejects_duplicate_initial_joint_positions() -> None:
     payload = _run_experiment_input_payload()
     payload["initial_joint_positions"] = [
-        {"joint_name": "elbow", "position": 0.0},
-        {"joint_name": "elbow", "position": 0.1},
+        {"joint_name": "elbow", "position_rad": 0.0},
+        {"joint_name": "elbow", "position_rad": 0.1},
     ]
     with pytest.raises(ValidationError):
         RunExperimentInput.model_validate(payload)
@@ -300,7 +418,7 @@ def test_run_experiment_rejects_total_steps_outside_bounds(steps: int) -> None:
     payload = _run_experiment_input_payload()
     payload["segments"] = [
         {
-            "steps": steps,
+            "n_steps": steps,
             "controls": [{"actuator_name": "elbow_motor", "value": 0.0}],
         }
     ]
@@ -321,20 +439,153 @@ def test_run_experiment_rejects_duplicate_observables_and_nonfinite_controls() -
 
 
 def test_run_experiment_output_rejects_invalid_columnar_trace() -> None:
-    short_column = _run_experiment_output_payload()
-    short_column["trace"]["columns"][0]["values"] = [0.0] * 255
+    short_trace = _run_experiment_output_payload()
+    short_trace["trace"]["rows"] = short_trace["trace"]["rows"][:-1]
     with pytest.raises(ValidationError):
-        RunExperimentOutput.model_validate(short_column)
+        RunExperimentOutput.model_validate(short_trace)
+
+    narrow_row = _run_experiment_output_payload()
+    narrow_row["trace"]["rows"][0] = narrow_row["trace"]["rows"][0][:-1]
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(narrow_row)
+
+    missing_time_column = _run_experiment_output_payload()
+    missing_time_column["trace"]["columns"][0] = {
+        "kind": "qpos",
+        "joint_name": "shoulder",
+    }
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(missing_time_column)
 
     duplicate_column = _run_experiment_output_payload()
-    duplicate_column["trace"]["columns"][1]["name"] = "qpos.elbow"
+    duplicate_column["trace"]["columns"][2] = duplicate_column["trace"]["columns"][1]
     with pytest.raises(ValidationError):
         RunExperimentOutput.model_validate(duplicate_column)
+
+    duplicate_control = _run_experiment_output_payload()
+    duplicate_control["trace"]["columns"][-1]["actuator_name"] = "shoulder_motor"
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(duplicate_control)
+
+    nonuniform_time = _run_experiment_output_payload()
+    nonuniform_time["trace"]["rows"][128][0] += 0.001
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(nonuniform_time)
+
+    nonfinite_row = _run_experiment_output_payload()
+    nonfinite_row["trace"]["rows"][0][1] = float("nan")
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(nonfinite_row)
+
+    no_controls = _run_experiment_output_payload()
+    no_controls["trace"]["columns"] = no_controls["trace"]["columns"][:-2]
+    no_controls["trace"]["rows"] = [row[:-2] for row in no_controls["trace"]["rows"]]
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(no_controls)
 
 
 def test_run_experiment_output_rejects_invalid_boundaries() -> None:
     payload = _run_experiment_output_payload()
     payload["segment_boundaries"][1]["start_step"] = 127
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(payload)
+
+    wrong_requested_steps = _run_experiment_output_payload()
+    wrong_requested_steps["requested_steps"] = 257
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(wrong_requested_steps)
+
+
+def test_run_experiment_output_supports_budgeted_non_finite_domain_outcome() -> None:
+    payload = _run_experiment_output_payload()
+    payload["outcome"] = {
+        "kind": "non_finite_state",
+        "budget_consumed": True,
+        "first_bad_step": 0,
+    }
+    payload["completed_steps"] = 0
+    payload["trace_sha256"] = None
+    payload["trace"] = None
+    payload["final_snapshot"] = None
+    result = RunExperimentOutput.model_validate(payload)
+    assert result.outcome.kind == "non_finite_state"
+    assert result.outcome.budget_consumed is True
+    assert result.outcome.first_bad_step == 0
+    assert result.requested_steps == 256
+    assert result.completed_steps == 0
+    assert result.trace is None
+
+
+def test_run_experiment_output_rejects_non_finite_trace_or_missing_bad_step() -> None:
+    trace_leak = _run_experiment_output_payload()
+    trace_leak["outcome"] = {
+        "kind": "non_finite_state",
+        "budget_consumed": True,
+        "first_bad_step": 64,
+    }
+    trace_leak["completed_steps"] = 64
+    trace_leak["final_snapshot"] = None
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(trace_leak)
+
+    missing_bad_step = _run_experiment_output_payload()
+    missing_bad_step["outcome"] = {
+        "kind": "non_finite_state",
+        "budget_consumed": True,
+    }
+    missing_bad_step["completed_steps"] = 0
+    missing_bad_step["trace_sha256"] = None
+    missing_bad_step["trace"] = None
+    missing_bad_step["final_snapshot"] = None
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(missing_bad_step)
+
+
+def test_run_experiment_output_requires_completion_evidence_without_diagnosis() -> None:
+    incomplete = _run_experiment_output_payload()
+    incomplete["completed_steps"] = 255
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(incomplete)
+
+    missing_trace = _run_experiment_output_payload()
+    missing_trace["trace_sha256"] = None
+    missing_trace["trace"] = None
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(missing_trace)
+
+    unconsumed = _run_experiment_output_payload()
+    unconsumed["outcome"]["budget_consumed"] = False
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(unconsumed)
+
+    diagnosed = _run_experiment_output_payload()
+    diagnosed["prediction_matched"] = True
+    with pytest.raises(ValidationError):
+        RunExperimentOutput.model_validate(diagnosed)
+
+
+def test_run_experiment_output_exposes_identity_and_typed_selected_signals() -> None:
+    result = RunExperimentOutput.model_validate(_run_experiment_output_payload())
+    assert result.run_id == "run_demo"
+    assert result.asset_sha256 == "1" * 64
+    assert result.condition_sha256 == "2" * 64
+    assert result.execution_fingerprint_sha256 == "3" * 64
+    assert {column.kind for column in result.trace.columns} == {
+        "time",
+        "qpos",
+        "qvel",
+        "energy",
+        "contact_count",
+        "body_position",
+        "control",
+    }
+    assert len(result.trace.rows) == 256
+    assert all(len(row) == len(result.trace.columns) for row in result.trace.rows)
+
+
+def test_run_experiment_output_rejects_old_run_identifier() -> None:
+    payload = _run_experiment_output_payload()
+    payload["experiment_run_id"] = payload.pop("run_id")
     with pytest.raises(ValidationError):
         RunExperimentOutput.model_validate(payload)
 
@@ -991,7 +1242,7 @@ def _verify_revision_payload() -> dict[str, object]:
         "schema_version": "asset-autopsy/v1",
         "request_id": "req_demo",
         "case_id": "case_demo",
-        "revision_id": "r001",
+        "revision_id": "r002",
         "asset_sha256": "1" * 64,
         "integrity": {
             "original": True,
@@ -1009,10 +1260,11 @@ def _promotion_ticket_payload() -> dict[str, object]:
     return {
         "ticket_id": "evt_ticket",
         "case_id": "case_demo",
-        "revision_id": "r001",
+        "revision_id": "r002",
         "asset_sha256": "1" * 64,
         "canonical_diff": [
-            {"target": "elbow", "attribute": "damping", "before": "0.3", "after": "0.5"}
+            {"target": "elbow", "attribute": "axis", "before": "1 0 0", "after": "0 1 0"},
+            {"target": "elbow", "attribute": "damping", "before": "0.3", "after": "0.5"},
         ],
         "public_result": {"passed": 1, "total": 1},
         "holdout_result": {"passed": 3, "total": 3},
@@ -1050,6 +1302,24 @@ def test_publish_input_requires_a_successful_same_case_ticket() -> None:
         )
 
 
+@pytest.mark.parametrize("diff_count", [1, 3])
+def test_promotion_ticket_requires_two_cumulative_diffs(diff_count: int) -> None:
+    ticket = _promotion_ticket_payload()
+    ticket["canonical_diff"] = [
+        {
+            "target": f"joint_{index}",
+            "attribute": "damping",
+            "before": "0.3",
+            "after": "0.5",
+        }
+        for index in range(diff_count)
+    ]
+    with pytest.raises(ValidationError):
+        PublishRevisionInput.model_validate(
+            {"case_id": "case_demo", "promotion_ticket": ticket}
+        )
+
+
 def test_verify_revision_requires_successful_bound_promotion_ticket() -> None:
     payload = _verify_revision_payload()
     payload["promotion_ticket"] = _promotion_ticket_payload()
@@ -1067,7 +1337,7 @@ def test_verify_revision_requires_successful_bound_promotion_ticket() -> None:
 
     for field, value in (
         ("case_id", "case_other"),
-        ("revision_id", "r002"),
+        ("revision_id", "r001"),
         ("asset_sha256", "4" * 64),
     ):
         mismatched = _verify_revision_payload()
@@ -1483,6 +1753,32 @@ def test_create_revision_output_rejects_invalid_lineage(
                 "status": "created",
             }
         )
+
+
+def test_create_revision_output_keeps_exactly_one_diff() -> None:
+    entry = {
+        "target": "elbow",
+        "attribute": "damping",
+        "before": "0.3",
+        "after": "0.5",
+    }
+    payload = {
+        "schema_version": "asset-autopsy/v1",
+        "request_id": "req_demo",
+        "case_id": "case_demo",
+        "revision_id": "r001",
+        "parent_revision_id": "r000",
+        "asset_sha256": "1" * 64,
+        "canonical_diff": [entry],
+        "status": "created",
+    }
+    CreateRevisionOutput.model_validate(payload)
+
+    for canonical_diff in ([], [entry, entry]):
+        with pytest.raises(ValidationError):
+            CreateRevisionOutput.model_validate(
+                {**payload, "canonical_diff": canonical_diff}
+            )
 
 
 def test_schema_has_no_private_contract_fields() -> None:
