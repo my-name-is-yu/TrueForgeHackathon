@@ -28,6 +28,7 @@ MAX_XML_BYTES = 2_000_000
 MAX_RENDER_DIMENSION = 4096
 MAX_RENDER_BYTES = 64 * 1024 * 1024
 MAX_TRACE_SCALARS = 2_000_000
+_MAX_JSON_INTEGER_DIGITS = 19
 
 UPSTREAM_UNAVAILABLE = "UPSTREAM_UNAVAILABLE"
 UPSTREAM_BAD_RESPONSE = "UPSTREAM_BAD_RESPONSE"
@@ -344,11 +345,15 @@ def normalize_json_result(
     text = _text_block(result)
     if len(text) > max_text_chars:
         raise _bad_response("Upstream response was too large.")
+    if not _utf8_text(text):
+        raise _bad_response("Upstream response text was invalid.")
     try:
-        payload = json.loads(text)
-    except (TypeError, json.JSONDecodeError):
+        payload = json.loads(text, parse_int=_parse_json_integer)
+    except (TypeError, ValueError, RecursionError):
         raise _bad_response("Upstream response was not valid JSON.") from None
 
+    if not _utf8_json_text(payload):
+        raise _bad_response("Upstream response text was invalid.")
     if not isinstance(payload, dict):
         raise _bad_response("Upstream response JSON had an invalid shape.")
     if "error" in payload:
@@ -360,6 +365,48 @@ def normalize_json_result(
     if not valid:
         raise _bad_response("Upstream response JSON did not match the expected schema.")
     return payload
+
+
+def _parse_json_integer(token: str) -> int:
+    digit_count = len(token) - (1 if token.startswith("-") else 0)
+    if digit_count > _MAX_JSON_INTEGER_DIGITS:
+        raise ValueError("JSON integer exceeds the supported range")
+    return int(token)
+
+
+def _utf8_text(value: str) -> bool:
+    return not any("\ud800" <= character <= "\udfff" for character in value)
+
+
+def _utf8_json_text(value: Any) -> bool:
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            if not _utf8_text(item):
+                return False
+        elif isinstance(item, list):
+            pending.extend(item)
+        elif isinstance(item, dict):
+            pending.extend(item)
+            pending.extend(item.values())
+    return True
+
+
+def _validated_xml_bytes(xml_string: object) -> bytes:
+    if (
+        not isinstance(xml_string, str)
+        or not xml_string
+        or len(xml_string) > MAX_XML_BYTES
+    ):
+        raise ValueError("xml_string is invalid")
+    try:
+        xml_bytes = xml_string.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("xml_string is invalid") from None
+    if len(xml_bytes) > MAX_XML_BYTES:
+        raise ValueError("xml_string is invalid")
+    return xml_bytes
 
 
 def _strict_float(value: Any) -> bool:
@@ -532,6 +579,20 @@ def _trace_scalars_per_step(
     )
 
 
+def _run_record_scalar_count(
+    *,
+    segments: tuple[tuple[int, int], ...],
+    nq: int,
+    nv: int,
+    track: tuple[str, ...],
+) -> int:
+    returned_width = _trace_scalars_per_step(nq=nq, nv=nv, nu=0, track=track)
+    return sum(
+        n_steps * (returned_width + ctrl_width) + ctrl_width
+        for n_steps, ctrl_width in segments
+    )
+
+
 def _matches_run(
     payload: dict[str, Any],
     *,
@@ -642,6 +703,7 @@ def _render_png(result: Any, *, width: int, height: int) -> bytes:
         or getattr(summary, "type", None) != "text"
         or not isinstance(getattr(summary, "text", None), str)
         or len(summary.text) > 256
+        or not _utf8_text(summary.text)
     ):
         raise _bad_response("Upstream render response was unexpected.")
     if len(image.data) > ((MAX_RENDER_BYTES + 2) // 3) * 4:
@@ -762,7 +824,8 @@ class PinnedMujocoClient:
                 started.set_exception(exc)
         finally:
             try:
-                await stack.aclose()
+                async with asyncio.timeout(self.startup_timeout):
+                    await stack.aclose()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -839,14 +902,22 @@ class PinnedMujocoClient:
             return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        owner = asyncio.current_task()
+        if owner is None:
+            return
+        cleanup = asyncio.create_task(self._release_context(owner, exc))
+        await _finish_resource_task(cleanup)
+
+    async def _release_context(
+        self, owner: asyncio.Task[Any], primary_error: Any
+    ) -> None:
         async with self._lifecycle_lock:
-            task = asyncio.current_task()
-            tokens = self._context_tokens.get(task) if task is not None else None
+            tokens = self._context_tokens.get(owner)
             if not tokens:
                 return
             token = tokens.pop()
             if not tokens:
-                del self._context_tokens[task]
+                del self._context_tokens[owner]
             if token is not self._session_token:
                 return
             self._context_owners -= 1
@@ -854,7 +925,7 @@ class PinnedMujocoClient:
                 try:
                     await self._shutdown_child_locked(poison=False)
                 except UpstreamToolError:
-                    if exc is None:
+                    if primary_error is None:
                         raise
 
     def _record_context_owner(self) -> None:
@@ -865,21 +936,30 @@ class PinnedMujocoClient:
         self._context_owners += 1
 
     async def _shutdown_child(self, *, poison: bool = True) -> None:
-        async with self._lifecycle_lock:
-            self._context_owners = 0
-            await self._shutdown_child_locked(poison=poison)
+        cleanup = asyncio.create_task(
+            self._shutdown_session(self._session_token, poison=poison)
+        )
+        await _finish_resource_task(cleanup)
 
     async def _shutdown_child_preserving_primary_error(
         self, session_token: object | None
     ) -> None:
+        cleanup = asyncio.create_task(
+            self._shutdown_session(session_token, poison=True)
+        )
         try:
-            async with self._lifecycle_lock:
-                if session_token is not self._session_token:
-                    return
-                self._context_owners = 0
-                await self._shutdown_child_locked(poison=True)
+            await _finish_resource_task(cleanup)
         except UpstreamToolError:
             pass
+
+    async def _shutdown_session(
+        self, session_token: object | None, *, poison: bool
+    ) -> None:
+        async with self._lifecycle_lock:
+            if session_token is not self._session_token:
+                return
+            self._context_owners = 0
+            await self._shutdown_child_locked(poison=poison)
 
     async def _shutdown_child_locked(self, *, poison: bool) -> None:
         resource_task, self._resource_task = self._resource_task, None
@@ -890,14 +970,14 @@ class PinnedMujocoClient:
         for slot in slots:
             if poison and slot.state is not SlotState.CLOSED:
                 slot.state = SlotState.POISONED
-            elif not poison and slot.state is SlotState.READY:
+            elif not poison and slot.state is not SlotState.CLOSED:
                 slot.state = SlotState.CLOSED
         if stop is not None:
             stop.set()
         if resource_task is not None:
             await _finish_resource_task(resource_task)
 
-    def _new_slot(self, xml_string: str) -> SimulationSlot:
+    def _new_slot(self, xml_bytes: bytes) -> SimulationSlot:
         if self._session_token is None:
             raise UpstreamToolError(
                 UPSTREAM_UNAVAILABLE,
@@ -906,7 +986,7 @@ class PinnedMujocoClient:
                 SAFE_NEXT_ACTION,
             )
         self._generation += 1
-        digest = hashlib.sha256(xml_string.encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha256(xml_bytes).hexdigest()[:16]
         slot = SimulationSlot(
             _name=f"aa_{digest}_{self._generation:04d}",
             summary={},
@@ -1006,13 +1086,8 @@ class PinnedMujocoClient:
                 ) from None
 
     async def load(self, xml_string: str) -> SimulationSlot:
-        if (
-            not isinstance(xml_string, str)
-            or not xml_string
-            or len(xml_string.encode("utf-8")) > MAX_XML_BYTES
-        ):
-            raise ValueError("xml_string is invalid")
-        slot = self._new_slot(xml_string)
+        xml_bytes = _validated_xml_bytes(xml_string)
+        slot = self._new_slot(xml_bytes)
         try:
             result = await self._invoke(
                 slot,
@@ -1034,12 +1109,7 @@ class PinnedMujocoClient:
         return slot
 
     async def validate(self, xml_string: str) -> bool:
-        if (
-            not isinstance(xml_string, str)
-            or not xml_string
-            or len(xml_string.encode("utf-8")) > MAX_XML_BYTES
-        ):
-            raise ValueError("xml_string is invalid")
+        _validated_xml_bytes(xml_string)
         result = await self._invoke(
             None,
             "validate_mjcf",
@@ -1126,10 +1196,10 @@ class PinnedMujocoClient:
             if type(track) is not tuple:
                 raise ValueError("track must be a tuple")
             track = _validate_track(track, slot.summary["bodies"])
-            projected_scalars = n_steps * _trace_scalars_per_step(
+            projected_scalars = _run_record_scalar_count(
+                segments=((n_steps, len(ctrl)),),
                 nq=slot.summary["nq"],
                 nv=slot.summary["nv"],
-                nu=slot.summary["nu"],
                 track=track,
             )
             if projected_scalars > MAX_TRACE_SCALARS:

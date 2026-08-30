@@ -13,6 +13,7 @@ import pytest
 from PIL import Image, PngImagePlugin
 
 from asset_autopsy.mujoco_client import (
+    MAX_TRACE_SCALARS,
     PinnedMujocoClient,
     REQUIRED_TOOL_SCHEMAS,
     REQUIRED_ENVIRONMENT,
@@ -482,6 +483,65 @@ def test_normalizer_rejects_wrapped_error_and_unexpected_content() -> None:
     }
 
 
+def test_normalizer_bounds_oversized_json_integer_before_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asset_autopsy.mujoco_client as mujoco_client
+
+    result = SimpleNamespace(
+        isError=False,
+        content=[
+            SimpleNamespace(
+                type="text",
+                text='{"value":' + "9" * 4_301 + "}",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        mujoco_client,
+        "int",
+        lambda _token: pytest.fail("oversized integer reached int conversion"),
+        raising=False,
+    )
+
+    with pytest.raises(UpstreamToolError) as caught:
+        normalize_json_result(result, lambda _: True, max_text_chars=5_000)
+
+    assert caught.value.envelope() == {
+        "code": UPSTREAM_BAD_RESPONSE,
+        "message": "Upstream response was not valid JSON.",
+        "retryable": False,
+        "next_action": SAFE_SLOT_ACTION,
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    (
+        ("\ud800", "Upstream response text was invalid."),
+        ('{"value":"\\ud800"}', "Upstream response text was invalid."),
+        ("{invalid", "Upstream response was not valid JSON."),
+    ),
+)
+def test_normalizer_maps_invalid_json_and_text_to_sanitized_errors(
+    text: str, message: str
+) -> None:
+    result = SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(type="text", text=text)],
+    )
+
+    with pytest.raises(UpstreamToolError) as caught:
+        normalize_json_result(result, lambda _: True, max_text_chars=4_096)
+
+    assert caught.value.envelope() == {
+        "code": UPSTREAM_BAD_RESPONSE,
+        "message": message,
+        "retryable": False,
+        "next_action": SAFE_SLOT_ACTION,
+    }
+
+
 def test_runner_configuration_requires_constant_bounded_segments() -> None:
     configuration = RunConfiguration(
         xml_string="<mujoco/>",
@@ -563,6 +623,8 @@ def test_client_uses_only_xml_string_and_poisoned_slots_cannot_be_reused() -> No
             await client.reset(slot)
             await client.set_state(slot)
             await client.run_segment(slot, ctrl=[], n_steps=2)
+            await client.reset(slot)
+            assert slot.state is SlotState.READY
             calls = get_session().calls
             assert calls[0][0] == "sim_load"
             assert calls[0][1]["xml_string"] == xml
@@ -572,6 +634,31 @@ def test_client_uses_only_xml_string_and_poisoned_slots_cannot_be_reused() -> No
         assert slot.state is SlotState.CLOSED
         assert transport.closed is True
         assert get_session().closed is True
+
+    asyncio.run(check())
+
+
+def test_invalid_xml_encoding_is_rejected_before_slot_or_upstream_call() -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client()
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            for invalid in (cast(Any, b"\xff"), "\ud800"):
+                with pytest.raises(ValueError, match="^xml_string is invalid$"):
+                    await client.load(invalid)
+                with pytest.raises(ValueError, match="^xml_string is invalid$"):
+                    await client.validate(invalid)
+            assert client._slots == []
+            assert get_session().calls == []
+
+            slot = await client.load('<mujoco model="healthy"/>')
+            await client.reset(slot)
+            await client.run_segment(slot, ctrl=[], n_steps=1)
+            await client.reset(slot)
+            assert slot.state is SlotState.READY
 
     asyncio.run(check())
 
@@ -789,6 +876,46 @@ def test_load_rejects_response_for_a_different_simulation_name() -> None:
                 await client.load('<mujoco model="synthetic"/>')
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
             assert client._slots[0].state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
+def test_load_maps_oversized_integer_json_to_a_poisoning_typed_error() -> None:
+    async def check() -> None:
+        class OversizedIntegerSession(_FakeSession):
+            async def call_tool(
+                self, name: str, *, arguments: dict[str, object]
+            ) -> SimpleNamespace:
+                if name != "sim_load":
+                    return await super().call_tool(name, arguments=arguments)
+                self.calls.append((name, arguments))
+                return SimpleNamespace(
+                    isError=False,
+                    content=[
+                        SimpleNamespace(
+                            type="text",
+                            text='{"nq":' + "9" * 4_301 + "}",
+                        )
+                    ],
+                )
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: _FakeTransport(),
+            session_factory=OversizedIntegerSession,
+        ) as client:
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.load(
+                    '<mujoco model="synthetic">'
+                    + " " * 1_000
+                    + "</mujoco>"
+                )
+            assert caught.value.envelope() == {
+                "code": UPSTREAM_BAD_RESPONSE,
+                "message": "Upstream response was not valid JSON.",
+                "retryable": False,
+                "next_action": SAFE_SLOT_ACTION,
+            }
+            assert client._slots[-1].state is SlotState.POISONED
 
     asyncio.run(check())
 
@@ -1308,6 +1435,9 @@ def test_cancelled_upstream_call_poisoned_slot_and_closes_child() -> None:
             assert client.ready is False
             assert transport.closed is True
             assert get_session().closed is True
+            with pytest.raises(UpstreamToolError) as reused:
+                await client.reset(slot)
+            assert reused.value.code == "SLOT_POISONED"
 
     asyncio.run(check())
 
@@ -1365,6 +1495,41 @@ def test_timeout_preserves_timeout_code_when_cleanup_fails() -> None:
             assert caught.value.code == UPSTREAM_TIMEOUT
             assert client.ready is False
             assert session is not None and session.closed is True
+
+    asyncio.run(check())
+
+
+def test_timeout_primary_survives_bounded_blocking_cleanup() -> None:
+    async def check() -> None:
+        transport = _BlockingCloseTransport()
+        session: _FakeSession | None = None
+        from asset_autopsy.mujoco_client import PinnedMujocoClient, UPSTREAM_TIMEOUT
+
+        def make_session(read: object, write: object) -> _FakeSession:
+            nonlocal session
+            session = _FakeSession(read, write, timeout_on_reset=True)
+            return session
+
+        client = PinnedMujocoClient(
+            call_timeout=0.01,
+            startup_timeout=0.05,
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        async with client:
+            slot = await client.load('<mujoco model="synthetic"/>')
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.reset(slot)
+            assert caught.value.code == UPSTREAM_TIMEOUT
+            assert caught.value.message == "The upstream simulation operation timed out."
+            assert slot.state is SlotState.POISONED
+            assert client.ready is False
+            with pytest.raises(UpstreamToolError) as reused:
+                await client.reset(slot)
+            assert reused.value.code == "SLOT_POISONED"
+        assert transport.close_started.is_set()
+        assert transport.closed is False
+        assert session is not None and session.closed is True
 
     asyncio.run(check())
 
@@ -1536,6 +1701,51 @@ def test_concurrent_context_entry_reuses_one_started_session() -> None:
         assert client.ready is False
         assert transport.closed is True
         assert get_session().closed is True
+
+    asyncio.run(check())
+
+
+def test_cancelled_exit_waiting_for_lifecycle_lock_finishes_slot_cleanup() -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client()
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        entered = asyncio.Event()
+        leave_body = asyncio.Event()
+        slot_holder = []
+
+        async def owner() -> None:
+            async with client:
+                slot_holder.append(
+                    await client.load('<mujoco model="synthetic"/>')
+                )
+                entered.set()
+                await leave_body.wait()
+
+        task = asyncio.create_task(owner())
+        await entered.wait()
+        await client._lifecycle_lock.acquire()
+        leave_body.set()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert task.done() is False
+
+        client._lifecycle_lock.release()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        slot = slot_holder[0]
+        assert client._context_owners == 0
+        assert client.ready is False
+        assert slot.state is SlotState.CLOSED
+        assert transport.closed is True
+        assert get_session().closed is True
+        with pytest.raises(UpstreamToolError) as reused:
+            await client.reset(slot)
+        assert reused.value.code == "SLOT_POISONED"
 
     asyncio.run(check())
 
@@ -2034,6 +2244,23 @@ def test_trace_budget_rejects_high_dimensional_run_before_upstream_call(
             slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(ValueError, match="bounded numeric record budget"):
                 await client.run_segment(slot, ctrl=[0.0] * nu, n_steps=n_steps)
+            assert [name for name, _arguments in get_session().calls] == ["sim_load"]
+
+    asyncio.run(check())
+
+
+def test_trace_budget_counts_the_segment_record_control_copy() -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client(nq=16, nu=1)
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load('<mujoco model="synthetic"/>')
+            assert 100_000 * (16 + 1 + 3) == MAX_TRACE_SCALARS
+            with pytest.raises(ValueError, match="bounded numeric record budget"):
+                await client.run_segment(slot, ctrl=[0.0], n_steps=100_000)
             assert [name for name, _arguments in get_session().calls] == ["sim_load"]
 
     asyncio.run(check())

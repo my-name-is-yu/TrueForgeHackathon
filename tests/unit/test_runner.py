@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from asset_autopsy.mujoco_client import (
+    MAX_TRACE_SCALARS,
     SAFE_NEXT_ACTION,
     UPSTREAM_TIMEOUT,
     UpstreamToolError,
@@ -129,3 +130,39 @@ def test_failure_after_a_completed_segment_preserves_only_that_segment() -> None
     assert [segment.label for segment in partial.segments] == ["first"]
     assert len(partial.segments[0].timeseries) == 2
     assert client.calls == 2
+
+
+def test_runner_preflight_counts_the_returned_segment_control_surface() -> None:
+    class BudgetClient:
+        def __init__(self) -> None:
+            self.load_calls = 0
+            self.reset_calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _tb) -> None:
+            return None
+
+        async def load(self, _xml_string: str):
+            self.load_calls += 1
+            return SimpleNamespace(
+                summary={"nq": 16, "nv": 0, "nu": 1, "timestep": 0.1},
+                state="ready",
+            )
+
+        async def reset(self, _slot) -> None:
+            self.reset_calls += 1
+
+    client = BudgetClient()
+    configuration = RunConfiguration(
+        xml_string="<mujoco/>",
+        segments=(ConstantSegment(ctrl=(0.0,), n_steps=100_000),),
+    )
+    assert 100_000 * (16 + 1 + 3) == MAX_TRACE_SCALARS
+
+    with pytest.raises(ValueError, match="bounded numeric record budget"):
+        asyncio.run(DeterministicRunner(client).run(configuration))
+
+    assert client.load_calls == 1
+    assert client.reset_calls == 0

@@ -19,7 +19,12 @@ from .metrics import (
     first_nonfinite_step,
     resample_experiment_trace,
 )
-from .mujoco_client import MAX_TRACE_SCALARS, UPSTREAM_COMMIT, UpstreamToolError
+from .mujoco_client import (
+    MAX_TRACE_SCALARS,
+    UPSTREAM_COMMIT,
+    UpstreamToolError,
+    _run_record_scalar_count,
+)
 from .patcher import PatcherError, apply_one_attribute_patch
 from .qualification import (
     HiddenVerifier,
@@ -1167,13 +1172,18 @@ class AssetAutopsyService:
                         "Use body names returned by open_case.",
                     )
                 track.append(f"body_xpos:{observable.body_name}")
-        total_steps = sum(segment.n_steps for segment in value.segments)
-        scalar_width = (
-            3 + len(self.fixture.joint_names) * 2 + len(self.fixture.actuator_names)
+        projected_scalars = _run_record_scalar_count(
+            segments=tuple(
+                (segment.n_steps, len(controls))
+                for segment, controls in zip(
+                    value.segments, segment_controls, strict=True
+                )
+            ),
+            nq=len(self.fixture.joint_names),
+            nv=len(self.fixture.joint_names),
+            track=tuple(track),
         )
-        scalar_width += 1 if "contact_count" in track else 0
-        scalar_width += 3 * sum(item.startswith("body_xpos:") for item in track)
-        if total_steps * scalar_width > MAX_TRACE_SCALARS:
+        if projected_scalars > MAX_TRACE_SCALARS:
             raise self._error(
                 request_id,
                 "EXPERIMENT_SCALAR_BUDGET_EXCEEDED",

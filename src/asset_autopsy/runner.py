@@ -19,7 +19,7 @@ from .mujoco_client import (
     UPSTREAM_TIMEOUT,
     UPSTREAM_UNAVAILABLE,
     UpstreamToolError,
-    _trace_scalars_per_step,
+    _run_record_scalar_count,
 )
 
 MAX_TOTAL_STEPS = MAX_STEPS
@@ -258,15 +258,14 @@ class DeterministicRunner:
 
     async def _run(self, configuration: RunConfiguration) -> RunRecord:
         slot = await self.client.load(configuration.xml_string)
-        projected_scalars = sum(
-            segment.n_steps for segment in configuration.segments
-        ) * (
-            _trace_scalars_per_step(
-                nq=slot.summary["nq"],
-                nv=slot.summary["nv"],
-                nu=slot.summary["nu"],
-                track=configuration.track,
-            )
+        projected_scalars = _run_record_scalar_count(
+            segments=tuple(
+                (segment.n_steps, len(segment.ctrl))
+                for segment in configuration.segments
+            ),
+            nq=slot.summary["nq"],
+            nv=slot.summary["nv"],
+            track=configuration.track,
         )
         if projected_scalars > MAX_TRACE_SCALARS:
             raise ValueError("requested run exceeds the bounded numeric record budget")
