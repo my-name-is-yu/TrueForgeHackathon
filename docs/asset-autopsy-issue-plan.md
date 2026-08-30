@@ -359,7 +359,7 @@ Acceptance:
 - [ ] Revision plus ledger event commits atomically
 - [ ] One keyword-only `create_preprovisioned_case` transaction atomically inserts the case and root revision with `root_revision_id == head_revision_id`, null qualification/promotion state, and exactly the five named lowercase-64-hex fields `source_asset_sha256`, `controller_sha256`, `public_contract_sha256`, `runner_sha256`, and `holdout_commitment_sha256`
 - [ ] Case creation rejects a missing, extra, malformed, or existing identity; it never upserts, hashes artifact bytes, renames a commitment field, or exposes an API that later updates any of the five stored commitments
-- [ ] Every non-root child revision persists exactly one hypothesis event and one probe run citation; the pre-provisioned root revision has both citation fields null
+- [ ] Every non-root child revision persists exactly one hypothesis event and one experiment run citation; the pre-provisioned root revision has both citation fields null
 - [ ] Event-chain mutation is detected
 - [ ] Linear head, qualification attempt, and promotion state can be restored
 - [ ] RUNNING and RECOVERING qualification states persist exact attempt identity
@@ -552,16 +552,16 @@ Acceptance:
 - [ ] open_case does not create or mutate a case row, commitment, revision, run, budget, ledger event, or object-store artifact; repeated calls leave that complete logical storage state unchanged
 - [ ] For its five commitment fields, open_case copies only the stored values and never imports commitments.py, computes or renames a digest, or reads hidden-manifest or nonce bytes; the response still contains every contract, budget, revision, topology, patch-policy, and sanitized event-tail field required by the frozen design
 - [ ] A pre-provisioned case missing any required commitment fails with a bounded typed precondition error rather than inventing or repairing identity
-- [ ] Probe without a baseline is rejected
+- [ ] Experiment without a baseline is rejected
 - [ ] Hypothesis, alternative, prediction, and falsifier are committed before engine execution
 - [ ] Output contains condition/execution hashes, segment boundaries, and resampled observations but no predicate-matched booleans or root-cause diagnosis
-- [ ] Cited probe completed on the same base revision
+- [ ] Cited experiment completed on the same base revision
 - [ ] Patch target appears in the cited hypothesis or alternative
 - [ ] Only the current linear head may be patched
 - [ ] One revision changes one attribute
 - [ ] Child run_task returns same-condition BehaviorDiff against its parent
 - [ ] Budget accounting matches the design
-- [ ] Table-driven budget tests enforce invalid request equals 0, pre-physics upstream failure equals 0, completed task or probe including domain failure equals 1, partial run records failed event plus 1, policy-valid compile rejection equals one patch attempt, and identical revision equals 0
+- [ ] Table-driven budget tests enforce invalid request equals 0, pre-physics upstream failure equals 0, completed task or experiment including domain failure equals 1, partial run records failed event plus 1, policy-valid compile rejection equals one patch attempt, and identical revision equals 0
 
 Required verification:
 
@@ -849,7 +849,7 @@ Acceptance:
 - [ ] A recordable run starts only through AA-09A's isolated named-Git-snapshot entry, captures `execution_code_git_sha` before launch and the initialized `component_build_sha256` before the first agent call, and refuses dirty, shadowed, injected, or changed runtime code as valid evidence
 - [ ] Run A uses real denial and leaves zero exports
 - [ ] After reset, fresh Run B completes r000 to r001 to r002 from one prompt
-- [ ] Exactly two hypothesis/probe/one-attribute-patch cycles occur with zero human re-prompts
+- [ ] Exactly two hypothesis/experiment/one-attribute-patch cycles occur with zero human re-prompts
 - [ ] Public gates and hidden qualification pass 3/3
 - [ ] A real TrueForge approval pause occurs only for publish_revision
 - [ ] The approval surface displays the complete human-readable ticket before the human acts
@@ -901,7 +901,7 @@ Acceptance:
 
 - [ ] Arbitrary path or XML input is rejected
 - [ ] A two-attribute patch is rejected
-- [ ] Failure injection proves hypothesis-before-probe ordering
+- [ ] Failure injection proves hypothesis-before-experiment ordering
 - [ ] All seven tool results, MCP isError envelopes, public event tails, LTR-visible payloads, and logs pass sentinel scans for golden data, holdout values, nonce, host path, secret, and traceback; intentional canonical diff values are explicitly scoped
 - [ ] Any production fix is limited to the five explicitly allowed modules and a reproduced failing test
 - [ ] Any validated out-of-allowlist root cause creates a dedicated follow-on fix leaf with exact ownership and blocker links; AA-10A remains incomplete until that fix merges and this regression passes
@@ -983,7 +983,7 @@ Protected surfaces:
 
 Acceptance:
 
-- [ ] One NO_RENDER restart after rendering failure preserves the numeric probe and repair loop
+- [ ] One NO_RENDER restart after rendering failure preserves the numeric experiment and repair loop
 - [ ] A stdio death makes the current call retryable, discards the poisoned slot, and lets a later separate call use a new slot
 - [ ] With identical XML, controller, scenario, seed, timestep, initial state, upstream commit, and architecture, two fresh-process metric sets differ by no more than 1e-8
 - [ ] Qualification and public metrics remain independent of rendered pixels
