@@ -1,0 +1,26 @@
+<mujoco model="compound-arm-01">
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="RK4" gravity="0 0 0"/>
+  <worldbody>
+    <body name="link_a">
+      <joint name="joint_a" type="hinge" axis="0 0 1" range="-1.2 1.2" limited="true" damping="0.4" armature="0.02" frictionloss="0"/>
+      <geom name="link_a_geom" type="capsule" fromto="0 0 0 0.4 0 0" size="0.03" density="500"/>
+      <body name="link_b" pos="0.4 0 0">
+        <joint name="joint_b" type="hinge" axis="0 0 1" range="-1.2 1.2" limited="true" damping="0.4" armature="0.02" frictionloss="0"/>
+        <geom name="link_b_geom" type="capsule" fromto="0 0 0 0.35 0 0" size="0.03" density="500"/>
+        <body name="link_c" pos="0.35 0 0">
+          <joint name="joint_c" type="hinge" axis="0 1 0" range="-1.2 1.2" limited="true" damping="0.01" armature="0.02" frictionloss="0"/>
+          <geom name="link_c_geom" type="capsule" fromto="0 0 0 0.25 0 0" size="0.03" density="500"/>
+          <body name="end_effector" pos="0.25 0 0">
+            <geom name="end_effector_geom" type="sphere" size="0.02" mass="0.01"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="motor_a" joint="joint_a" kp="20" ctrllimited="true" ctrlrange="-1.2 1.2"/>
+    <position name="motor_b" joint="joint_b" kp="20" ctrllimited="true" ctrlrange="-1.2 1.2"/>
+    <position name="motor_c" joint="joint_c" kp="20" ctrllimited="true" ctrlrange="-1.2 1.2"/>
+  </actuator>
+</mujoco>

@@ -46,6 +46,8 @@ dependencies = [
     { name = "mcp" },
     { name = "mujoco" },
     { name = "mujoco-mcp-server" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -58,6 +60,8 @@ requires-dist = [
     { name = "mcp", specifier = "==1.26.0" },
     { name = "mujoco", specifier = "==3.5.0" },
     { name = "mujoco-mcp-server", git = "https://github.com/Rongxuan-Zhou/mujoco-mcp-server.git?rev=ce9bed80ec3698d7b778230abc21f2228a3ce94b" },
+    { name = "starlette", specifier = "==1.6.0" },
+    { name = "uvicorn", specifier = "==0.52.4" },
 ]
 
 [package.metadata.requires-dev]
