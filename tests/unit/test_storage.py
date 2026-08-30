@@ -45,7 +45,6 @@ def run_event_payload(run: RunRecord) -> dict[str, object]:
         "trace_sha256": run.trace_sha256,
         "metrics_sha256": run.metrics_sha256,
         "passed": run.passed,
-        "created_at": run.created_at,
     }
 
 
@@ -220,6 +219,15 @@ def test_object_store_hashes_external_payload_atomically(tmp_path: Path) -> None
         store.objects.read_bytes(digest)
 
 
+def test_object_store_wraps_root_creation_failure(tmp_path: Path) -> None:
+    root = tmp_path / "objects-file"
+    root.write_bytes(b"not a directory")
+    store = ObjectStore(root)
+
+    with pytest.raises(ObjectIntegrityError, match="publication failed"):
+        store.put_bytes(b"payload")
+
+
 def test_object_store_syncs_new_shard_and_hash_root_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -360,17 +368,25 @@ def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     before = store.ledger_events("case-1")
 
-    with pytest.raises(ValidationError):
-        store.append_event(
-            LedgerEventRecord(
-                event_id="evt-invalid-artifact-ref",
-                case_id="case-1",
-                revision_id="r000",
-                event_type="EVIDENCE_RECORDED",
-                payload={},
-                artifact_refs=(42,),
+    invalid_references = (
+        42,
+        {},
+        {"sha256": "changed", "kind": "trace", "size": 1, "media_type": "text/plain"},
+        {"sha256": "f" * 64, "kind": "trace", "size": -1, "media_type": "text/plain"},
+        {"sha256": "f" * 64, "kind": "trace", "size": True, "media_type": "text/plain"},
+    )
+    for index, reference in enumerate(invalid_references):
+        with pytest.raises(ValidationError):
+            store.append_event(
+                LedgerEventRecord(
+                    event_id=f"evt-invalid-artifact-ref-{index}",
+                    case_id="case-1",
+                    revision_id="r000",
+                    event_type="EVIDENCE_RECORDED",
+                    payload={},
+                    artifact_refs=(reference,),
+                )
             )
-        )
 
     assert store.ledger_events("case-1") == before
     valid_reference = {
@@ -439,6 +455,7 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
     assert revision_event.payload == revision_event_payload(
         child, store.get_run("run-probe-1")
     )
+    assert "created_at" not in revision_event.payload["probe_run"]
 
     store.append_event(
         LedgerEventRecord(

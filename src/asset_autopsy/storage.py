@@ -44,7 +44,6 @@ RUN_EVENT_FIELDS = (
     "trace_sha256",
     "metrics_sha256",
     "passed",
-    "created_at",
 )
 TABLE_NAMES = ("cases", "revisions", "runs", "ledger_events")
 TRANSACTIONAL_EVENT_TYPES = {
@@ -315,14 +314,14 @@ class ObjectStore:
     ) -> ObjectReference:
         if expected_sha256 is not None:
             _sha256(expected_sha256, "expected_sha256")
-        if not self.root.parent.is_dir():
-            raise ObjectIntegrityError("object root parent must already exist")
-        self.root.mkdir(exist_ok=True)
-        self.hash_root.mkdir(exist_ok=True)
         temporary_path: Path | None = None
         digest = hashlib.sha256()
         size = 0
         try:
+            if not self.root.parent.is_dir():
+                raise ObjectIntegrityError("object root parent must already exist")
+            self.root.mkdir(exist_ok=True)
+            self.hash_root.mkdir(exist_ok=True)
             with tempfile.NamedTemporaryFile(
                 mode="wb", dir=self.hash_root, prefix=".tmp-", delete=False
             ) as temporary:
@@ -653,6 +652,27 @@ class EvidenceStore:
         )
 
     @staticmethod
+    def _validate_artifact_reference(reference: Mapping[str, Any]) -> None:
+        try:
+            sha256 = reference["sha256"]
+            kind = reference["kind"]
+            size = reference["size"]
+            media_type = reference["media_type"]
+        except KeyError as exc:
+            raise ValidationError("artifact reference is incomplete") from exc
+        _sha256(sha256, "artifact reference sha256")
+        _id(kind, "artifact reference kind")
+        if (
+            not isinstance(media_type, str)
+            or not media_type
+            or media_type.strip() != media_type
+            or any(char in media_type for char in ("\x00", "\n", "\r"))
+        ):
+            raise ValidationError("artifact reference media_type is invalid")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise ValidationError("artifact reference size must be nonnegative")
+
+    @staticmethod
     def _validate_event_record(event: LedgerEventRecord) -> tuple[str, str, str]:
         _id(event.event_id, "event_id")
         _id(event.case_id, "case_id")
@@ -667,6 +687,8 @@ class EvidenceStore:
             raise ValidationError("artifact_refs must be a sequence")
         if any(not isinstance(reference, Mapping) for reference in event.artifact_refs):
             raise ValidationError("artifact_refs must contain objects")
+        for reference in event.artifact_refs:
+            EvidenceStore._validate_artifact_reference(reference)
         payload_json = _json_text(dict(event.payload))
         artifact_refs_json = _json_text(list(event.artifact_refs))
         request_id = event.request_id or _new_id("req")
