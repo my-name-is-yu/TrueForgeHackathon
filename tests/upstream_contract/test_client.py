@@ -64,6 +64,7 @@ class _FakeSession:
         incomplete_run: bool = False,
         wrong_width_run: bool = False,
         block_on_run: bool = False,
+        synchronize_two_runs: bool = False,
         block_on_initialize: bool = False,
         render_is_error: bool = False,
         invalid_render_png: bool = False,
@@ -83,6 +84,7 @@ class _FakeSession:
         self.incomplete_run = incomplete_run
         self.wrong_width_run = wrong_width_run
         self.block_on_run = block_on_run
+        self.synchronize_two_runs = synchronize_two_runs
         self.block_on_initialize = block_on_initialize
         self.render_is_error = render_is_error
         self.invalid_render_png = invalid_render_png
@@ -95,8 +97,10 @@ class _FakeSession:
         self.nv = nv
         self.nu = nu
         self.timestep = timestep
-        self.current_time = 0.0
+        self.current_times: dict[str, float] = {}
         self.run_started = asyncio.Event()
+        self.two_runs_started = asyncio.Event()
+        self.run_call_count = 0
         self.initialize_started = asyncio.Event()
 
     async def __aenter__(self) -> _FakeSession:
@@ -163,20 +167,27 @@ class _FakeSession:
             if self.block_on_run:
                 self.run_started.set()
                 await asyncio.Event().wait()
+            if self.synchronize_two_runs:
+                self.run_call_count += 1
+                if self.run_call_count == 2:
+                    self.two_runs_started.set()
+                await self.two_runs_started.wait()
+            sim_name = str(arguments["sim_name"])
+            current_time = self.current_times.get(sim_name, 0.0)
             qpos = [0.0] if self.wrong_width_run else [0.0] * self.nq
             qvel = [0.0] if self.wrong_width_run else [0.0] * self.nv
-            timestamps = [self.current_time + self.timestep * (index + 1) for index in range(steps)]
+            timestamps = [current_time + self.timestep * (index + 1) for index in range(steps)]
             if self.timestamp_mode == "duplicate" and len(timestamps) >= 2:
                 timestamps[1] = timestamps[0]
             elif self.timestamp_mode == "reversed":
                 timestamps.reverse()
             elif self.timestamp_mode == "wrong_interval" and len(timestamps) >= 3:
                 timestamps[2] = timestamps[1] + 2 * self.timestep
-            if self.boundary_mode and self.current_time and timestamps:
+            if self.boundary_mode and current_time and timestamps:
                 if self.boundary_mode == "duplicate":
-                    timestamps[0] = self.current_time
+                    timestamps[0] = current_time
                 elif self.boundary_mode == "backward":
-                    timestamps[0] = self.current_time - self.timestep
+                    timestamps[0] = current_time - self.timestep
                 elif self.boundary_mode == "late":
                     timestamps[0] += self.timestep * 9e-6
             rows = []
@@ -191,7 +202,7 @@ class _FakeSession:
                     row.update({"qpos": qpos, "qvel": qvel})
                 rows.append(row)
             sim_time = [timestamps[0], timestamps[-1]]
-            self.current_time = timestamps[-1]
+            self.current_times[sim_name] = timestamps[-1]
             if self.timestamp_mode == "inconsistent":
                 sim_time[1] += 0.002
             return _text_result(
@@ -233,6 +244,7 @@ def _fake_client(
     incomplete_run: bool = False,
     wrong_width_run: bool = False,
     block_on_run: bool = False,
+    synchronize_two_runs: bool = False,
     block_on_initialize: bool = False,
     render_is_error: bool = False,
     invalid_render_png: bool = False,
@@ -258,6 +270,7 @@ def _fake_client(
             incomplete_run=incomplete_run,
             wrong_width_run=wrong_width_run,
             block_on_run=block_on_run,
+            synchronize_two_runs=synchronize_two_runs,
             block_on_initialize=block_on_initialize,
             render_is_error=render_is_error,
             invalid_render_png=invalid_render_png,
@@ -785,6 +798,39 @@ def test_concurrent_context_entry_reuses_one_started_session() -> None:
         assert client.ready is False
         assert transport.closed is True
         assert get_session().closed is True
+
+    asyncio.run(check())
+
+
+def test_concurrent_first_runner_startup_shares_lifecycle_without_early_close() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(synchronize_two_runs=True)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        session_count = 0
+
+        def counting_session(read: object, write: object) -> _FakeSession:
+            nonlocal session_count
+            session_count += 1
+            return make_session(read, write)
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=counting_session,
+        )
+        runner = DeterministicRunner(client)
+        configuration = RunConfiguration(
+            xml_string="<mujoco model=\"synthetic\"/>",
+            segments=(ConstantSegment((), 1),),
+        )
+        first, second = await asyncio.gather(
+            runner.run(configuration),
+            runner.run(configuration),
+        )
+        assert first.step_count == second.step_count == 1
+        assert session_count == 1
+        assert client.ready is False
+        assert transport.closed is True
 
     asyncio.run(check())
 
