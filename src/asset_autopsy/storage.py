@@ -754,8 +754,60 @@ class EvidenceStore:
         return self._case_from_row(row)
 
     def restore_state(self, case_id: str) -> CaseRecord:
-        self.verify_ledger()
-        return self.get_case(case_id)
+        events = self.verify_ledger()
+        case = self.get_case(case_id)
+        case_events = tuple(event for event in events if event.case_id == case_id)
+        created = tuple(event for event in case_events if event.event_type == "CASE_CREATED")
+        if len(created) != 1 or created[0].payload.get("root_revision_id") != case.root_revision_id:
+            raise IntegrityError("case creation state does not match the ledger")
+
+        head_revision_id = case.root_revision_id
+        qualification_revision_id: str | None = None
+        qualification_attempt_id: str | None = None
+        qualification_result: str | None = None
+        promoted_revision_id: str | None = None
+        qualification_identity: tuple[str, str] | None = None
+        for event in case_events:
+            if event.event_type == "REVISION_CREATED":
+                if event.revision_id is None:
+                    raise IntegrityError("revision event identity is invalid")
+                head_revision_id = event.revision_id
+            elif event.event_type == "QUALIFICATION_RESERVED":
+                attempt = self._attempt_from_payload(case_id, "RUNNING", event.payload)
+                qualification_revision_id = attempt.revision_id
+                qualification_attempt_id = attempt.attempt_id
+                qualification_result = "RUNNING"
+                qualification_identity = (attempt.revision_id, attempt.attempt_id)
+            elif event.event_type in {
+                "QUALIFICATION_RECOVERING",
+                "QUALIFICATION_RECOVERED",
+                "QUALIFICATION_PASSED",
+                "QUALIFICATION_FAILED",
+            }:
+                state = {
+                    "QUALIFICATION_RECOVERING": "RECOVERING",
+                    "QUALIFICATION_RECOVERED": "RUNNING",
+                    "QUALIFICATION_PASSED": "PASSED",
+                    "QUALIFICATION_FAILED": "FAILED",
+                }[event.event_type]
+                attempt = self._attempt_from_payload(case_id, state, event.payload)
+                if qualification_identity != (attempt.revision_id, attempt.attempt_id):
+                    raise IntegrityError("qualification event identity is invalid")
+                qualification_result = state
+            elif event.event_type == "PROMOTED":
+                if event.revision_id is None or event.payload.get("revision_id") != event.revision_id:
+                    raise IntegrityError("promotion event identity is invalid")
+                promoted_revision_id = event.revision_id
+
+        if (
+            case.head_revision_id != head_revision_id
+            or case.qualification_revision_id != qualification_revision_id
+            or case.qualification_attempt_id != qualification_attempt_id
+            or case.qualification_result != qualification_result
+            or case.promoted_revision_id != promoted_revision_id
+        ):
+            raise IntegrityError("materialized case state does not match the ledger")
+        return case
 
     restore_case_state = restore_state
 
