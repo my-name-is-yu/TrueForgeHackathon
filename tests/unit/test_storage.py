@@ -1508,6 +1508,30 @@ def test_malformed_stored_promotion_revision_is_an_integrity_error(
         store.reconcile_promotion(case_id="case-1")
 
 
+def test_uncited_run_cannot_reference_a_missing_revision(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    store.record_run(
+        run=RunRecord(
+            run_id="run-uncited",
+            case_id="case-1",
+            revision_id="r000",
+            run_kind="probe",
+            probe_kind="pose_hold",
+            condition_hash="condition-uncited",
+            execution_fingerprint="execution-uncited",
+            passed=False,
+        )
+    )
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            "UPDATE runs SET revision_id = 'r999' WHERE run_id = 'run-uncited'"
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="stored run references missing revision"):
+        store.get_run("run-uncited")
+
+
 def test_unqualified_promotion_does_not_mutate_case_or_ledger(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     before = len(store.ledger_events())

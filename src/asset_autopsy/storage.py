@@ -1552,6 +1552,13 @@ class EvidenceStore:
         ).fetchall()
         revisions_by_id = {revision["revision_id"]: revision for revision in revision_rows}
         runs_by_id = {run["run_id"]: run for run in run_rows}
+        for run in run_rows:
+            run_record = self._validated_run_from_row(run)
+            if (
+                run_record.case_id != case_id
+                or run_record.revision_id not in revisions_by_id
+            ):
+                raise IntegrityError("stored run references missing revision")
         events_by_id = {event.event_id: event for event in case_events}
         root = revisions_by_id.get(case.root_revision_id)
         if root is None or root["asset_sha256"] != case.source_asset_sha256:
