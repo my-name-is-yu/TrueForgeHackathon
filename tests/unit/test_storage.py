@@ -871,7 +871,7 @@ def test_restore_rejects_materialized_state_that_differs_from_ledger(
         connection.commit()
 
     with pytest.raises(
-        IntegrityError, match="materialized case state|commitments"
+        IntegrityError, match="materialized case state|commitments|reservation differs"
     ):
         store.restore_state("case-1")
 
@@ -1170,6 +1170,8 @@ def test_restore_rejects_illegal_qualification_transition(tmp_path: Path) -> Non
 
     with pytest.raises(IntegrityError, match="lifecycle transition is invalid"):
         store.restore_state("case-1")
+    with pytest.raises(IntegrityError, match="lifecycle transition is invalid"):
+        store.get_qualification("case-1")
 
 
 def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:

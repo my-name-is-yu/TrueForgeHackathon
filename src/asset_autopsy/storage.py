@@ -899,11 +899,12 @@ class EvidenceStore:
         head_revision_id = case.root_revision_id
         head_ordinal = 0
         replayed_revision_ids = {case.root_revision_id}
-        qualification_revision_id: str | None = None
-        qualification_attempt_id: str | None = None
-        qualification_result: str | None = None
-        promoted_revision_id: str | None = None
-        qualification_identity: tuple[str, str] | None = None
+        (
+            qualification_revision_id,
+            qualification_attempt_id,
+            qualification_result,
+            promoted_revision_id,
+        ) = self._replay_case_lifecycle(case, case_events, case_commitments)
         for event in case_events:
             if event.event_type == "REVISION_CREATED":
                 if event.revision_id is None:
@@ -937,50 +938,6 @@ class EvidenceStore:
                 head_revision_id = event.revision_id
                 head_ordinal = revision["ordinal"]
                 replayed_revision_ids.add(event.revision_id)
-            elif event.event_type == "QUALIFICATION_RESERVED":
-                if qualification_result is not None:
-                    raise IntegrityError("qualification reservation is duplicated")
-                attempt = self._attempt_from_event(
-                    case_id, "RUNNING", event, commitments=case_commitments
-                )
-                if attempt.revision_id != head_revision_id:
-                    raise IntegrityError("qualification revision is not the restored head")
-                qualification_revision_id = attempt.revision_id
-                qualification_attempt_id = attempt.attempt_id
-                qualification_result = "RUNNING"
-                qualification_identity = (attempt.revision_id, attempt.attempt_id)
-            elif event.event_type in {
-                "QUALIFICATION_RECOVERING",
-                "QUALIFICATION_RECOVERED",
-                "QUALIFICATION_PASSED",
-                "QUALIFICATION_FAILED",
-            }:
-                state = {
-                    "QUALIFICATION_RECOVERING": "RECOVERING",
-                    "QUALIFICATION_RECOVERED": "RUNNING",
-                    "QUALIFICATION_PASSED": "PASSED",
-                    "QUALIFICATION_FAILED": "FAILED",
-                }[event.event_type]
-                required_previous = {
-                    "QUALIFICATION_RECOVERING": "RUNNING",
-                    "QUALIFICATION_RECOVERED": "RECOVERING",
-                    "QUALIFICATION_PASSED": "RUNNING",
-                    "QUALIFICATION_FAILED": "RUNNING",
-                }[event.event_type]
-                if qualification_result != required_previous:
-                    raise IntegrityError("qualification lifecycle transition is invalid")
-                attempt = self._attempt_from_event(
-                    case_id, state, event, commitments=case_commitments
-                )
-                if qualification_identity != (attempt.revision_id, attempt.attempt_id):
-                    raise IntegrityError("qualification event identity is invalid")
-                qualification_result = state
-            elif event.event_type == "PROMOTED":
-                if qualification_result != "PASSED" or promoted_revision_id is not None:
-                    raise IntegrityError("promotion lifecycle transition is invalid")
-                promoted_revision_id = self._promotion_from_event(case_id, event).revision_id
-                if promoted_revision_id != qualification_revision_id:
-                    raise IntegrityError("promotion revision is not qualified")
 
         if replayed_revision_ids != set(revisions_by_id):
             raise IntegrityError("revision rows do not match the ledger replay")
@@ -1433,6 +1390,107 @@ class EvidenceStore:
         return attempt
 
     @classmethod
+    def _replay_case_lifecycle(
+        cls,
+        case: CaseRecord,
+        events: Sequence[LedgerEvent],
+        commitments: Mapping[str, str],
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        qualification_revision_id: str | None = None
+        qualification_attempt_id: str | None = None
+        qualification_result: str | None = None
+        promoted_revision_id: str | None = None
+        qualification_identity: tuple[str, str] | None = None
+        current_revision_id = case.root_revision_id
+        for event in events:
+            if event.event_type == "REVISION_CREATED":
+                if qualification_result is not None:
+                    raise IntegrityError("revision follows qualification seal")
+                if event.revision_id is None:
+                    raise IntegrityError("revision event identity is invalid")
+                current_revision_id = event.revision_id
+            elif event.event_type == "QUALIFICATION_RESERVED":
+                if qualification_result is not None:
+                    raise IntegrityError("qualification reservation is duplicated")
+                attempt = cls._attempt_from_event(
+                    case.case_id, "RUNNING", event, commitments=commitments
+                )
+                if attempt.revision_id != current_revision_id:
+                    raise IntegrityError("qualification revision is not the restored head")
+                if (
+                    case.qualification_revision_id != attempt.revision_id
+                    or case.qualification_attempt_id != attempt.attempt_id
+                ):
+                    raise IntegrityError("qualification reservation differs from the case")
+                qualification_revision_id = attempt.revision_id
+                qualification_attempt_id = attempt.attempt_id
+                qualification_result = "RUNNING"
+                qualification_identity = (attempt.revision_id, attempt.attempt_id)
+            elif event.event_type in {
+                "QUALIFICATION_RECOVERING",
+                "QUALIFICATION_RECOVERED",
+                "QUALIFICATION_PASSED",
+                "QUALIFICATION_FAILED",
+            }:
+                state = {
+                    "QUALIFICATION_RECOVERING": "RECOVERING",
+                    "QUALIFICATION_RECOVERED": "RUNNING",
+                    "QUALIFICATION_PASSED": "PASSED",
+                    "QUALIFICATION_FAILED": "FAILED",
+                }[event.event_type]
+                required_previous = {
+                    "QUALIFICATION_RECOVERING": "RUNNING",
+                    "QUALIFICATION_RECOVERED": "RECOVERING",
+                    "QUALIFICATION_PASSED": "RUNNING",
+                    "QUALIFICATION_FAILED": "RUNNING",
+                }[event.event_type]
+                if qualification_result != required_previous:
+                    raise IntegrityError("qualification lifecycle transition is invalid")
+                attempt = cls._attempt_from_event(
+                    case.case_id, state, event, commitments=commitments
+                )
+                if qualification_identity != (attempt.revision_id, attempt.attempt_id):
+                    raise IntegrityError("qualification event identity is invalid")
+                qualification_result = state
+            elif event.event_type == "PROMOTED":
+                if qualification_result != "PASSED" or promoted_revision_id is not None:
+                    raise IntegrityError("promotion lifecycle transition is invalid")
+                promoted_revision_id = cls._promotion_from_event(
+                    case.case_id, event
+                ).revision_id
+                if promoted_revision_id != qualification_revision_id:
+                    raise IntegrityError("promotion revision is not qualified")
+        if (
+            case.qualification_revision_id != qualification_revision_id
+            or case.qualification_attempt_id != qualification_attempt_id
+            or case.qualification_result != qualification_result
+            or case.promoted_revision_id != promoted_revision_id
+        ):
+            raise IntegrityError("materialized case state does not match the ledger")
+        return (
+            qualification_revision_id,
+            qualification_attempt_id,
+            qualification_result,
+            promoted_revision_id,
+        )
+
+    def _validate_case_lifecycle_from_connection(
+        self, connection: sqlite3.Connection, case_id: str
+    ) -> None:
+        events = self._verified_ledger_from_connection(connection)
+        row = connection.execute(
+            "SELECT * FROM cases WHERE case_id = ?", (case_id,)
+        ).fetchone()
+        if row is None:
+            raise CaseNotFoundError("case was not found")
+        case = self._case_from_row(row)
+        self._replay_case_lifecycle(
+            case,
+            tuple(event for event in events if event.case_id == case_id),
+            self._stored_commitment_payload(row),
+        )
+
+    @classmethod
     def _identity_matches(
         cls,
         attempt: QualificationAttempt,
@@ -1465,7 +1523,7 @@ class EvidenceStore:
         state: str,
         commitments: Mapping[str, str],
     ) -> QualificationAttempt:
-        self._verified_ledger_from_connection(connection)
+        self._validate_case_lifecycle_from_connection(connection, case_id)
         row = connection.execute(
             """
             SELECT * FROM ledger_events
@@ -2039,7 +2097,7 @@ class EvidenceStore:
         case_id: str,
         revision_id: str | None = None,
     ) -> PromotionReceipt | None:
-        self._verified_ledger_from_connection(connection)
+        self._validate_case_lifecycle_from_connection(connection, case_id)
         if revision_id is None:
             row = connection.execute(
                 """
