@@ -59,6 +59,7 @@ class _FakeSession:
         wrong_width_run: bool = False,
         block_on_run: bool = False,
         render_is_error: bool = False,
+        wrong_load_name: bool = False,
         nq: int = 0,
         nv: int = 0,
         nu: int = 0,
@@ -70,6 +71,7 @@ class _FakeSession:
         self.wrong_width_run = wrong_width_run
         self.block_on_run = block_on_run
         self.render_is_error = render_is_error
+        self.wrong_load_name = wrong_load_name
         self.nq = nq
         self.nv = nv
         self.nu = nu
@@ -97,7 +99,7 @@ class _FakeSession:
         if name == "sim_load":
             return _text_result(
                 {
-                    "name": "synthetic",
+                    "name": "unexpected" if self.wrong_load_name else arguments["name"],
                     "mujoco_version": "3.5.0",
                     "nq": self.nq,
                     "nv": self.nv,
@@ -156,6 +158,7 @@ def _fake_client(
     wrong_width_run: bool = False,
     block_on_run: bool = False,
     render_is_error: bool = False,
+    wrong_load_name: bool = False,
     nq: int = 0,
     nv: int = 0,
     nu: int = 0,
@@ -173,6 +176,7 @@ def _fake_client(
             wrong_width_run=wrong_width_run,
             block_on_run=block_on_run,
             render_is_error=render_is_error,
+            wrong_load_name=wrong_load_name,
             nq=nq,
             nv=nv,
             nu=nu,
@@ -231,6 +235,18 @@ def test_normalizer_rejects_wrapped_error_and_unexpected_content() -> None:
         "next_action": SAFE_SLOT_ACTION,
     }
 
+    with pytest.raises(UpstreamToolError) as flagged:
+        normalize_json_result(
+            SimpleNamespace(isError=True, content=[]),
+            lambda _: True,
+        )
+    assert flagged.value.envelope() == {
+        "code": UPSTREAM_UNAVAILABLE,
+        "message": SAFE_MESSAGE,
+        "retryable": True,
+        "next_action": SAFE_NEXT_ACTION,
+    }
+
 
 def test_runner_configuration_requires_constant_bounded_segments() -> None:
     configuration = RunConfiguration(
@@ -270,6 +286,23 @@ def test_client_uses_only_xml_string_and_poisoned_slots_cannot_be_reused() -> No
         assert slot.state is SlotState.CLOSED
         assert transport.closed is True
         assert get_session().closed is True
+
+    asyncio.run(check())
+
+
+def test_load_rejects_response_for_a_different_simulation_name() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(wrong_load_name=True)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.load("<mujoco model=\"synthetic\"/>")
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert client._slots[0].state is SlotState.POISONED
 
     asyncio.run(check())
 

@@ -303,6 +303,8 @@ def normalize_json_result(
     result: Any,
     validate: Callable[[dict[str, Any]], bool],
 ) -> dict[str, Any]:
+    if _is_error_result(result):
+        raise _wrapped_error()
     text = _text_block(result)
     try:
         payload = json.loads(text)
@@ -311,7 +313,7 @@ def normalize_json_result(
 
     if not isinstance(payload, dict):
         raise _bad_response("Upstream response JSON had an invalid shape.")
-    if _is_error_result(result) or "error" in payload:
+    if "error" in payload:
         raise _wrapped_error()
     try:
         valid = validate(payload)
@@ -334,7 +336,7 @@ def _numeric_tree(value: Any, depth: int = 0) -> bool:
     return isinstance(value, list) and all(_numeric_tree(item, depth + 1) for item in value)
 
 
-def _matches_load(payload: dict[str, Any]) -> bool:
+def _matches_load(payload: dict[str, Any], *, expected_name: str | None = None) -> bool:
     scalar_types = {
         "name": str,
         "mujoco_version": str,
@@ -354,6 +356,8 @@ def _matches_load(payload: dict[str, Any]) -> bool:
     if set(payload) != set(scalar_types) | list_fields:
         return False
     if any(type(payload[name]) is not expected for name, expected in scalar_types.items()):
+        return False
+    if expected_name is not None and payload["name"] != expected_name:
         return False
     return all(
         type(payload[name]) is list
@@ -679,7 +683,10 @@ class PinnedMujocoClient:
                 "sim_load",
                 {"name": slot._name, "xml_string": xml_string},
             )
-            payload = normalize_json_result(result, _matches_load)
+            payload = normalize_json_result(
+                result,
+                lambda value: _matches_load(value, expected_name=slot._name),
+            )
             slot.summary = {key: value for key, value in payload.items() if key != "name"}
         except UpstreamToolError:
             slot.state = SlotState.POISONED
