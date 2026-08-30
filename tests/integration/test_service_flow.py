@@ -220,6 +220,25 @@ def multi_segment_experiment(revision_id: str, claim: Hypothesis) -> RunExperime
     )
 
 
+def test_service_scalar_preflight_counts_the_segment_control_surface(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AssetAutopsyService(tmp_path, runner=DeterministicFakeRunner())
+    value = experiment(
+        "r000",
+        hypothesis("joint_b", "axis", "joint_c", "damping"),
+    )
+    monkeypatch.setattr("asset_autopsy.service.MAX_TRACE_SCALARS", 3_840)
+
+    with pytest.raises(DomainError) as caught:
+        service._validate_experiment(value, "req_scalar_budget")
+
+    assert caught.value.code == "EXPERIMENT_SCALAR_BUDGET_EXCEEDED"
+    assert caught.value.safe_message == (
+        "The requested experiment exceeds the numeric record budget."
+    )
+
+
 def run(coroutine):
     return asyncio.run(coroutine)
 
