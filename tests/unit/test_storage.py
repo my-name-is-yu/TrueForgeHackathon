@@ -13,6 +13,7 @@ from asset_autopsy.storage import (
     EvidenceStore,
     IntegrityError,
     LedgerEventRecord,
+    ObjectStore,
     ObjectIntegrityError,
     RevisionConflictError,
     RevisionRecord,
@@ -182,6 +183,29 @@ def test_object_store_hashes_external_payload_atomically(tmp_path: Path) -> None
         store.objects.read_bytes(digest)
 
 
+def test_object_store_syncs_new_shard_and_hash_root_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    object_store = ObjectStore(tmp_path / "objects")
+    synchronized: list[Path] = []
+    monkeypatch.setattr(
+        object_store,
+        "_fsync_directory",
+        lambda path: synchronized.append(path),
+    )
+
+    payload = b"first object in a new shard"
+    digest = hashlib.sha256(payload).hexdigest()
+    object_store.put_bytes(payload, expected_sha256=digest)
+
+    hash_root = tmp_path / "objects" / "sha256"
+    shard = hash_root / digest[:2]
+    assert hash_root in synchronized
+    assert shard in synchronized
+    assert hash_root.parent in synchronized
+    assert synchronized.index(hash_root) < synchronized.index(shard)
+
+
 def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
@@ -257,6 +281,101 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
                 revision_id="r003",
                 event_type="REVISION_CREATED",
                 payload={},
+            ),
+            expected_head_revision_id="r000",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("event_type", "DIFFERENT_EVENT"),
+        ("payload", {"asset_sha256": "changed"}),
+        ("artifact_refs", ({"sha256": "changed"},)),
+        ("request_id", "request-changed"),
+        ("created_at", "changed-time"),
+    ],
+)
+def test_revision_retry_rejects_changed_ledger_event(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    child = store.get_revision("case-1", "r001")
+    persisted = next(
+        event for event in store.ledger_events("case-1") if event.event_id == "evt-revision-r001"
+    )
+
+    supplied = {
+        "event_type": persisted.event_type,
+        "payload": persisted.payload,
+        "artifact_refs": persisted.artifact_refs,
+        "request_id": persisted.request_id,
+        "created_at": persisted.created_at,
+    }
+    supplied[field] = value
+    with pytest.raises(IntegrityError):
+        store.commit_revision_with_event(
+            revision=child,
+            event=LedgerEventRecord(
+                event_id=persisted.event_id,
+                case_id=persisted.case_id,
+                revision_id=persisted.revision_id,
+                event_type=supplied["event_type"],
+                payload=supplied["payload"],
+                artifact_refs=supplied["artifact_refs"],
+                request_id=supplied["request_id"],
+                created_at=supplied["created_at"],
+            ),
+            expected_head_revision_id="r001",
+        )
+    assert store.get_revision("case-1", "r001") == child
+    assert store.ledger_events("case-1")[-1].event_id == persisted.event_id
+
+
+def test_child_revision_requires_probe_run(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    store.append_event(
+        LedgerEventRecord(
+            event_id="evt-task-hypothesis",
+            case_id="case-1",
+            revision_id="r000",
+            event_type="HYPOTHESIS_RECORDED",
+            payload={"claim": "synthetic task"},
+        )
+    )
+    store.record_run(
+        run=RunRecord(
+            run_id="run-task-1",
+            case_id="case-1",
+            revision_id="r000",
+            run_kind="task",
+            probe_kind=None,
+            condition_hash="condition-task",
+            execution_fingerprint="execution-task",
+            passed=True,
+        )
+    )
+
+    with pytest.raises(RevisionConflictError):
+        store.commit_revision_with_event(
+            revision=RevisionRecord(
+                case_id="case-1",
+                revision_id="r001",
+                parent_revision_id="r000",
+                ordinal=1,
+                asset_sha256="2" * 64,
+                patch_manifest_sha256="3" * 64,
+                hypothesis_event_id="evt-task-hypothesis",
+                probe_run_id="run-task-1",
+            ),
+            event=LedgerEventRecord(
+                event_id="evt-revision-r001",
+                case_id="case-1",
+                revision_id="r001",
+                event_type="REVISION_CREATED",
+                payload={"asset_sha256": "2" * 64},
             ),
             expected_head_revision_id="r000",
         )
@@ -381,3 +500,102 @@ def test_unqualified_promotion_does_not_mutate_case_or_ledger(tmp_path: Path) ->
         )
     assert len(store.ledger_events()) == before
     assert store.get_case("case-1").promoted_revision_id is None
+
+
+def _add_child_evidence(store: EvidenceStore) -> None:
+    store.append_event(
+        LedgerEventRecord(
+            event_id="evt-hypothesis-2",
+            case_id="case-1",
+            revision_id="r001",
+            event_type="HYPOTHESIS_RECORDED",
+            payload={"claim": "synthetic second claim"},
+        )
+    )
+    store.record_run(
+        run=RunRecord(
+            run_id="run-probe-2",
+            case_id="case-1",
+            revision_id="r001",
+            run_kind="probe",
+            probe_kind="pose_hold",
+            condition_hash="condition-2",
+            execution_fingerprint="execution-2",
+            passed=False,
+        )
+    )
+
+
+@pytest.mark.parametrize("sealed_state", ["RUNNING", "RECOVERING", "PASSED", "FAILED", "PROMOTED"])
+def test_new_child_revision_is_rejected_after_lifecycle_seal(
+    tmp_path: Path, sealed_state: str
+) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    _add_child_evidence(store)
+    identity = {
+        "case_id": "case-1",
+        "attempt_id": "attempt-1",
+        "revision_id": "r001",
+        "suite_commitment_sha256": "4" * 64,
+        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
+    }
+    if sealed_state == "RUNNING":
+        qualify(store)
+    elif sealed_state == "RECOVERING":
+        qualify(store)
+        store.mark_qualification_recovering(**identity)
+    elif sealed_state in {"PASSED", "FAILED"}:
+        qualify(store)
+        store.record_qualification_terminal(**identity, state=sealed_state)
+    else:
+        qualify(store)
+        store.record_qualification_terminal(**identity, state="PASSED")
+        store.record_promotion_receipt(
+            case_id="case-1",
+            revision_id="r001",
+            ticket_id="ticket-1",
+            manifest_sha256="8" * 64,
+        )
+
+    persisted = next(
+        event for event in store.ledger_events("case-1") if event.event_id == "evt-revision-r001"
+    )
+    assert store.commit_revision_with_event(
+        revision=store.get_revision("case-1", "r001"),
+        event=LedgerEventRecord(
+            event_id=persisted.event_id,
+            case_id=persisted.case_id,
+            revision_id=persisted.revision_id,
+            event_type=persisted.event_type,
+            payload=persisted.payload,
+            artifact_refs=persisted.artifact_refs,
+            request_id=persisted.request_id,
+            created_at=persisted.created_at,
+        ),
+        expected_head_revision_id="r001",
+    ).revision_id == "r001"
+
+    with pytest.raises(RevisionConflictError):
+        store.commit_revision_with_event(
+            revision=RevisionRecord(
+                case_id="case-1",
+                revision_id="r002",
+                parent_revision_id="r001",
+                ordinal=2,
+                asset_sha256="9" * 64,
+                patch_manifest_sha256="a" * 64,
+                hypothesis_event_id="evt-hypothesis-2",
+                probe_run_id="run-probe-2",
+            ),
+            event=LedgerEventRecord(
+                event_id="evt-revision-r002",
+                case_id="case-1",
+                revision_id="r002",
+                event_type="REVISION_CREATED",
+                payload={"asset_sha256": "9" * 64},
+            ),
+            expected_head_revision_id="r001",
+        )
+    assert store.get_case("case-1").head_revision_id == "r001"

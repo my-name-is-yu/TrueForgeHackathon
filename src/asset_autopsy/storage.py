@@ -284,6 +284,7 @@ class ObjectStore:
     ) -> ObjectReference:
         if expected_sha256 is not None:
             _sha256(expected_sha256, "expected_sha256")
+        hash_root_created = not self.hash_root.exists()
         self.hash_root.mkdir(parents=True, exist_ok=True)
         temporary_path: Path | None = None
         digest = hashlib.sha256()
@@ -305,6 +306,7 @@ class ObjectStore:
             if expected_sha256 is not None and actual != expected_sha256:
                 raise ObjectIntegrityError("object hash does not match expected digest")
             destination = self._path(actual)
+            shard_created = not destination.parent.exists()
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.exists():
                 if not destination.is_file():
@@ -315,7 +317,11 @@ class ObjectStore:
                 return ObjectReference(stored, stored_size)
             os.replace(temporary_path, destination)
             temporary_path = None
+            if shard_created:
+                self._fsync_directory(self.hash_root)
             self._fsync_directory(destination.parent)
+            if hash_root_created:
+                self._fsync_directory(self.hash_root.parent)
             return ObjectReference(actual, size)
         except OSError as exc:
             raise ObjectIntegrityError("object publication failed") from exc
@@ -527,6 +533,39 @@ class EvidenceStore:
             prev_hash=row["prev_hash"],
             event_hash=row["event_hash"],
             created_at=row["created_at"],
+        )
+
+    @classmethod
+    def _event_matches_record(
+        cls,
+        row: sqlite3.Row,
+        event: LedgerEventRecord,
+    ) -> bool:
+        request_id, payload_json, artifact_refs_json = cls._validate_event_record(event)
+        created_at = _timestamp(event.created_at)
+        without_hash = {
+            "event_id": event.event_id,
+            "request_id": request_id,
+            "case_id": event.case_id,
+            "revision_id": event.revision_id,
+            "event_type": event.event_type,
+            "payload_json": payload_json,
+            "artifact_refs_json": artifact_refs_json,
+            "created_at": created_at,
+        }
+        try:
+            _sha256(row["prev_hash"], "prev_hash")
+            expected_hash = hashlib.sha256(
+                bytes.fromhex(row["prev_hash"]) + canonical_json_bytes(without_hash)
+            ).hexdigest()
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise IntegrityError("stored ledger event hash inputs are invalid") from exc
+        return (
+            all(
+                row[field] == value
+                for field, value in without_hash.items()
+            )
+            and row["event_hash"] == expected_hash
         )
 
     @staticmethod
@@ -826,8 +865,12 @@ class EvidenceStore:
                     and event_row["revision_id"] == revision.revision_id
                     and self._revision_matches(existing, revision)
                 ):
-                    return self._revision_from_row(existing)
+                    if self._event_matches_record(event_row, event):
+                        return self._revision_from_row(existing)
+                    raise IntegrityError("revision retry event does not match")
                 raise RevisionConflictError("revision identity already exists")
+            if case["qualification_result"] is not None or case["promoted_revision_id"] is not None:
+                raise RevisionConflictError("case head is sealed")
             if case["head_revision_id"] != expected_head_revision_id:
                 raise RevisionConflictError("expected head is stale")
             if revision.parent_revision_id != expected_head_revision_id:
@@ -860,6 +903,8 @@ class EvidenceStore:
                 probe is None
                 or probe["case_id"] != revision.case_id
                 or probe["revision_id"] != revision.parent_revision_id
+                or probe["run_kind"] != "probe"
+                or probe["passed"] is None
             ):
                 raise RevisionConflictError("probe citation is invalid")
             try:
