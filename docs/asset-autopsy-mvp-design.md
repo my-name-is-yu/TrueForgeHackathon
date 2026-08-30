@@ -123,7 +123,7 @@ flowchart LR
 - Seven TrueForge-visible domain tools.
 - A behavior-contract schema for reach-and-hold.
 - Hypothesis, competing explanation, prediction, and falsifier preregistration.
-- Two safe probe recipes: joint pulse and pose hold.
+- Two safe experiment kinds: joint pulse and pose hold.
 - Copy-on-write, single-attribute MJCF revisions.
 - A strict adapter that normalizes unsafe or ambiguous upstream responses.
 - Same-condition BehaviorDiff and contract qualification.
@@ -412,9 +412,9 @@ Output includes:
 
 The agent cannot choose the target, controller, seed, timestep, or initial state.
 
-### 10.4 run_probe
+### 10.4 run_experiment
 
-Purpose: atomically preregister a causal hypothesis and then execute one discriminating experiment.
+Purpose: atomically preregister a causal hypothesis and execute one bounded, agent-selected experiment against the current revision. The server owns the experiment vocabulary and limits; the agent chooses only parameters within that contract.
 
 Input shape:
 
@@ -439,24 +439,28 @@ Input shape:
       "any_of":[{"metric":"abs_ee_dz_m","op":"lte","value":0.003}]
     }
   },
-  "probe":{
+  "experiment":{
     "kind":"joint_pulse",
-    "joint_name":"elbow",
-    "direction":1,
-    "amplitude_rad":0.15,
-    "duration_s":0.3,
-    "observe_body":"end_effector"
+    "parameters":{
+      "joint_name":"elbow",
+      "direction":1,
+      "amplitude_rad":0.15,
+      "duration_s":0.3,
+      "observe_body":"end_effector"
+    }
   },
   "capture":"analysis_trace"
 }
 ~~~
 
-Supported recipes:
+Supported experiment kinds:
 
 - joint_pulse: fixed initial state, a bounded control segment, then a recovery segment;
 - pose_hold: a ringdown experiment from a fixed offset pose into the public hold target, returning peak times, peak amplitudes, decay ratio, oscillation period, and the velocity envelope.
 
-The server first commits HYPOTHESIS_RECORDED, then calls the engine. If execution fails, the preregistration remains and a PROBE_FAILED event follows.
+The generic contract is deliberately bounded: `kind` must be one of the advertised kinds, `parameters` must contain only the fields for that kind, and the server enforces fixture-owned joints/bodies, finite numeric ranges, fixed initial and recovery behavior, and an experiment-duration budget. It does not accept arbitrary controls, targets, seeds, XML, paths, URLs, or an engine operation name. The old Phase 0 `run_probe` call was a placeholder transport selector and is historical evidence only; it is not retained as a compatibility alias.
+
+The server first commits HYPOTHESIS_RECORDED, then calls the engine. If execution fails, the preregistration remains and an EXPERIMENT_FAILED event follows.
 
 Output reports only observations and whether the agent's own predicates matched:
 
@@ -481,7 +485,7 @@ Input shape:
   "base_revision_id":"r000",
   "expected_base_sha256":"...",
   "basis_hypothesis_id":"hyp_...",
-  "basis_probe_run_id":"run_probe_001",
+  "basis_experiment_run_id":"run_experiment_001",
   "patch":{
     "target":{"kind":"joint","name":"<observed joint>"},
     "attribute":"<one allowed attribute>",
@@ -591,7 +595,7 @@ The configured tool allowlist and approval policy are exact:
       "open_case",
       "inspect_asset",
       "run_task",
-      "run_probe",
+      "run_experiment",
       "create_revision",
       "verify_revision",
       "publish_revision"
@@ -614,7 +618,7 @@ Tool annotations must describe real side effects:
 | open_case | true | false | true |
 | inspect_asset | true | false | true |
 | run_task | false | false | false |
-| run_probe | false | false | false |
+| run_experiment | false | false | false |
 | create_revision | false | false | true |
 | verify_revision | false | false | true |
 | publish_revision | false | true | true |
@@ -1243,7 +1247,7 @@ The long-term moat is not a larger tool catalog. It is a trustworthy experimenta
 - MJCF only.
 - Generic MuJoCo MCP reused unchanged and hidden behind stdio.
 - Seven public domain tools.
-- Hypothesis folded atomically into run_probe; inspect_asset remains a separate tool.
+- Hypothesis folded atomically into run_experiment; inspect_asset remains a separate tool.
 - One attribute per immutable revision.
 - Linear revision history in the MVP.
 - Asset Autopsy owns BehaviorDiff and qualification.

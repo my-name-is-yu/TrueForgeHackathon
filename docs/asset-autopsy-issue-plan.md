@@ -4,6 +4,12 @@ Status: Linear synchronized; implementation proceeds through ordinary Codex pull
 Human controls: `YU-19` (plan synchronization) and `YU-29` (final evidence, links, and submission).
 Product contract: `docs/asset-autopsy-mvp-design.md`.
 
+## 0. SC1 direction and stack
+
+SC1 is the tools-first direction slice. Its named stack is `main -> direction -> PR #15 -> PR #13 -> PR #14 -> final PR`; each later implementation PR is reviewed against the aggregate result of the earlier stack before it is considered ready. The direction slice makes Asset Autopsy a TrueForge-facing Streamable HTTP MCP with a bounded generic `run_experiment` contract. Fixed BehaviorDiff remains on `run_task`; the historical Phase 0 `run_probe` selector is not a public alias.
+
+The following are explicitly outside SC1: the Skill, product CLI, TrueForge fork, arbitrary 3D formats, and advanced recovery. They remain later backlog scope and must not be smuggled into the direction PR.
+
 ## 1. Why this plan exists
 
 The MVP scope and behavior are unchanged. This document defines dependency-safe issue boundaries for ordinary Codex pull requests; the companion design receives only the review-proven export-name and destination-parent-fsync errata recorded by YU-19. The previous 12 implementation issues placed several independent unknowns into AA-00, AA-06, AA-09, and AA-10. Those four became non-executable umbrella parents. Review then separated AA-05's shared exact-byte commitment primitive from causal-service behavior, and split AA-12's three independently falsifiable release-harness seams into evidence-provenance, Git-binding, and manifest-CLI children.
@@ -398,7 +404,7 @@ Acceptance:
 - [ ] Exactly seven tool input/output models are frozen
 - [ ] Unknown fields and non-finite inputs are rejected
 - [ ] Patch is one object, never an array
-- [ ] create_revision accepts exactly one basis_probe_run_id, never an array
+- [ ] create_revision accepts exactly one basis_experiment_run_id, never an array
 - [ ] Only joint axis, damping, armature, and frictionloss are editable
 - [ ] Base hash and expected-old-value guards are enforced
 - [ ] Axis normalization and family-level safety ranges are enforced
@@ -541,7 +547,7 @@ Protected surfaces:
 
 Acceptance:
 
-- [ ] open_case, inspect_asset, run_task, run_probe, and create_revision are implemented
+- [ ] open_case, inspect_asset, run_task, run_experiment, and create_revision are implemented
 - [ ] open_case performs a fresh read of an already pre-provisioned case; a missing case returns typed `CASE_NOT_FOUND`
 - [ ] open_case does not create or mutate a case row, commitment, revision, run, budget, ledger event, or object-store artifact; repeated calls leave that complete logical storage state unchanged
 - [ ] For its five commitment fields, open_case copies only the stored values and never imports commitments.py, computes or renames a digest, or reads hidden-manifest or nonce bytes; the response still contains every contract, budget, revision, topology, patch-policy, and sanitized event-tail field required by the frozen design

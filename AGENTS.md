@@ -6,6 +6,8 @@
 - Keep each pull request limited to one executable issue. Put concrete, evidenced, out-of-scope improvements in Backlog instead of widening the current pull request.
 - Use a `yu/` branch and target `main`. Continue an existing pull request only after verifying its open state, exact head branch, current head SHA, and `main` base.
 - Preserve unrelated work and explicit user fences. Never force-push, merge, close a pull request, or mark an issue Done unless the user explicitly asks.
+- The only approved SC1 stack is `main -> direction -> PR #15 -> PR #13 -> PR #14 -> final PR`. Do not force-push, rebase, or merge; review each slice against its base and review the aggregate stack against `main`.
+- SC1 direction is a TrueForge-facing Streamable HTTP MCP with a bounded generic `run_experiment`; fixed BehaviorDiff stays on `run_task`. Do not reintroduce the historical `run_probe` recipe or alias. Skill, product CLI, TrueForge fork, arbitrary 3D, and advanced recovery are out of scope.
 
 ## Implementation and verification
 
