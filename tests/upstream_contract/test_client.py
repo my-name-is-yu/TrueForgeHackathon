@@ -918,9 +918,15 @@ def test_runner_rejects_initial_state_widths_before_set_state(
     asyncio.run(check())
 
 
-def test_trace_budget_rejects_high_dimensional_run_before_upstream_call() -> None:
+@pytest.mark.parametrize(
+    ("nq", "nv", "nu", "n_steps"),
+    ((100, 100, 0, 10_000), (0, 0, 100, 20_000)),
+)
+def test_trace_budget_rejects_high_dimensional_run_before_upstream_call(
+    nq: int, nv: int, nu: int, n_steps: int
+) -> None:
     async def check() -> None:
-        transport, make_session, get_session = _fake_client(nq=100, nv=100)
+        transport, make_session, get_session = _fake_client(nq=nq, nv=nv, nu=nu)
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
         async with PinnedMujocoClient(
@@ -929,7 +935,7 @@ def test_trace_budget_rejects_high_dimensional_run_before_upstream_call() -> Non
         ) as client:
             slot = await client.load("<mujoco model=\"synthetic\"/>")
             with pytest.raises(ValueError, match="bounded numeric record budget"):
-                await client.run_segment(slot, ctrl=[], n_steps=10_000)
+                await client.run_segment(slot, ctrl=[0.0] * nu, n_steps=n_steps)
             assert [name for name, _arguments in get_session().calls] == ["sim_load"]
 
     asyncio.run(check())

@@ -773,7 +773,7 @@ class PinnedMujocoClient:
             raise ValueError(f"n_steps must be between 1 and {MAX_STEPS}")
         self._require_ready_slot(slot)
         projected_scalars = n_steps * (
-            slot.summary["nq"] + slot.summary["nv"] + 4
+            slot.summary["nq"] + slot.summary["nv"] + slot.summary["nu"] + 4
         )
         if projected_scalars > MAX_TRACE_SCALARS:
             raise ValueError("requested trace exceeds the bounded numeric record budget")
