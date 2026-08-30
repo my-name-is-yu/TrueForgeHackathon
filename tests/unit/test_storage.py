@@ -81,6 +81,27 @@ def make_store(tmp_path: Path) -> EvidenceStore:
     return store
 
 
+def test_case_creation_rejects_an_invalid_existing_ledger(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            "UPDATE ledger_events SET event_hash = ? WHERE event_type = 'CASE_CREATED'",
+            ("0" * 64,),
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="ledger event hash mismatch"):
+        store.create_preprovisioned_case(
+            case_id="case-2",
+            root_revision_id="r100",
+            **COMMITMENTS,
+        )
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        assert connection.execute(
+            "SELECT 1 FROM cases WHERE case_id = 'case-2'"
+        ).fetchone() is None
+
+
 def replace_event_payload(
     database_path: Path, event_type: str, payload: dict[str, object]
 ) -> None:

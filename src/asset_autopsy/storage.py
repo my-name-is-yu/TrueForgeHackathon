@@ -820,6 +820,7 @@ class EvidenceStore:
                 "SELECT 1 FROM cases WHERE case_id = ?", (case_id,)
             ).fetchone():
                 raise CaseAlreadyExistsError("case identity already exists")
+            self._verified_ledger_from_connection(connection)
             try:
                 connection.execute(
                     """
