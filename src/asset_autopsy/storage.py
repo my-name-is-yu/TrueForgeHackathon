@@ -1086,6 +1086,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            self._validate_case_lifecycle_from_connection(connection, revision.case_id)
             existing = connection.execute(
                 """
                 SELECT * FROM revisions
@@ -1461,7 +1462,8 @@ class EvidenceStore:
                 if promoted_revision_id != qualification_revision_id:
                     raise IntegrityError("promotion revision is not qualified")
         if (
-            case.qualification_revision_id != qualification_revision_id
+            case.head_revision_id != current_revision_id
+            or case.qualification_revision_id != qualification_revision_id
             or case.qualification_attempt_id != qualification_attempt_id
             or case.qualification_result != qualification_result
             or case.promoted_revision_id != promoted_revision_id
@@ -1617,6 +1619,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            self._validate_case_lifecycle_from_connection(connection, case_id)
             case_commitments = self._stored_commitment_payload(case)
             if supplied_commitments != case_commitments:
                 raise QualificationConflictError(
@@ -1953,6 +1956,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            self._validate_case_lifecycle_from_connection(connection, case_id)
             if case["qualification_result"] is None:
                 return None
             state = case["qualification_result"]
