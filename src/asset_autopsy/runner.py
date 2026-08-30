@@ -31,7 +31,7 @@ def _number(value: Any) -> bool:
 
 
 def _bounded_tuple(value: Any, *, limit: int, name: str) -> tuple[Any, ...]:
-    if isinstance(value, tuple):
+    if type(value) is tuple:
         result = value
     else:
         result = tuple(islice(iter(value), limit + 1))

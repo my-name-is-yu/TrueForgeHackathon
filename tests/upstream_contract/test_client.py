@@ -91,6 +91,7 @@ class _FakeSession:
         wrong_load_name: bool = False,
         invalid_load_metadata: str | None = None,
         negative_contacts: bool = False,
+        nested_final_energy: bool = False,
         nq: int = 0,
         nv: int = 0,
         nu: int = 0,
@@ -111,6 +112,7 @@ class _FakeSession:
         self.wrong_load_name = wrong_load_name
         self.invalid_load_metadata = invalid_load_metadata
         self.negative_contacts = negative_contacts
+        self.nested_final_energy = nested_final_energy
         self.nq = nq
         self.nv = nv
         self.nu = nu
@@ -231,7 +233,7 @@ class _FakeSession:
                         "qpos": qpos,
                         "qvel": qvel,
                         "n_contacts": -1 if self.negative_contacts else 0,
-                        "energy": [0.0, 0.0],
+                        "energy": [[0.0], [0.0]] if self.nested_final_energy else [0.0, 0.0],
                     },
                     "timeseries": rows,
                 }
@@ -271,6 +273,7 @@ def _fake_client(
     wrong_load_name: bool = False,
     invalid_load_metadata: str | None = None,
     negative_contacts: bool = False,
+    nested_final_energy: bool = False,
     nq: int = 0,
     nv: int = 0,
     nu: int = 0,
@@ -297,6 +300,7 @@ def _fake_client(
             wrong_load_name=wrong_load_name,
             invalid_load_metadata=invalid_load_metadata,
             negative_contacts=negative_contacts,
+            nested_final_energy=nested_final_energy,
             nq=nq,
             nv=nv,
             nu=nu,
@@ -399,6 +403,19 @@ def test_runner_configuration_requires_constant_bounded_segments() -> None:
             segments=repeat(ConstantSegment((), 1)),
         )
 
+    class OversizedTuple(tuple):
+        def __len__(self) -> int:
+            return 1
+
+        def __iter__(self):
+            return iter((ConstantSegment((), 1),) * (MAX_SEGMENTS + 1))
+
+    with pytest.raises(ValueError, match="segments exceeds its bounded size"):
+        RunConfiguration(
+            xml_string="<mujoco/>",
+            segments=OversizedTuple((ConstantSegment((), 1),)),
+        )
+
 
 def test_client_uses_only_xml_string_and_poisoned_slots_cannot_be_reused() -> None:
     async def check() -> None:
@@ -475,10 +492,15 @@ def test_run_response_requires_requested_signals_and_model_widths() -> None:
     async def check() -> None:
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
-        for incomplete_run, wrong_width_run in ((True, False), (False, True)):
+        for incomplete_run, wrong_width_run, nested_final_energy in (
+            (True, False, False),
+            (False, True, False),
+            (False, False, True),
+        ):
             transport, make_session, get_session = _fake_client(
                 incomplete_run=incomplete_run,
                 wrong_width_run=wrong_width_run,
+                nested_final_energy=nested_final_energy,
                 nq=0,
                 nv=0,
             )
@@ -919,6 +941,9 @@ def test_cancelled_shutdown_finishes_closing_child_before_propagating() -> None:
         await entered.wait()
         begin_exit.set()
         await transport.close_started.wait()
+        shutdown.cancel()
+        await asyncio.sleep(0)
+        assert shutdown.done() is False
         shutdown.cancel()
         await asyncio.sleep(0)
         assert shutdown.done() is False

@@ -282,16 +282,16 @@ def _text_block(result: Any) -> str:
 
 
 async def _finish_resource_task(task: asyncio.Task[None]) -> None:
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
+    cancelled = False
+    while not task.done():
         try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-        raise
-    except Exception:
-        pass
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            break
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _is_error_result(result: Any) -> bool:
@@ -414,7 +414,7 @@ def _matches_run(
         or len(final_state["energy"]) != 2
         or type(final_state["n_contacts"]) is not int
         or final_state["n_contacts"] < 0
-        or not _numeric_tree(final_state["energy"])
+        or not all(_strict_float(value) for value in final_state["energy"])
     ):
         return False
     timeseries = payload["timeseries"]
