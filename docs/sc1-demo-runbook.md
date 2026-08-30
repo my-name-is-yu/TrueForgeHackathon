@@ -14,7 +14,7 @@ storage or filesystem mutation.
 
 - Checkout the exact final SC1 commit and complete the README verification commands.
 - Confirm the normal TrueForge 0.1.4 runtime has the saved OpenAI provider,
-  `openai/gpt-5-4-mini`, and the existing `hackathon-starter` agent.
+  `openai/gpt-5-6-sol`, and the existing `hackathon-starter` agent.
 - Start TrueForge with `npm run trueforge`, then run
   `uv run python scripts/run_sc1_e2e.py` in a second terminal.
 - Use the isolated fresh case created by that run. A repeated request may return a terminal result

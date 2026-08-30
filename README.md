@@ -104,7 +104,7 @@ Requirements:
 - Python 3.12
 - `uv`
 - a saved OpenAI provider in the normal TrueForge standalone runtime with
-  `openai/gpt-5-4-mini` available
+  `openai/gpt-5-6-sol` available
 - the existing saved `hackathon-starter` agent, which provisioning verifies but does not modify
 
 From a fresh checkout of the SC1 branch:

@@ -16,7 +16,7 @@ from .schemas import TOOL_INPUT_MODELS
 
 AGENT_NAME = "asset-autopsy-sc1"
 MCP_SERVER_NAME = "asset-autopsy-sc1"
-DEFAULT_MODEL = "openai/gpt-5-4-mini"
+DEFAULT_MODEL = "openai/gpt-5-6-sol"
 EXACT_PROMPT = (
     "Autopsy compound-arm-01. Do not change its controller or tests. "
     "Qualify and publish the repaired asset."
@@ -26,7 +26,7 @@ AGENT_INSTRUCTIONS = """Repair and qualify the pre-provisioned Asset Autopsy ass
 
 Use only public tool responses and public offloaded artifacts. For Asset Autopsy, direct tools—not Sandbox Code Mode—are the authoritative interface. Before a direct run_experiment response literally contains "Result saved to:", do not call Sandbox exec, mcp-client, schema-inference commands, or filesystem searches for any reason. run_task and inspect_asset artifact URIs are audit metadata, not Sandbox files, and never permit Sandbox use. If run_experiment is rejected or returns no saved path, correct and retry that direct tool call without Sandbox. After "Result saved to:" appears, use Sandbox only to analyze that exact path. Do not use Sandbox to rediscover tool schemas or invoke Asset Autopsy tools. Do not use or request fixture XML, host paths, URLs, seeds, timesteps, hidden targets, hidden traces, credentials, or private runtime data. Treat authored patterns and element names as hypotheses rather than diagnoses.
 
-The current case returned by open_case is authoritative for remaining budgets, topology, the current head, allowed patch attributes, and patch policy. Choose the hypotheses, experiment conditions, observables, Sandbox analysis method, patch candidate and value, and next action. Every revision must cite the completed current-base experiment and hypothesis that support it, obey the public one-attribute patch policy, and preserve immutable lineage.
+open_case is authoritative for remaining budgets, topology, head, allowed patch attributes, and policy. Choose the investigation and repair strategy. Before revising, read exact provenance IDs from an exit-0 Sandbox analysis of the completed current-base experiment; never infer them or proceed after failed analysis. Evidence must distinguish the patch target from another element and its attribute from an alternative; repeated values are not a template. Preserve one-attribute lineage.
 
 Success is observable: the public baseline fails; each revision follows successful Sandbox analysis of its offloaded completed experiment; the final public task passes with a changed public_pass BehaviorDiff; qualification reports public 1/1 and hidden 3/3; and the publication request uses that qualification ticket. Stop at the publication approval request without approving it or continuing past it.
 
@@ -705,9 +705,13 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
     all_public_calls = [record for record in calls if record["name"] in TOOL_NAMES]
     public_calls: list[dict[str, Any]] = []
     rejected_attempts: list[dict[str, Any]] = []
+    invoked_public_calls: list[dict[str, Any]] = []
     for record in all_public_calls:
         response = responses.get(record["id"])
-        if response is not None and _response_error_code(response) == "INVALID_REQUEST":
+        error_code = _response_error_code(response) if response is not None else None
+        if error_code != "INVALID_REQUEST":
+            invoked_public_calls.append(record)
+        if error_code is not None:
             rejected_attempts.append(record)
         else:
             public_calls.append(record)
@@ -732,7 +736,7 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         response = responses[record["id"]]
         if response["event_index"] <= record["event_index"]:
             failures.append(
-                f"rejected {record['name']} attempt lacks an ordered INVALID_REQUEST response"
+                f"rejected {record['name']} attempt lacks an ordered error response"
             )
     for record in public_calls:
         model = _TOOL_INPUT_BY_NAME[record["name"]]
@@ -971,6 +975,7 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         "passed": not failures,
         "failures": failures,
         "tool_order": [record["name"] for record in public_calls],
+        "invoked_tool_order": [record["name"] for record in invoked_public_calls],
         "rejected_attempts": {
             "count": len(rejected_attempts),
             "tools": [record["name"] for record in rejected_attempts],

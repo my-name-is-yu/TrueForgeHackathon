@@ -471,6 +471,62 @@ def test_accepts_additional_exploration_without_a_fixed_experiment_count() -> No
     assert evidence["revision_count"] == 2
 
 
+def test_excludes_domain_error_retry_from_successful_revision_evidence() -> None:
+    events = _successful_events()
+    insertion = next(
+        index
+        for index, item in enumerate(events)
+        if any(
+            call.get("id") == "revision-1"
+            for call in item["event"].get("tool_calls", [])
+        )
+    )
+    events[insertion:insertion] = [
+        _model_call(
+            "rejected-revision",
+            "create_revision",
+            _revision_arguments(
+                base_revision_id="r000",
+                base_hash=ASSET_R000,
+                hypothesis_id="hyp_invented",
+                run_id="run_invented",
+                patch={
+                    "target": {"kind": "joint", "name": "joint_b"},
+                    "attribute": "axis",
+                    "expected_old_value": [0.0, 0.0, 1.0],
+                    "new_value": [0.0, 1.0, 0.0],
+                },
+            ),
+        ),
+        _tool_response(
+            "rejected-revision",
+            {
+                "error": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "code": "CAUSAL_EXPERIMENT_NOT_FOUND",
+                                "message": "The cited experiment run was not found.",
+                            }
+                        ),
+                    }
+                ]
+            },
+        ),
+    ]
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is True
+    assert evidence["revision_count"] == 2
+    assert evidence["rejected_attempts"] == {
+        "count": 1,
+        "tools": ["create_revision"],
+    }
+    assert evidence["invoked_tool_order"].count("create_revision") == 3
+
+
 def test_rejects_revision_without_large_tool_response_provenance() -> None:
     events = _successful_events()
     _response_event(events, "experiment-1")["content"] = "inline experiment result"

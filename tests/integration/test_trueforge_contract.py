@@ -69,7 +69,7 @@ class ProvisionTransport:
                 "data": [
                     {
                         "name": DEFAULT_MODEL,
-                        "model_id": "gpt-5-4-mini",
+                        "model_id": "gpt-5.6-sol",
                         "provider": {"name": "openai"},
                         "properties": {},
                     }
@@ -133,7 +133,8 @@ def test_agent_spec_is_the_exact_serial_approval_contract() -> None:
         "Use only public tool responses and public offloaded artifacts.",
         "remaining budgets",
         "allowed patch attributes",
-        "successful Sandbox analysis",
+        "exit-0 Sandbox analysis",
+        "Evidence must distinguish the patch target from another element",
         "Before a direct run_experiment response literally contains",
         "run_task and inspect_asset artifact URIs are audit metadata",
         "If run_experiment is rejected or returns no saved path",

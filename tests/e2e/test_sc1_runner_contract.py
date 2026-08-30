@@ -89,6 +89,26 @@ def test_raw_event_gate_detects_private_integer_scalars_with_token_boundaries() 
         )
 
 
+def test_raw_event_gate_allows_values_shared_with_the_public_scenario() -> None:
+    private = ({"hold_steps": 1_000, "private_measurement": 0.123456789},)
+    public = ({"hold_steps": 1_000},)
+
+    assert _raw_events_are_clear(
+        [{"event": {"type": "tool.response", "content": "repr(row)[:1000]"}}],
+        bearer="secret-bearer-value",
+        data_root=Path("/private/tmp/sc1-private"),
+        private_payloads=private,
+        public_payloads=public,
+    )
+    assert not _raw_events_are_clear(
+        [{"event": {"type": "tool.response", "content": "value=0.123456789"}}],
+        bearer="secret-bearer-value",
+        data_root=Path("/private/tmp/sc1-private"),
+        private_payloads=private,
+        public_payloads=public,
+    )
+
+
 def test_case_qualification_gate_uses_only_the_qualification_lifecycle() -> None:
     case = CaseRecord(
         case_id="case_compound-arm-01",
@@ -312,6 +332,7 @@ def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -
 
     evidence = {
         "tool_order": tool_order,
+        "invoked_tool_order": tool_order.copy(),
         "sandbox": {
             "runs": [
                 {
@@ -333,6 +354,12 @@ def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -
     gates = _runtime_state_gates(evidence, facade=facade, service=service)
 
     assert all(gates.values())
+    invoked.insert(4, "create_revision")
+    evidence["invoked_tool_order"].insert(4, "create_revision")
+    recorder.sequence = invoked
+    recorder.counts = Counter(invoked)
+    service.invocation_counts = Counter(invoked)
+    assert all(_runtime_state_gates(evidence, facade=facade, service=service).values())
     evidence["sandbox"]["runs"][1]["run_id_hash"] = "mismatch"
     assert not _runtime_state_gates(evidence, facade=facade, service=service)[
         "ledger_experiment_evidence_matches"
