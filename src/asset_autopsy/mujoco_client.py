@@ -424,6 +424,9 @@ def _valid_png(data: bytes) -> bool:
     saw_ihdr = False
     saw_idat = False
     saw_iend = False
+    expected_scanline_bytes: int | None = None
+    row_stride: int | None = None
+    idat_data = bytearray()
     while offset < len(data):
         if len(data) - offset < 12:
             return False
@@ -450,11 +453,40 @@ def _valid_png(data: bytes) -> bool:
             height = int.from_bytes(chunk_data[4:8], "big")
             if not 1 <= width <= MAX_RENDER_DIMENSION or not 1 <= height <= MAX_RENDER_DIMENSION:
                 return False
+            bit_depth = chunk_data[8]
+            color_type = chunk_data[9]
+            if (
+                chunk_data[10] != 0
+                or chunk_data[11] != 0
+                or chunk_data[12] != 0
+                or bit_depth
+                not in {
+                    0: {1, 2, 4, 8, 16},
+                    2: {8, 16},
+                    3: {1, 2, 4, 8},
+                    4: {8, 16},
+                    6: {8, 16},
+                }.get(color_type, set())
+            ):
+                return False
+            bits_per_pixel = {
+                0: bit_depth,
+                2: 3 * bit_depth,
+                3: bit_depth,
+                4: 2 * bit_depth,
+                6: 4 * bit_depth,
+            }[color_type]
+            row_bytes = (width * bits_per_pixel + 7) // 8
+            expected_scanline_bytes = height * (row_bytes + 1)
+            row_stride = row_bytes + 1
+            if expected_scanline_bytes > MAX_RENDER_BYTES:
+                return False
             saw_ihdr = True
         elif chunk_type == b"IHDR":
             return False
         if chunk_type == b"IDAT":
             saw_idat = True
+            idat_data.extend(chunk_data)
         if chunk_type == b"IEND":
             if length != 0 or not saw_idat:
                 return False
@@ -462,7 +494,28 @@ def _valid_png(data: bytes) -> bool:
             offset = chunk_record_end
             break
         offset = chunk_record_end
-    return saw_ihdr and saw_idat and saw_iend and offset == len(data)
+    if (
+        not saw_ihdr
+        or not saw_idat
+        or not saw_iend
+        or offset != len(data)
+        or expected_scanline_bytes is None
+        or row_stride is None
+    ):
+        return False
+    try:
+        decompressor = zlib.decompressobj()
+        decoded = decompressor.decompress(bytes(idat_data), expected_scanline_bytes + 1)
+        if len(decoded) > expected_scanline_bytes or decompressor.unconsumed_tail:
+            return False
+        if not decompressor.eof or decompressor.unused_data:
+            return False
+        decoded += decompressor.flush(expected_scanline_bytes + 1 - len(decoded))
+    except (TypeError, ValueError, zlib.error):
+        return False
+    if len(decoded) != expected_scanline_bytes:
+        return False
+    return all(decoded[index] <= 4 for index in range(0, len(decoded), row_stride))
 
 
 def _render_png(result: Any) -> bytes:

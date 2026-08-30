@@ -37,6 +37,18 @@ def _text_result(payload: object, *, is_error: bool = False) -> SimpleNamespace:
     )
 
 
+def _png_chunk(kind: bytes, payload: bytes) -> bytes:
+    crc = zlib.crc32(kind)
+    crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", crc)
+
+
+def _synthetic_png(idat: bytes) -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + _png_chunk(
+        b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    ) + _png_chunk(b"IDAT", idat) + _png_chunk(b"IEND", b"")
+
+
 class _FakeTransport:
     def __init__(self) -> None:
         self.closed = False
@@ -59,6 +71,7 @@ class _FakeSession:
         wrong_width_run: bool = False,
         block_on_run: bool = False,
         render_is_error: bool = False,
+        invalid_render_png: bool = False,
         wrong_load_name: bool = False,
         nq: int = 0,
         nv: int = 0,
@@ -71,6 +84,7 @@ class _FakeSession:
         self.wrong_width_run = wrong_width_run
         self.block_on_run = block_on_run
         self.render_is_error = render_is_error
+        self.invalid_render_png = invalid_render_png
         self.wrong_load_name = wrong_load_name
         self.nq = nq
         self.nv = nv
@@ -144,6 +158,18 @@ class _FakeSession:
                 }
             )
         if name == "render_snapshot":
+            if self.invalid_render_png:
+                return SimpleNamespace(
+                    isError=False,
+                    content=[
+                        SimpleNamespace(
+                            type="image",
+                            mimeType="image/png",
+                            data=base64.b64encode(_synthetic_png(b"synthetic")).decode(),
+                        ),
+                        SimpleNamespace(type="text", text="synthetic"),
+                    ],
+                )
             return _text_result(
                 {"error": "synthetic render failure"},
                 is_error=self.render_is_error,
@@ -158,6 +184,7 @@ def _fake_client(
     wrong_width_run: bool = False,
     block_on_run: bool = False,
     render_is_error: bool = False,
+    invalid_render_png: bool = False,
     wrong_load_name: bool = False,
     nq: int = 0,
     nv: int = 0,
@@ -176,6 +203,7 @@ def _fake_client(
             wrong_width_run=wrong_width_run,
             block_on_run=block_on_run,
             render_is_error=render_is_error,
+            invalid_render_png=invalid_render_png,
             wrong_load_name=wrong_load_name,
             nq=nq,
             nv=nv,
@@ -361,7 +389,10 @@ def test_run_response_requires_requested_signals_and_model_widths() -> None:
 
 def test_render_failure_returns_one_numeric_only_fallback() -> None:
     async def run() -> None:
-        transport, make_session, _get_session = _fake_client(nu=1)
+        transport, make_session, _get_session = _fake_client(
+            invalid_render_png=True,
+            nu=1,
+        )
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
         record = await DeterministicRunner(
@@ -515,14 +546,7 @@ def test_step_mismatch_error_is_typed() -> None:
 
 
 def test_render_payload_requires_complete_png_structure() -> None:
-    def chunk(kind: bytes, payload: bytes) -> bytes:
-        crc = zlib.crc32(kind)
-        crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
-        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", crc)
-
-    png = b"\x89PNG\r\n\x1a\n" + chunk(
-        b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
-    ) + chunk(b"IDAT", b"synthetic") + chunk(b"IEND", b"")
+    png = _synthetic_png(zlib.compress(b"\x00\x00\x00\x00\x00"))
     encoded = base64.b64encode(png).decode()
     assert encoded
     from asset_autopsy.mujoco_client import _render_png
@@ -535,6 +559,19 @@ def test_render_payload_requires_complete_png_structure() -> None:
         ],
     )
     assert _render_png(result) == png
+
+    result.content[0].data = base64.b64encode(_synthetic_png(b"synthetic")).decode()
+    with pytest.raises(UpstreamToolError) as caught:
+        _render_png(result)
+    assert caught.value.code == UPSTREAM_BAD_RESPONSE
+
+    result.content[0].data = base64.b64encode(
+        _synthetic_png(zlib.compress(b"\x05\x00\x00\x00\x00"))
+    ).decode()
+    with pytest.raises(UpstreamToolError) as caught:
+        _render_png(result)
+    assert caught.value.code == UPSTREAM_BAD_RESPONSE
+
     result.content[0].data = base64.b64encode(png[:-1]).decode()
     with pytest.raises(UpstreamToolError) as caught:
         _render_png(result)
