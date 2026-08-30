@@ -531,6 +531,27 @@ class RunTaskOutput(CommonOutput):
             raise ValueError("a failing unchanged task must have the changed verdict")
         return self
 
+    @model_validator(mode="after")
+    def validate_trace_sampling(self) -> RunTaskOutput:
+        intervals = [
+            current.time_s - previous.time_s
+            for previous, current in zip(self.trace, self.trace[1:])
+        ]
+        if not intervals:
+            return self
+        if intervals[0] <= 0.0 or any(
+            interval <= 0.0
+            or not math.isclose(
+                interval,
+                intervals[0],
+                rel_tol=_METRIC_DELTA_REL_TOLERANCE,
+                abs_tol=_METRIC_DELTA_ABS_TOLERANCE,
+            )
+            for interval in intervals[1:]
+        ):
+            raise ValueError("task trace timestamps must be uniformly sampled")
+        return self
+
 
 class ProbeObservation(StrictModel):
     metric: MetricName
@@ -633,13 +654,15 @@ class VerifyRevisionOutput(CommonOutput):
             )
             and self.public_result.total > 0
             and self.public_result.passed == self.public_result.total
-            and self.holdout_result.total > 0
-            and self.holdout_result.passed == self.holdout_result.total
+            and self.holdout_result.passed == 3
+            and self.holdout_result.total == 3
         )
-        if self.promotion_ticket is None:
-            return self
         if not qualification_passed:
-            raise ValueError("promotion ticket requires successful qualification")
+            if self.promotion_ticket is not None:
+                raise ValueError("promotion ticket requires successful qualification")
+            return self
+        if self.promotion_ticket is None:
+            raise ValueError("successful qualification requires a promotion ticket")
 
         ticket = self.promotion_ticket
         if ticket.case_id != self.case_id:
@@ -664,6 +687,10 @@ class VerifyRevisionOutput(CommonOutput):
             self.holdout_result.total,
         ):
             raise ValueError("promotion ticket holdout counts must match verification counts")
+        if ticket.public_result.violated_clause_ids != self.public_result.violated_clause_ids:
+            raise ValueError("promotion ticket public clauses must match verification clauses")
+        if ticket.holdout_result.violated_clause_ids != self.holdout_result.violated_clause_ids:
+            raise ValueError("promotion ticket holdout clauses must match verification clauses")
         return self
 
 

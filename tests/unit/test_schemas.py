@@ -359,6 +359,28 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
     )
 
 
+def test_run_task_output_rejects_nonuniform_trace_timestamps() -> None:
+    base = {
+        "schema_version": "asset-autopsy/v1",
+        "request_id": "req_demo",
+        "case_id": "case_demo",
+        "revision_id": "r000",
+        "scenario_id": "public_center",
+        "result": "fail",
+        "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+    }
+    valid = {**base, "trace": [{"time_s": float(index), "values": (0.0,)} for index in range(3)]}
+    RunTaskOutput.model_validate(valid)
+
+    for timestamps in ((0.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 1.0, 3.0)):
+        invalid = {
+            **base,
+            "trace": [{"time_s": time_s, "values": (0.0,)} for time_s in timestamps],
+        }
+        with pytest.raises(ValidationError):
+            RunTaskOutput.model_validate(invalid)
+
+
 def test_metric_observation_allows_only_nullable_settling_time() -> None:
     RunTaskOutput.model_validate(
         {
@@ -443,6 +465,9 @@ def test_verify_revision_requires_successful_bound_promotion_ticket() -> None:
     output = VerifyRevisionOutput.model_validate(payload)
     assert output.promotion_ticket is not None
 
+    with pytest.raises(ValidationError):
+        VerifyRevisionOutput.model_validate(_verify_revision_payload())
+
     failed = _verify_revision_payload()
     failed["public_result"] = {"passed": 0, "total": 1}
     failed["promotion_ticket"] = _promotion_ticket_payload()
@@ -461,6 +486,12 @@ def test_verify_revision_requires_successful_bound_promotion_ticket() -> None:
         with pytest.raises(ValidationError):
             VerifyRevisionOutput.model_validate(mismatched)
 
+    undersized = _verify_revision_payload()
+    undersized["holdout_result"] = {"passed": 1, "total": 1}
+    undersized["promotion_ticket"] = _promotion_ticket_payload()
+    with pytest.raises(ValidationError):
+        VerifyRevisionOutput.model_validate(undersized)
+
 
 def test_verify_revision_rejects_promotion_ticket_count_mismatches() -> None:
     for result_name, result in (
@@ -474,6 +505,14 @@ def test_verify_revision_rejects_promotion_ticket_count_mismatches() -> None:
         ticket[result_name] = result
         with pytest.raises(ValidationError):
             VerifyRevisionOutput.model_validate(mismatched)
+
+
+def test_verify_revision_rejects_promotion_ticket_clause_mismatches() -> None:
+    payload = _verify_revision_payload()
+    payload["public_result"] = {"passed": 1, "total": 1, "violated_clause_ids": ["hold_error"]}
+    payload["promotion_ticket"] = _promotion_ticket_payload()
+    with pytest.raises(ValidationError):
+        VerifyRevisionOutput.model_validate(payload)
 
 
 def test_public_event_tail_accepts_hypothesis_preregistration() -> None:
