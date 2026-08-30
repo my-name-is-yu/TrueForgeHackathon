@@ -150,3 +150,14 @@ def test_review_protocol_requests_each_missing_source_once_per_head() -> None:
     assert "reconcile only a comment containing the exact marker" in template
     assert "never match\n     the command text alone or an older-head request" in template
     assert "A timeout does not authorize another request" in template
+
+
+def test_review_packet_uses_authoritative_contract_context_and_separates_resolved_findings() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    assert "re-read the issue's authoritative source-of-truth sections" in template
+    assert "exact relevant acceptance criterion" in template
+    assert "do not rely on a Workpad summary" in template
+    assert "Separate\n     outstanding current-head findings from resolved or outdated context" in template
+    assert "exact implementation and test evidence that resolved it" in template
+    assert "never present a still-required acceptance\n     invariant as though it had been rejected or deferred" in template
