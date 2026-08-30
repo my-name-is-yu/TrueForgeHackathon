@@ -4,6 +4,11 @@ Status: rehearsal script. Do not label the run “passed” unless the sanitized
 artifact for the checked-out commit exists and its gate result is PASS. A scripted event fixture,
 unit test, or manually assembled screen sequence is not substitute evidence.
 
+The [accepted SC1 contract](decisions/sc1-approval-request-endpoint.md) ends at the real
+`tool.approval_required` event. The recording never clicks approval or claims publication
+materialization. A post-approval materializer remains in the repository only until a separate
+implementation pull request removes it; it is not part of this demonstration.
+
 ## Before recording
 
 - Checkout the exact final SC1 commit and complete the README verification commands.
@@ -127,8 +132,8 @@ count, approval event, and Git commit SHA.
 Say:
 
 > TrueForge stops before the destructive server call. No publication code ran and no public
-> artifact exists. This approval boundary is the submission endpoint; publication remains a
-> human handoff.
+> artifact exists. This approval request is the SC1 and hackathon endpoint; the submission never
+> approves it and makes no publication-materialization claim.
 
 End the recording without approving, publishing, merging a pull request, or opening a submission
 form.

@@ -6,12 +6,15 @@ observe a failing MuJoCo asset, choose experiments that distinguish competing ca
 explanations, analyze each 256-row trace in the TrueForge Sandbox, and support every
 single-attribute revision with that evidence.
 
-SC1 is a submission candidate, not a published product. Its real-model gate is complete only
-when a sanitized evidence record from the fixed one-prompt run proves every acceptance check
-below. Unit, integration, and scripted event-evaluator tests exercise the contracts but do not
-stand in for that run. If the saved provider, TrueForge, MuJoCo, or review services block the
-gate, the pull request stays draft and reports the reproducible blocker; it must not present a
-scripted success as real-model evidence.
+SC1 is a submission candidate, not a published product. Its accepted product contract ends at
+TrueForge's `tool.approval_required` event for `publish_revision`: the submission does not click
+approval and makes no publication-materialization claim. This contract is recorded in
+[`docs/decisions/sc1-approval-request-endpoint.md`](docs/decisions/sc1-approval-request-endpoint.md).
+Its real-model gate is complete only when a sanitized evidence record from the fixed one-prompt
+run proves every acceptance check below. Unit, integration, and scripted event-evaluator tests
+exercise the contracts but do not stand in for that run. If the saved provider, TrueForge,
+MuJoCo, or review services block the gate, the pull request stays draft and reports the
+reproducible blocker; it must not present a scripted success as real-model evidence.
 
 ## Architecture
 
@@ -56,7 +59,11 @@ The saved agent can resolve exactly these seven Asset Autopsy tools:
 | `run_experiment` | Preregister a claim, competing explanation, prediction, and falsifier, then run one bounded agent-defined experiment. |
 | `create_revision` | Create one immutable child from a completed experiment by changing one allowed joint attribute. |
 | `verify_revision` | Run the public gate and the one-shot three-scenario hidden qualification, returning aggregates and a promotion ticket only. |
-| `publish_revision` | Revalidate the stored ticket and materialize the qualified bundle. This is the only destructive and approval-gated tool. |
+| `publish_revision` | Request publication of the exact qualified revision. This remains the only destructive and approval-gated tool; accepted SC1 stops at TrueForge's approval request before the server call. |
+
+The repository currently contains a post-approval materializer and promotion-persistence path.
+They are not demonstrated or claimed SC1 behavior and are scheduled for removal in a separate
+implementation pull request.
 
 The demo fixture has budgets of 10 total runs, 5 experiments, 2 child revisions, and 1 hidden
 qualification. `run_experiment` accepts named joint positions, one to sixteen constant-control
