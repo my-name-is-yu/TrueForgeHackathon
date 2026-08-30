@@ -455,6 +455,15 @@ class JointSummary(StrictModel):
             raise ValueError("axis must be non-zero")
         return tuple(component / length for component in value)
 
+    @field_validator("position_range")
+    @classmethod
+    def validate_position_range(
+        cls, value: tuple[StrictFiniteFloat, StrictFiniteFloat] | None
+    ) -> tuple[StrictFiniteFloat, StrictFiniteFloat] | None:
+        if value is not None and value[0] > value[1]:
+            raise ValueError("position range lower bound cannot exceed upper bound")
+        return value
+
 
 class BodySummary(StrictModel):
     name: ElementName
@@ -687,22 +696,36 @@ class BehaviorDiff(StrictModel):
         deltas = {delta.metric: delta for delta in self.metric_deltas}
         for result in self.clause_outcomes:
             delta = deltas[_CLAUSE_METRICS[result.clause_id]]
-            if delta.before is None or delta.after is None:
-                expected_outcome = (
-                    "unchanged"
-                    if delta.before is None and delta.after is None
-                    else "improved"
-                    if delta.before is None
-                    else "regressed"
-                )
-            elif delta.after < delta.before:
+            limit = _PASS_METRIC_LIMITS[delta.metric]
+            before_passed = delta.before is not None and delta.before <= limit
+            after_passed = delta.after is not None and delta.after <= limit
+            if not before_passed and after_passed:
                 expected_outcome = "improved"
-            elif delta.after > delta.before:
+            elif before_passed and not after_passed:
                 expected_outcome = "regressed"
             else:
                 expected_outcome = "unchanged"
             if result.outcome != expected_outcome:
-                raise ValueError("clause outcome must match its metric transition")
+                raise ValueError("clause outcome must match its contract-state transition")
+        outcomes = {result.outcome for result in self.clause_outcomes}
+        all_clauses_pass = all(
+            deltas[metric].after is not None and deltas[metric].after <= limit
+            for metric, limit in _PASS_METRIC_LIMITS.items()
+        )
+        if all_clauses_pass:
+            expected_verdict = "public_pass"
+        elif "improved" in outcomes and "regressed" in outcomes:
+            expected_verdict = "changed"
+        elif "improved" in outcomes:
+            expected_verdict = "improved"
+        elif "regressed" in outcomes:
+            expected_verdict = "regressed"
+        elif self.changed:
+            expected_verdict = "changed"
+        else:
+            expected_verdict = "unchanged_failure"
+        if self.verdict != expected_verdict:
+            raise ValueError("verdict must match the contract clause outcomes")
         if self.changed and self.first_divergence is None:
             raise ValueError("changed behavior requires first divergence evidence")
         if self.changed and self.verdict == "unchanged_failure":

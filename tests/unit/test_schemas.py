@@ -11,6 +11,7 @@ from asset_autopsy.schemas import (
     CreateRevisionOutput,
     CreateRevisionInput,
     FirstDivergence,
+    JointSummary,
     OpenCaseOutput,
     OpenCaseInput,
     PatchPolicy,
@@ -337,7 +338,7 @@ def test_behavior_diff_encodes_frozen_comparison_evidence() -> None:
             },
             "metric_deltas": _metric_deltas(),
             "clause_outcomes": _clause_outcomes(),
-            "verdict": "improved",
+            "verdict": "public_pass",
         }
     )
     assert behavior_diff.first_divergence is not None
@@ -483,7 +484,13 @@ def test_behavior_diff_endpoints_obey_metric_domains(
         )
 
 
-def test_behavior_diff_clause_outcomes_match_metric_direction() -> None:
+@pytest.mark.parametrize(
+    ("before", "after", "claimed_outcome"),
+    [(0.04, 0.035, "improved"), (0.02, 0.025, "regressed")],
+)
+def test_behavior_diff_clause_outcomes_use_contract_state_transitions(
+    before: float, after: float, claimed_outcome: str
+) -> None:
     with pytest.raises(ValidationError):
         BehaviorDiff.model_validate(
             {
@@ -494,9 +501,42 @@ def test_behavior_diff_clause_outcomes_match_metric_direction() -> None:
                     "signal": "qpos",
                     "magnitude": 0.002,
                 },
-                "metric_deltas": _metric_deltas(hold_before=0.02, hold_after=0.04),
+                "metric_deltas": _metric_deltas(hold_before=before, hold_after=after),
+                "clause_outcomes": _clause_outcomes(reach_error=claimed_outcome),
+                "verdict": claimed_outcome,
+            }
+        )
+
+
+def test_behavior_diff_verdict_matches_clause_outcomes() -> None:
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(
+            {
+                "changed": True,
+                "first_divergence": {
+                    "step": 12,
+                    "time_s": 0.12,
+                    "signal": "qpos",
+                    "magnitude": 0.002,
+                },
+                "metric_deltas": _metric_deltas(),
                 "clause_outcomes": _clause_outcomes(),
-                "verdict": "changed",
+                "verdict": "regressed",
+            }
+        )
+
+
+def test_joint_summary_rejects_reversed_position_range() -> None:
+    with pytest.raises(ValidationError):
+        JointSummary.model_validate(
+            {
+                "name": "elbow",
+                "axis": [0.0, 0.0, 1.0],
+                "damping": 0.3,
+                "armature": 0.0,
+                "frictionloss": 0.0,
+                "position_range": [1.0, -1.0],
+                "body_parent": "forearm",
             }
         )
 
