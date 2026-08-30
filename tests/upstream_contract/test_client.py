@@ -241,6 +241,11 @@ class _FakeSession:
                 if self.final_state_mismatch == "energy"
                 else ([[0.0], [0.0]] if self.nested_final_energy else [0.0, 0.0])
             )
+            final_contacts = (
+                1
+                if self.final_state_mismatch == "contacts"
+                else (-1 if self.negative_contacts else 0)
+            )
             return _text_result(
                 {
                     "n_steps": steps,
@@ -248,7 +253,7 @@ class _FakeSession:
                     "final_state": {
                         "qpos": final_qpos,
                         "qvel": final_qvel,
-                        "n_contacts": -1 if self.negative_contacts else 0,
+                        "n_contacts": final_contacts,
                         "energy": final_energy,
                     },
                     "timeseries": rows,
@@ -556,7 +561,7 @@ def test_run_response_requires_requested_signals_and_model_widths() -> None:
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("mismatch", ("qpos", "qvel", "energy"))
+@pytest.mark.parametrize("mismatch", ("qpos", "qvel", "energy", "contacts"))
 def test_run_response_requires_final_state_to_match_last_sample(mismatch: str) -> None:
     async def check() -> None:
         transport, make_session, _get_session = _fake_client(

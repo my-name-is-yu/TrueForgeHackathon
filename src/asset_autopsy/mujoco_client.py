@@ -459,6 +459,7 @@ def _matches_run(
         final_state["qpos"] != last_row["qpos"]
         or final_state["qvel"] != last_row["qvel"]
         or final_state["energy"] != [last_row["E_pot"], last_row["E_kin"]]
+        or ("ncon" in last_row and final_state["n_contacts"] != last_row["ncon"])
     ):
         return False
     timestamps = [row["t"] for row in timeseries]
