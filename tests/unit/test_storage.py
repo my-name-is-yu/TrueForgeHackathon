@@ -33,6 +33,14 @@ COMMITMENTS = {
 }
 
 
+def directory_chain_to_root(path: Path) -> list[Path]:
+    chain = [path]
+    while path.parent != path:
+        path = path.parent
+        chain.append(path)
+    return chain
+
+
 def run_event_payload(run: RunRecord) -> dict[str, object]:
     return {
         "run_id": run.run_id,
@@ -260,12 +268,7 @@ def test_object_store_syncs_new_shard_and_hash_root_parent(
 
     hash_root = tmp_path / "objects" / "sha256"
     shard = hash_root / digest[:2]
-    assert synchronized == [
-        shard,
-        hash_root,
-        hash_root.parent,
-        hash_root.parent.parent,
-    ]
+    assert synchronized == directory_chain_to_root(shard)
 
 
 def test_new_object_syncs_ancestors_even_when_they_already_exist(
@@ -285,12 +288,7 @@ def test_new_object_syncs_ancestors_even_when_they_already_exist(
     object_store.put_bytes(payload, expected_sha256=digest)
 
     hash_root = tmp_path / "objects" / "sha256"
-    assert synchronized == [
-        hash_root / digest[:2],
-        hash_root,
-        hash_root.parent,
-        hash_root.parent.parent,
-    ]
+    assert synchronized == directory_chain_to_root(hash_root / digest[:2])
 
 
 def test_existing_object_removes_temporary_before_directory_sync(
@@ -344,8 +342,9 @@ def test_object_store_creates_and_syncs_missing_parent_chain(
 def test_concurrent_object_publication_syncs_existing_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    first_store = ObjectStore(tmp_path / "objects")
-    second_store = ObjectStore(tmp_path / "objects")
+    object_root = tmp_path / "new" / "a" / "objects"
+    first_store = ObjectStore(object_root)
+    second_store = ObjectStore(object_root)
     payload = b"same digest published concurrently"
     digest = hashlib.sha256(payload).hexdigest()
     first_started = threading.Event()
@@ -380,14 +379,9 @@ def test_concurrent_object_publication_syncs_existing_destination(
 
     assert not first_thread.is_alive()
     assert first_errors == []
-    hash_root = tmp_path / "objects" / "sha256"
+    hash_root = object_root / "sha256"
     shard = hash_root / digest[:2]
-    assert second_synchronized == [
-        shard,
-        hash_root,
-        hash_root.parent,
-        hash_root.parent.parent,
-    ]
+    assert second_synchronized == directory_chain_to_root(shard)
 
 
 def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:

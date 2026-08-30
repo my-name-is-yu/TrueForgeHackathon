@@ -302,17 +302,15 @@ class ObjectStore:
             raise ObjectIntegrityError("object directory cannot be synchronized") from exc
 
     def _ensure_directory(self, path: Path) -> None:
-        missing: list[Path] = []
-        current = path
-        while not current.exists():
-            missing.append(current)
-            current = current.parent
-        if not current.is_dir():
-            raise ObjectIntegrityError("object directory ancestor is not a directory")
-        for directory in reversed(missing):
-            directory.mkdir(exist_ok=True)
-            self._fsync_directory(directory)
-            self._fsync_directory(directory.parent)
+        path.mkdir(parents=True, exist_ok=True)
+
+    def _fsync_to_root(self, path: Path) -> None:
+        while True:
+            self._fsync_directory(path)
+            parent = path.parent
+            if parent == path:
+                return
+            path = parent
 
     def put_bytes(self, data: bytes, *, expected_sha256: str | None = None) -> ObjectReference:
         if not isinstance(data, bytes):
@@ -359,17 +357,11 @@ class ObjectStore:
                     raise ObjectIntegrityError("canonical object failed hash verification")
                 temporary_path.unlink()
                 temporary_path = None
-                self._fsync_directory(destination.parent)
-                self._fsync_directory(self.hash_root)
-                self._fsync_directory(self.root)
-                self._fsync_directory(self.root.parent)
+                self._fsync_to_root(destination.parent)
                 return ObjectReference(stored, stored_size)
             os.replace(temporary_path, destination)
             temporary_path = None
-            self._fsync_directory(destination.parent)
-            self._fsync_directory(self.hash_root)
-            self._fsync_directory(self.root)
-            self._fsync_directory(self.root.parent)
+            self._fsync_to_root(destination.parent)
             return ObjectReference(actual, size)
         except OSError as exc:
             raise ObjectIntegrityError("object publication failed") from exc
