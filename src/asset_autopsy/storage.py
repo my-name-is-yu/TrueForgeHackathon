@@ -1879,6 +1879,8 @@ class EvidenceStore:
                 ):
                     raise IntegrityError("qualification terminal identity is invalid")
                 result = event.payload.get("result")
+                if result is not None and not isinstance(result, Mapping):
+                    raise IntegrityError("qualification terminal result is invalid")
                 return QualificationAttempt(
                     case_id=attempt.case_id,
                     attempt_id=attempt.attempt_id,
@@ -1886,7 +1888,7 @@ class EvidenceStore:
                     suite_commitment_sha256=attempt.suite_commitment_sha256,
                     scenario_hashes=attempt.scenario_hashes,
                     state=state,
-                    result=result if isinstance(result, Mapping) else None,
+                    result=result,
                 )
             return attempt
 
@@ -1997,6 +1999,7 @@ class EvidenceStore:
             raise IntegrityError("promotion receipt identity is invalid")
         try:
             _id(ticket_id, "ticket_id")
+            _id(stored_revision, "revision_id")
             _sha256(manifest_sha256, "manifest_sha256")
         except ValidationError as exc:
             raise IntegrityError("promotion receipt identity is invalid") from exc

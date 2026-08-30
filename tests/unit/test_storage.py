@@ -1193,6 +1193,38 @@ def test_qualification_terminal_reads_verify_the_ledger_chain(tmp_path: Path) ->
         )
 
 
+def test_malformed_stored_terminal_result_is_an_integrity_error(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    identity = {
+        "case_id": "case-1",
+        "attempt_id": "attempt-1",
+        "revision_id": "r001",
+        "suite_commitment_sha256": "4" * 64,
+        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
+    }
+    store.record_qualification_terminal(
+        **identity, state="PASSED", result={"passed": 3}
+    )
+    replace_tail_event_payload(
+        tmp_path / "ledger.sqlite",
+        "QUALIFICATION_PASSED",
+        {
+            "attempt_id": "attempt-1",
+            "revision_id": "r001",
+            "suite_commitment_sha256": "4" * 64,
+            "scenario_hashes": ["5" * 64, "6" * 64, "7" * 64],
+            "result": "malformed-scalar",
+            **COMMITMENTS,
+        },
+    )
+
+    with pytest.raises(IntegrityError, match="qualification terminal result is invalid"):
+        store.get_qualification("case-1")
+
+
 def test_promotion_receipt_is_atomic_and_reconcilable(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
@@ -1310,6 +1342,50 @@ def test_malformed_stored_promotion_identity_is_an_integrity_error(
 
     with pytest.raises(IntegrityError, match="promotion receipt identity is invalid"):
         store.reconcile_promotion(case_id="case-1", revision_id="r001")
+
+
+def test_malformed_stored_promotion_revision_is_an_integrity_error(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    identity = {
+        "case_id": "case-1",
+        "attempt_id": "attempt-1",
+        "revision_id": "r001",
+        "suite_commitment_sha256": "4" * 64,
+        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
+    }
+    store.record_qualification_terminal(**identity, state="PASSED")
+    store.record_promotion_receipt(
+        case_id="case-1",
+        revision_id="r001",
+        ticket_id="ticket-1",
+        manifest_sha256="8" * 64,
+    )
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            "UPDATE ledger_events SET revision_id = '' WHERE event_type = 'PROMOTED'"
+        )
+        connection.execute(
+            "UPDATE cases SET promoted_revision_id = '' WHERE case_id = 'case-1'"
+        )
+        connection.commit()
+    replace_tail_event_payload(
+        tmp_path / "ledger.sqlite",
+        "PROMOTED",
+        {
+            "ticket_id": "ticket-1",
+            "revision_id": "",
+            "manifest_sha256": "8" * 64,
+            "receipt": {},
+        },
+    )
+
+    with pytest.raises(IntegrityError, match="promotion receipt identity is invalid"):
+        store.reconcile_promotion(case_id="case-1")
 
 
 def test_unqualified_promotion_does_not_mutate_case_or_ledger(tmp_path: Path) -> None:
