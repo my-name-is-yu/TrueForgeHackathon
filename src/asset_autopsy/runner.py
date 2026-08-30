@@ -27,7 +27,12 @@ _RENDER_FALLBACK_CODES = frozenset(
 
 
 def _number(value: Any) -> bool:
-    return type(value) in (int, float) and math.isfinite(float(value))
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def _bounded_tuple(value: Any, *, limit: int, name: str) -> tuple[Any, ...]:

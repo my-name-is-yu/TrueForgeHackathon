@@ -72,6 +72,11 @@ class _BlockingCloseTransport(_FakeTransport):
         self.closed = True
 
 
+class _FailingCloseTransport(_FakeTransport):
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        raise RuntimeError("private close failure")
+
+
 class _FakeSession:
     def __init__(
         self,
@@ -1110,7 +1115,10 @@ def test_trace_budget_rejects_high_dimensional_run_before_upstream_call(
     asyncio.run(check())
 
 
-@pytest.mark.parametrize(("ctrl", "nu"), (([0.0], 0), ([float("nan")], 1)))
+@pytest.mark.parametrize(
+    ("ctrl", "nu"),
+    (([0.0], 0), ([float("nan")], 1), ([10**1000], 1)),
+)
 def test_run_segment_rejects_invalid_control_before_upstream_call(
     ctrl: list[float], nu: int
 ) -> None:
@@ -1126,6 +1134,34 @@ def test_run_segment_rejects_invalid_control_before_upstream_call(
             with pytest.raises(ValueError, match="ctrl must match"):
                 await client.run_segment(slot, ctrl=ctrl, n_steps=1)
             assert [name for name, _arguments in get_session().calls] == ["sim_load"]
+
+    asyncio.run(check())
+
+
+def test_normal_shutdown_surfaces_sanitized_cleanup_failure() -> None:
+    async def check() -> None:
+        transport = _FailingCloseTransport()
+        session: _FakeSession | None = None
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        def make_session(read: object, write: object) -> _FakeSession:
+            nonlocal session
+            session = _FakeSession(read, write)
+            return session
+
+        with pytest.raises(UpstreamToolError) as caught:
+            async with PinnedMujocoClient(
+                transport_factory=lambda _parameters: transport,
+                session_factory=make_session,
+            ):
+                pass
+        assert caught.value.envelope() == {
+            "code": UPSTREAM_UNAVAILABLE,
+            "message": SAFE_MESSAGE,
+            "retryable": True,
+            "next_action": SAFE_NEXT_ACTION,
+        }
+        assert session is not None and session.closed is True
 
     asyncio.run(check())
 

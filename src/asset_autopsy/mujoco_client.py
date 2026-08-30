@@ -290,8 +290,19 @@ async def _finish_resource_task(task: asyncio.Task[None]) -> None:
             cancelled = True
         except Exception:
             break
+    if not task.cancelled():
+        failure = task.exception()
+        if failure is not None:
+            raise failure
     if cancelled:
         raise asyncio.CancelledError
+
+
+async def _discard_resource_task_failure(task: asyncio.Task[None]) -> None:
+    try:
+        await _finish_resource_task(task)
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 def _is_error_result(result: Any) -> bool:
@@ -333,7 +344,12 @@ def normalize_json_result(
 
 
 def _strict_float(value: Any) -> bool:
-    return type(value) in (int, float) and math.isfinite(float(value))
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def _numeric_tree(value: Any, depth: int = 0) -> bool:
@@ -568,8 +584,15 @@ class PinnedMujocoClient:
         finally:
             try:
                 await stack.aclose()
-            except (asyncio.CancelledError, Exception):
-                pass
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                raise UpstreamToolError(
+                    UPSTREAM_UNAVAILABLE,
+                    SAFE_MESSAGE,
+                    True,
+                    SAFE_NEXT_ACTION,
+                ) from None
 
     async def __aenter__(self) -> PinnedMujocoClient:
         async with self._lifecycle_lock:
@@ -602,18 +625,15 @@ class PinnedMujocoClient:
                     )
             except asyncio.CancelledError:
                 resource_task.cancel()
-                try:
-                    await _finish_resource_task(resource_task)
-                except asyncio.CancelledError:
-                    pass
+                await _discard_resource_task_failure(resource_task)
                 raise
             except UpstreamToolError:
                 stop.set()
-                await _finish_resource_task(resource_task)
+                await _discard_resource_task_failure(resource_task)
                 raise
             except (TimeoutError, asyncio.TimeoutError):
                 stop.set()
-                await _finish_resource_task(resource_task)
+                await _discard_resource_task_failure(resource_task)
                 raise UpstreamToolError(
                     UPSTREAM_TIMEOUT,
                     SAFE_TIMEOUT_MESSAGE,
@@ -622,7 +642,7 @@ class PinnedMujocoClient:
                 ) from None
             except Exception:
                 stop.set()
-                await _finish_resource_task(resource_task)
+                await _discard_resource_task_failure(resource_task)
                 raise UpstreamToolError(
                     UPSTREAM_UNAVAILABLE,
                     SAFE_MESSAGE,
