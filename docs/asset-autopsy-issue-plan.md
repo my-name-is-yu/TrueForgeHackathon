@@ -1,43 +1,44 @@
-# Asset Autopsy — Luna-sized issue execution plan
+# Asset Autopsy — issue execution plan
 
-Status: Linear synchronized; implementation not dispatched.
+Status: Linear synchronized; implementation proceeds through ordinary Codex pull requests.
 Human controls: `YU-19` (plan synchronization) and `YU-29` (final evidence, links, and submission).
 Product contract: `docs/asset-autopsy-mvp-design.md`.
 
+## 0. SC1 direction and stack
+
+SC1 is the tools-first direction slice. Its named stack is `main -> direction -> PR #15 -> PR #13 -> PR #14 -> final PR`; each later implementation PR is reviewed against the aggregate result of the earlier stack before it is considered ready. The direction slice makes Asset Autopsy a TrueForge-facing Streamable HTTP MCP with a bounded generic `run_experiment` contract. Fixed BehaviorDiff remains on `run_task`; the historical Phase 0 `run_probe` selector is not a public alias.
+
+The following are explicitly outside SC1: the Skill, product CLI, TrueForge fork, arbitrary 3D formats, and advanced recovery. They remain later backlog scope and must not be smuggled into the direction PR.
+
 ## 1. Why this plan exists
 
-The MVP scope and behavior are unchanged. This document changes the execution boundary used by Symphony; the companion design receives only the review-proven export-name and destination-parent-fsync errata recorded by YU-19. The previous 12 implementation issues placed several independent unknowns into AA-00, AA-06, AA-09, and AA-10. Those four became non-dispatch umbrella parents. Review then separated AA-05's shared exact-byte commitment primitive from causal-service behavior, and split AA-12's three independently falsifiable release-harness seams into evidence-provenance, Git-binding, and manifest-CLI children.
+The MVP scope and behavior are unchanged. This document defines dependency-safe issue boundaries for ordinary Codex pull requests; the companion design receives only the review-proven export-name and destination-parent-fsync errata recorded by YU-19. The previous 12 implementation issues placed several independent unknowns into AA-00, AA-06, AA-09, and AA-10. Those four became non-executable umbrella parents. Review then separated AA-05's shared exact-byte commitment primitive from causal-service behavior, and split AA-12's three independently falsifiable release-harness seams into evidence-provenance, Git-binding, and manifest-CLI children.
 
 The resulting plan has:
 
 - 21 executable leaves;
-- six non-dispatch umbrellas with 14 native subissues;
+- six non-executable umbrellas with 14 native subissues;
 - one completed bootstrap issue, AA-B00;
-- two relation-free, non-dispatch human control issues;
+- two relation-free human control issues;
 - an acyclic 33-edge blocker graph;
-- effective wave width no greater than `max_concurrent_agents: 4`;
-- GPT-5.6 Luna with `xhigh` reasoning and at most 12 turns per run.
+- dependency-safe waves that make the next eligible issue explicit.
 
 Each executable leaf has one primary uncertainty, exclusive owned surfaces, protected surfaces, binary acceptance, and explicit verification. The target is the smallest complete PR that closes that leaf's understand-work-verify loop.
 
-## 2. Dispatch safety
+## 2. Issue activation safety
 
-Current state is intentionally inert:
+Every unfinished AA issue remains Backlog until a human starts an ordinary Codex task for it.
 
-- every unfinished AA issue is Backlog;
-- the active Symphony dispatch count is zero;
-- this plan does not start, restart, or reconfigure the Mac mini service.
-
-The transition from Backlog to Todo is the sole dispatch switch. Linear blocker relations document and expose readiness, but do not by themselves prevent dispatch. Activate an executable leaf only with this sequence:
+Linear blocker relations document and expose readiness, but do not by themselves prove that work may start. Activate an executable leaf only with this sequence:
 
 1. Verify every listed prerequisite PR is merged into `main`; In Review or a green unmerged PR is insufficient.
 2. Verify the issue body, owned surfaces, acceptance, and dependency links still match this plan.
-3. Move only that ready leaf from Backlog to Todo.
-4. If the agent reports a blocker, move it back to Backlog before changing scope or dependencies.
+3. Start one ordinary Codex task for that ready leaf and record its branch or pull request in Linear.
+4. If the task reports a blocker, record it before changing scope or dependencies.
 
-Never move an umbrella parent, `YU-19`, or `YU-29` to Todo.
+Never execute an umbrella parent. `YU-19` and `YU-29` remain human-controlled.
 
-## 3. Non-dispatch umbrellas
+## 3. Non-executable umbrellas
 
 | Umbrella | Linear | Children | Human rollup condition |
 |---|---|---|---|
@@ -50,7 +51,7 @@ Never move an umbrella parent, `YU-19`, or `YU-29` to Todo.
 
 An umbrella owns no files, branch, commit, or PR. It remains Backlog and relation-free. Mark it Done only after every child PR is merged and a human verifies its rollup condition.
 
-`YU-19` owns this planning and bounded contract-errata PR. `YU-29` owns the post-hardening evidence decision, final README/demo-link PR, video upload, and submission. Both remain relation-free and never dispatch through Symphony.
+`YU-19` owns this planning and bounded contract-errata PR. `YU-29` owns the post-hardening evidence decision, final README/demo-link PR, video upload, and submission. Both remain relation-free and run only when the user explicitly starts them.
 
 ## 4. Executable leaves
 
@@ -101,12 +102,12 @@ AA-06B may become ready while the other Wave 2A leaves are still in review, but 
 
 ### Host-capacity gate for width four
 
-`max_concurrent_agents: 4` is a scheduling ceiling, not permission to activate four leaves blindly. Before Wave 2A or Wave 4A, the human dispatcher records a fresh capacity checkpoint in Linear:
+Four concurrent local Codex tasks is a scheduling ceiling, not permission to start four leaves blindly. Before Wave 2A or Wave 4A, the human records a fresh capacity checkpoint in Linear:
 
 - total RAM and current macOS memory-pressure state;
 - whether swapouts continuously rise during the three-agent ramp;
 - free disk versus four measured shallow-clone plus frozen-environment footprints, with at least 20 percent headroom;
-- zero unexpected `codex app-server` exits or repeated Symphony retries during the ramp;
+- zero unexpected Codex task exits or repeated startup failures during the ramp;
 - no dependency-install lock stall;
 - no external or manually launched live CGL, real TrueForge, private qualification/publication, or full-E2E workload while the four-wide wave is active;
 - enough human/Qodo review capacity to merge the current wave before activating the next one.
@@ -131,7 +132,7 @@ Only relation-free `YU-29`, after every Wave 4 and release-preparation PR is mer
 
 ## 6. Exact blocker graph
 
-The following 33 `blocks` relations are the complete baseline executable AA graph. The source is the blocker; the target is the blocked issue. Human control issues and non-dispatch umbrellas are intentionally relation-free.
+The following 33 `blocks` relations are the complete baseline executable AA graph. The source is the blocker; the target is the blocked issue. Human control issues and non-executable umbrellas are intentionally relation-free.
 
 - `AA-B00` blocks `AA-00A`
 - `AA-00A` blocks `AA-00B`
@@ -171,7 +172,7 @@ The graph is acyclic. AA-07 and AA-08 deliberately have three direct blockers ea
 
 ## 7. Ownership and integration rules
 
-- One issue owns one branch and one PR, always based on current `main`. Stacked PRs are not part of this workflow.
+- Ordinary work uses one issue per branch and PR based on current `main`. The explicitly approved SC1 exception is the named stack `main -> direction -> PR #15 -> PR #13 -> PR #14 -> final PR`; each stacked slice must be base-aware and the aggregate must be reviewed against `main`.
 - Dependency ownership is a serial Phase 0 handoff: AA-00A creates the initial `pyproject.toml` and `uv.lock`; after AA-00A merges, AA-00B exclusively owns those two files while closing the real TrueForge seam. AA-00B must preserve AA-00A's direct upstream pins and rerun the upstream 4/4 suite under the final lockfile. The dependency files freeze only after that regression and AA-00B's 5/5 gate pass and merge. Every later dependency change is a blocker, not an opportunistic edit.
 - `tests/conftest.py` belongs only to AA-00A. AA-00B keeps its helpers inside `tests/phase0/trueforge/**`.
 - AA-00A and AA-00B have disjoint spike, test, and evidence directories.
@@ -358,7 +359,7 @@ Acceptance:
 - [ ] Revision plus ledger event commits atomically
 - [ ] One keyword-only `create_preprovisioned_case` transaction atomically inserts the case and root revision with `root_revision_id == head_revision_id`, null qualification/promotion state, and exactly the five named lowercase-64-hex fields `source_asset_sha256`, `controller_sha256`, `public_contract_sha256`, `runner_sha256`, and `holdout_commitment_sha256`
 - [ ] Case creation rejects a missing, extra, malformed, or existing identity; it never upserts, hashes artifact bytes, renames a commitment field, or exposes an API that later updates any of the five stored commitments
-- [ ] Every non-root child revision persists exactly one hypothesis event and one probe run citation; the pre-provisioned root revision has both citation fields null
+- [ ] Every non-root child revision persists exactly one hypothesis event and one experiment run citation; the pre-provisioned root revision has both citation fields null
 - [ ] Event-chain mutation is detected
 - [ ] Linear head, qualification attempt, and promotion state can be restored
 - [ ] RUNNING and RECOVERING qualification states persist exact attempt identity
@@ -403,7 +404,7 @@ Acceptance:
 - [ ] Exactly seven tool input/output models are frozen
 - [ ] Unknown fields and non-finite inputs are rejected
 - [ ] Patch is one object, never an array
-- [ ] create_revision accepts exactly one basis_probe_run_id, never an array
+- [ ] create_revision accepts exactly one basis_experiment_run_id, never an array
 - [ ] Only joint axis, damping, armature, and frictionloss are editable
 - [ ] Base hash and expected-old-value guards are enforced
 - [ ] Axis normalization and family-level safety ranges are enforced
@@ -546,21 +547,21 @@ Protected surfaces:
 
 Acceptance:
 
-- [ ] open_case, inspect_asset, run_task, run_probe, and create_revision are implemented
+- [ ] open_case, inspect_asset, run_task, run_experiment, and create_revision are implemented
 - [ ] open_case performs a fresh read of an already pre-provisioned case; a missing case returns typed `CASE_NOT_FOUND`
 - [ ] open_case does not create or mutate a case row, commitment, revision, run, budget, ledger event, or object-store artifact; repeated calls leave that complete logical storage state unchanged
 - [ ] For its five commitment fields, open_case copies only the stored values and never imports commitments.py, computes or renames a digest, or reads hidden-manifest or nonce bytes; the response still contains every contract, budget, revision, topology, patch-policy, and sanitized event-tail field required by the frozen design
 - [ ] A pre-provisioned case missing any required commitment fails with a bounded typed precondition error rather than inventing or repairing identity
-- [ ] Probe without a baseline is rejected
+- [ ] Experiment without a baseline is rejected
 - [ ] Hypothesis, alternative, prediction, and falsifier are committed before engine execution
-- [ ] Output contains observations and predicate matches, not a root-cause diagnosis
-- [ ] Cited probe completed on the same base revision
+- [ ] Output contains condition/execution hashes, segment boundaries, and resampled observations but no predicate-matched booleans or root-cause diagnosis
+- [ ] Cited experiment completed on the same base revision
 - [ ] Patch target appears in the cited hypothesis or alternative
 - [ ] Only the current linear head may be patched
 - [ ] One revision changes one attribute
 - [ ] Child run_task returns same-condition BehaviorDiff against its parent
 - [ ] Budget accounting matches the design
-- [ ] Table-driven budget tests enforce invalid request equals 0, pre-physics upstream failure equals 0, completed task or probe including domain failure equals 1, partial run records failed event plus 1, policy-valid compile rejection equals one patch attempt, and identical revision equals 0
+- [ ] Table-driven budget tests enforce invalid request equals 0, pre-physics upstream failure equals 0, completed task or experiment including domain failure equals 1, partial run records failed event plus 1, policy-valid compile rejection equals one patch attempt, and identical revision equals 0
 
 Required verification:
 
@@ -848,7 +849,7 @@ Acceptance:
 - [ ] A recordable run starts only through AA-09A's isolated named-Git-snapshot entry, captures `execution_code_git_sha` before launch and the initialized `component_build_sha256` before the first agent call, and refuses dirty, shadowed, injected, or changed runtime code as valid evidence
 - [ ] Run A uses real denial and leaves zero exports
 - [ ] After reset, fresh Run B completes r000 to r001 to r002 from one prompt
-- [ ] Exactly two hypothesis/probe/one-attribute-patch cycles occur with zero human re-prompts
+- [ ] Exactly two hypothesis/experiment/one-attribute-patch cycles occur with zero human re-prompts
 - [ ] Public gates and hidden qualification pass 3/3
 - [ ] A real TrueForge approval pause occurs only for publish_revision
 - [ ] The approval surface displays the complete human-readable ticket before the human acts
@@ -900,7 +901,7 @@ Acceptance:
 
 - [ ] Arbitrary path or XML input is rejected
 - [ ] A two-attribute patch is rejected
-- [ ] Failure injection proves hypothesis-before-probe ordering
+- [ ] Failure injection proves hypothesis-before-experiment ordering
 - [ ] All seven tool results, MCP isError envelopes, public event tails, LTR-visible payloads, and logs pass sentinel scans for golden data, holdout values, nonce, host path, secret, and traceback; intentional canonical diff values are explicitly scoped
 - [ ] Any production fix is limited to the five explicitly allowed modules and a reproduced failing test
 - [ ] Any validated out-of-allowlist root cause creates a dedicated follow-on fix leaf with exact ownership and blocker links; AA-10A remains incomplete until that fix merges and this regression passes
@@ -982,7 +983,7 @@ Protected surfaces:
 
 Acceptance:
 
-- [ ] One NO_RENDER restart after rendering failure preserves the numeric probe and repair loop
+- [ ] One NO_RENDER restart after rendering failure preserves the numeric experiment and repair loop
 - [ ] A stdio death makes the current call retryable, discards the poisoned slot, and lets a later separate call use a new slot
 - [ ] With identical XML, controller, scenario, seed, timestep, initial state, upstream commit, and architecture, two fresh-process metric sets differ by no more than 1e-8
 - [ ] Qualification and public metrics remain independent of rendered pixels
@@ -1249,7 +1250,7 @@ After every implementation and release-preparation PR is merged, a human selects
 ## Preconditions
 
 - AA-10A, AA-10B, AA-10C, AA-12A, AA-12B, AA-12C, and AA-11 PRs are merged into main.
-- All six non-dispatch umbrella rollups are human-verified.
+- All six non-executable umbrella rollups are human-verified.
 - The repository SPDX license is fixed.
 - No other live CGL, TrueForge, private-runtime, qualification, publication, or full-E2E lane is active.
 - The human has selected one safe run ID and export name from the private `asset-autopsy-e2e-index/v1` source map; no file path or digest is hand-entered.
@@ -1271,7 +1272,7 @@ After every implementation and release-preparation PR is merged, a human selects
 
 - Keep this issue Backlog until all preconditions pass.
 - Never move this issue to Todo.
-- Do not assign this issue to Symphony; browser approval, recording, upload, merge, and submission remain human actions.
+- Do not delegate browser approval, recording, upload, merge, or submission; these remain human actions.
 
 ## Acceptance
 
