@@ -1,10 +1,9 @@
 node_modules/
+.venv/
 .env
 .env.*
-!.env.example
 
 # Logs and local runtime artifacts
 *.log
 .DS_Store
 trueforge-data/
-.symphony/
