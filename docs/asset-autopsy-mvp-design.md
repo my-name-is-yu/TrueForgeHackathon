@@ -273,7 +273,7 @@ feature or a second demo path.
 ## 10. AgentSpec and real-model evidence
 
 `src/asset_autopsy/trueforge_client.py` builds the dedicated `asset-autopsy-sc1` AgentSpec. The
-implemented settings use `openai/gpt-5-4-mini`, high reasoning effort, serial tool calls, a
+implemented settings use `openai/gpt-5-6-sol`, high reasoning effort, serial tool calls, a
 30-iteration limit, enabled Sandbox file downloads and Large Tool Response, no dynamic subagents,
 and approval only for `publish_revision`.
 

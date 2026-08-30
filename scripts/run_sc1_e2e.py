@@ -156,6 +156,7 @@ def _raw_events_are_clear(
     bearer: str,
     data_root: Path,
     private_payloads: tuple[Mapping[str, Any], ...],
+    public_payloads: tuple[Mapping[str, Any], ...] = (),
 ) -> bool:
     hidden_keys = {
         "target_qpos",
@@ -201,6 +202,17 @@ def _raw_events_are_clear(
         return values
 
     private_values = expanded_values(private_payloads)
+    public_values = expanded_values(public_payloads)
+    public_vectors = {
+        tuple(float(item) for item in value)
+        for value in public_values
+        if isinstance(value, (list, tuple))
+        and len(value) > 1
+        and all(
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+            for item in value
+        )
+    }
     private_vectors = {
         tuple(float(item) for item in value)
         for value in private_values
@@ -209,6 +221,16 @@ def _raw_events_are_clear(
         and all(
             isinstance(item, (int, float)) and not isinstance(item, bool)
             for item in value
+        )
+    } - public_vectors
+    public_numeric_values = {
+        value
+        for value in public_values
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            or isinstance(value, float)
+            and not value.is_integer()
         )
     }
     private_numeric_sentinels = {
@@ -220,7 +242,7 @@ def _raw_events_are_clear(
             or isinstance(value, float)
             and not value.is_integer()
         )
-    }
+    } - public_numeric_values
     event_values = expanded_values(events)
     leaked_vector = any(
         tuple(float(item) for item in value) in private_vectors
@@ -302,7 +324,14 @@ def _runtime_state_gates(
         if isinstance(tool_order, list)
         else []
     )
+    invoked_tool_order = evidence.get("invoked_tool_order", tool_order)
+    invoked_sequence = (
+        [name for name in invoked_tool_order if name != "publish_revision"]
+        if isinstance(invoked_tool_order, list)
+        else []
+    )
     event_counts = Counter(event_sequence)
+    invoked_counts = Counter(invoked_sequence)
     service_counts = Counter(
         {name: count for name, count in service.invocation_counts.items() if count}
     )
@@ -371,9 +400,9 @@ def _runtime_state_gates(
         )
 
     return {
-        "facade_sequence_matches_events": facade.recorder.sequence == event_sequence,
-        "facade_counts_match_events": facade_counts == event_counts,
-        "service_counts_match_events": service_counts == event_counts,
+        "facade_sequence_matches_events": facade.recorder.sequence == invoked_sequence,
+        "facade_counts_match_events": facade_counts == invoked_counts,
+        "service_counts_match_events": service_counts == invoked_counts,
         "ledger_run_counts_match": run_events == task_and_experiment_calls,
         "ledger_experiment_evidence_matches": (
             len(experiment_events) == event_counts["run_experiment"]
@@ -447,6 +476,16 @@ def run() -> dict[str, Any]:
             )
             facade = asyncio.run(create_mcp_facade(service, config))
             private_payloads = tuple(service.hidden_verifier._scenario_payloads)
+            scenario = service.fixture.public_scenario
+            public_payloads = (
+                {
+                    "target_qpos": scenario.target_qpos,
+                    "initial_qpos": scenario.initial_qpos,
+                    "target_body_position": scenario.target_body_position,
+                    "duration_steps": scenario.duration_steps,
+                    "hold_steps": scenario.hold_steps,
+                },
+            )
 
             with _FacadeServer(facade.app, config):
                 client = TrueForgeClient(TRUEFORGE_URL, timeout_seconds=30.0)
@@ -482,6 +521,7 @@ def run() -> dict[str, Any]:
                     bearer=bearer,
                     data_root=data_root,
                     private_payloads=private_payloads,
+                    public_payloads=public_payloads,
                 ),
                 "facade_publish_calls": facade.recorder.counts["publish_revision"] == 0,
                 "service_publish_calls": service.publish_invocation_count == 0,
