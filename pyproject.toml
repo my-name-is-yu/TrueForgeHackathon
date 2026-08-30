@@ -7,6 +7,8 @@ dependencies = [
     "mcp==1.26.0",
     "mujoco==3.5.0",
     "mujoco-mcp-server @ git+https://github.com/Rongxuan-Zhou/mujoco-mcp-server.git@ce9bed80ec3698d7b778230abc21f2228a3ce94b",
+    "starlette==1.6.0",
+    "uvicorn==0.52.4",
 ]
 
 [dependency-groups]

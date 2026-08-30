@@ -1,59 +1,174 @@
-# TrueForgeHackathon
+# Asset Autopsy
 
-Project workspace for the [Agent Harness Hackathon](https://www.wemakedevs.org/hackathons/trueforge), running August 24–30, 2026. Asset Autopsy's SC1 direction is a TrueForge-facing Streamable HTTP MCP with seven bounded domain tools; the agent selects a bounded generic experiment through `run_experiment`, while fixed BehaviorDiff remains part of `run_task`.
+Asset Autopsy is a tools-first 3D repair harness built on TrueForge for the
+[Agent Harness Hackathon](https://www.wemakedevs.org/hackathons/trueforge). An agent must
+observe a failing MuJoCo asset, choose experiments that distinguish competing causal
+explanations, analyze each 256-row trace in the TrueForge Sandbox, and support every
+single-attribute revision with that evidence.
 
-## Local harness
+SC1 is a submission candidate, not a published product. Its real-model gate is complete only
+when a sanitized evidence record from the fixed one-prompt run proves every acceptance check
+below. Unit, integration, and scripted event-parser tests exercise the contracts but do not
+stand in for that run. If the saved provider, TrueForge, MuJoCo, or review services block the
+gate, the pull request stays draft and reports the reproducible blocker; it must not present a
+scripted success as real-model evidence.
+
+## Architecture
+
+```text
+TrueForge 0.1.4 + saved asset-autopsy-sc1 agent
+    |
+    | exact seven tools, Streamable HTTP, bearer + allowed Origin
+    v
+Asset Autopsy MCP facade (127.0.0.1:8712/mcp)
+    |
+    | strict schema/auth/error mapping; direct Python calls
+    v
+AssetAutopsyService
+    |-- immutable compound-arm-01 fixture
+    |-- evidence store, metrics, one-attribute patcher, hidden verifier, publisher
+    |
+    | private child process; no public TCP port
+    v
+pinned stdio MuJoCo MCP -> MuJoCo 3.5.0
+```
+
+The HTTP handler does not invoke a CLI. It validates the request boundary and calls the Python
+domain service directly. Only physics execution is delegated to the private, commit-pinned
+MuJoCo MCP child. TrueForge remains the general agent harness: it supplies the model loop,
+Large Tool Response handling, Sandbox Python execution, saved session state, and the approval
+pause.
+
+SC1 deliberately does not add a product CLI, a Skill, a TrueForge fork, a separate UI, arbitrary
+3D formats, site observations, or automatic qualification recovery. The developer-only
+`scripts/run_sc1_e2e.py` entry point drives and evaluates the fixed submission run; it is not an
+agent-facing product interface.
+
+## Public tool contract
+
+The saved agent can resolve exactly these seven Asset Autopsy tools:
+
+| Tool | Contract |
+| --- | --- |
+| `open_case` | Return the pre-provisioned case contract, budgets, topology, current head, and patch policy. |
+| `inspect_asset` | Return authored and compiled public values without fault labels, repair advice, hidden values, XML, or host paths. |
+| `run_task` | Execute the fixed public scenario. A child revision also returns a same-condition parent `BehaviorDiff`. |
+| `run_experiment` | Preregister a claim, competing explanation, prediction, and falsifier, then run one bounded agent-defined experiment. |
+| `create_revision` | Create one immutable child from a completed experiment by changing one allowed joint attribute. |
+| `verify_revision` | Run the public gate and the one-shot three-scenario hidden qualification, returning aggregates and a promotion ticket only. |
+| `publish_revision` | Revalidate the stored ticket and materialize the qualified bundle. This is the only destructive and approval-gated tool. |
+
+The demo fixture has budgets of 10 total runs, 5 experiments, 2 child revisions, and 1 hidden
+qualification. `run_experiment` accepts named joint positions, one to sixteen constant-control
+segments, and one to eight public observables. It returns a deterministic, evenly sampled
+256-row trace for Sandbox analysis. Every row is a named object with `time_s` and a `values`
+mapping, using canonical keys such as `qpos:<joint>`, `energy:potential`,
+`body_position:<body>:x`, and `control:<actuator>`. The tool does not decide whether the agent's
+prediction or falsifier was satisfied.
+
+## Safety and approval boundary
+
+- The facade binds only to `127.0.0.1`, requires a per-run bearer token, and accepts only the
+  configured loopback TrueForge Origin.
+- All seven argument schemas reject unknown top-level fields. Public requests cannot supply
+  XML, file paths, URLs, seeds, timesteps, hidden targets, or controller/test replacements.
+- Public errors are bounded and sanitized. The private fixture, raw hidden scenarios, host paths,
+  and upstream exceptions are not tool results.
+- `verify_revision` exposes public `1/1`, hidden `n/3`, violated public clause IDs, and the bound
+  ticket. It does not expose hidden targets or individual hidden traces.
+- The AgentSpec uses high reasoning effort, disables parallel tool calls, limits the run to 30
+  iterations, enables Sandbox file downloads and Large Tool Response, preloads the MCP, and
+  requires approval only for `publish_revision`.
+- The accepted demonstration stops at `tool.approval_required`. No `publish_revision` response,
+  domain invocation, publication receipt, bundle, or public artifact may exist at that point.
+  Do not approve the call during the submission run.
+- If hidden qualification is interrupted, the case fails closed. SC1 does not retry it; start a
+  fresh case for another evidence run.
+
+## Fresh local setup
 
 Requirements:
 
+- macOS with a working MuJoCo CGL renderer for the render gate
 - Node.js 22.14 or later
-- A model-provider API key
+- Python 3.12
+- `uv`
+- a saved OpenAI provider in the normal TrueForge standalone runtime with
+  `openai/gpt-5-4-mini` available
+- the existing saved `hackathon-starter` agent, which provisioning verifies but does not modify
 
-Install and start the pinned TrueForge version:
+From a fresh checkout of the SC1 branch:
 
 ```bash
-npm install
+npm ci
+uv sync --frozen
+```
+
+Do not commit provider keys, MCP bearer tokens, TrueForge's standalone database, or generated
+private runtime data. TrueForge's local state lives outside this repository under
+`~/Library/Application Support/trueforge/`.
+
+## Reproduce the verification suite
+
+Run the same dependency, upstream, TrueForge boundary, and repository checks used for the
+submission candidate:
+
+```bash
+npm ci
+uv sync --frozen
+uv run pytest tests/phase0/upstream -q
+uv run pytest tests/phase0/trueforge -q
+uv run pytest -q
+git diff --check
+```
+
+The Phase 0 TrueForge test exercises its original transport placeholder and historical measured
+boundary. The SC1 contract is the generic `run_experiment` flow implemented by the current
+domain, MCP, integration, and E2E parser tests. Neither Phase 0 nor a fully green local suite is a
+claim that the saved real model completed SC1.
+
+## Run the real one-prompt gate
+
+Start the pinned normal TrueForge runtime in one terminal:
+
+```bash
 npm run trueforge
 ```
 
-Open <http://localhost:8790>. In **Settings**, configure a model provider and connect only the MCP services and accounts you are authorized to use. Standalone mode stores its SQLite state outside this repository and uses the local sandbox fallback when supported.
+Keep it on `localhost:8790` with the saved provider configured. In a second terminal, run the
+developer evidence driver:
 
-The current local setup has been smoke-tested with:
+```bash
+uv run python scripts/run_sc1_e2e.py
+```
 
-- TrueForge 0.1.4
-- OpenAI model provider
-- Exa MCP connector
-- Local sandbox execution
-- Saved `hackathon-starter` agent
+The driver is expected to create an isolated fresh runtime root and bearer, start the SC1 MCP on
+`127.0.0.1:8712/mcp`, provision only the dedicated `asset-autopsy-sc1` agent and connector, and
+send exactly:
 
-Provider keys and personal data must not be added to this repository or shown in the demo video.
+> Autopsy compound-arm-01. Do not change its controller or tests. Qualify and publish the repaired asset.
 
-## Development workflow
+The gate passes only if the resulting raw TrueForge events prove all of the following before
+sanitization:
 
-Development uses ordinary Codex tasks and pull requests against `main`. The repository review
-rules—including current-head Codex/Qodo review, evidence-based finding triage, the independent
-No Comments final review, and the human-only merge decision—are defined in [`AGENTS.md`](AGENTS.md).
+1. The first public task fails.
+2. The model chooses competing hypotheses and at least two experiments.
+3. Both experiment traces are offloaded by Large Tool Response and read by Sandbox Python.
+4. The Sandbox emits compact evidence with 256 rows, the run ID, analyzed metric, finding, and
+   candidate attribute; each of two revisions cites its matching analyzed run.
+5. Two immutable revisions change two different attributes, one attribute per revision.
+6. The final public task passes and its `BehaviorDiff` says `public_pass` with a real change.
+7. Qualification reports public `1/1` and hidden `3/3` without hidden details.
+8. One `publish_revision` request produces the matching approval-required event and no tool
+   response; the facade publish count and all publication/receipt/artifact counts remain zero.
+9. No bearer, private path, fixture XML, hidden target, or hidden trace leaked into the event or
+   Sandbox boundary.
 
-Linear remains the issue tracker and dependency source of truth. Start work only after the issue's
-prerequisite pull requests are merged into `main`, and keep each pull request scoped to one
-executable issue.
+Only a sanitized artifact that records the run ID hashes, tool order, Sandbox executions,
+approval event, zero-publication counters, and exact Git commit can support a PASS claim. If the
+driver or evidence artifact is absent, or any check fails, report SC1 as draft/blocked.
 
-## Participation checklist
-
-- [x] Complete the official hackathon registration form
-- [x] Start TrueForge locally
-- [x] Connect a model provider
-- [x] Connect a real MCP tool
-- [x] Verify sandbox execution
-- [x] Create an initial reusable agent
-- [x] Make this GitHub repository public
-- [x] Install the Qodo GitHub app on this repository before development PRs
-- [ ] Develop through pull requests and address Qodo findings before merge
-- [ ] Demonstrate a human approval pause before an irreversible action
-- [ ] Prepare a roughly three-minute demo video
-- [ ] Finish the public README and short project write-up
-- [ ] Submit by August 30, 2026 at 8:00 PM London time (August 31 at 4:00 AM JST)
-
-## Local data and secrets
-
-TrueForge standalone mode is intended for localhost development, not shared internet exposure. Its local state currently lives under `~/Library/Application Support/trueforge/`; it is deliberately not part of the repository.
+The three-minute walkthrough is in
+[`docs/sc1-demo-runbook.md`](docs/sc1-demo-runbook.md). Development and review rules, including
+current-head Codex/Qodo review and the human-only merge decision, remain in
+[`AGENTS.md`](AGENTS.md).
