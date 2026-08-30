@@ -2086,8 +2086,8 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
-            self._validate_case_lifecycle_from_connection(connection, case_id)
             if case["qualification_result"] is None:
+                self._validate_case_lifecycle_from_connection(connection, case_id)
                 return None
             state = case["qualification_result"]
             case_commitments = self._stored_commitment_payload(case)
