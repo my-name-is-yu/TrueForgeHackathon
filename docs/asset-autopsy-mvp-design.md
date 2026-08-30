@@ -123,7 +123,7 @@ flowchart LR
 - Seven TrueForge-visible domain tools.
 - A behavior-contract schema for reach-and-hold.
 - Hypothesis, competing explanation, prediction, and falsifier preregistration.
-- Two safe experiment kinds: joint pulse and pose hold.
+- Experiments use a bounded generic segment contract; the public API has no named compatibility recipes.
 - Copy-on-write, single-attribute MJCF revisions.
 - A strict adapter that normalizes unsafe or ambiguous upstream responses.
 - Same-condition BehaviorDiff and contract qualification.
@@ -410,7 +410,7 @@ Output includes:
 - at most four selected images when rendering is available;
 - automatic same-condition BehaviorDiff against the direct parent when one exists.
 
-The agent cannot choose the target, controller, seed, timestep, or initial state.
+The agent cannot choose a hidden target, seed, timestep, XML, path, or URL. The experiment starts from all hinge initial positions named exactly once in the public contract, with every qvel set to zero.
 
 ### 10.4 run_experiment
 
@@ -440,38 +440,24 @@ Input shape:
     }
   },
   "experiment":{
-    "kind":"joint_pulse",
-    "parameters":{
-      "joint_name":"elbow",
-      "direction":1,
-      "amplitude_rad":0.15,
-      "duration_s":0.3,
-      "observe_body":"end_effector"
-    }
+    "initial_state":{"hinge_positions":{"joint_a":0.0,"joint_b":0.0},"qvel":0.0},
+    "segments":[
+      {"steps":256,"controls":{"motor_a":0.1,"motor_b":-0.1}}
+    ],
+    "observables":["qpos","qvel","energy",{"body_position":"end_effector"}],
+    "snapshot":true
   },
   "capture":"analysis_trace"
 }
 ~~~
 
-Supported experiment kinds:
+The generic contract permits 1–16 constant-control segments. Each segment names every position actuator exactly once and each value is bounded by its advertised `control_range`; total execution is 256–100000 steps and remains within the existing 2000000-scalar budget. It permits 1–8 unique observables: `qpos`, `qvel`, `energy`, `contact_count`, and `body_position(name)`. A final 160x120 snapshot is optional. Site timeseries are not supported.
 
-- joint_pulse: fixed initial state, a bounded control segment, then a recovery segment;
-- pose_hold: a ringdown experiment from a fixed offset pose into the public hold target, returning peak times, peak amplitudes, decay ratio, oscillation period, and the velocity envelope.
-
-The generic contract is deliberately bounded: `kind` must be one of the advertised kinds, `parameters` must contain only the fields for that kind, and the server enforces fixture-owned joints/bodies, finite numeric ranges, fixed initial and recovery behavior, and an experiment-duration budget. It does not accept arbitrary controls, targets, seeds, XML, paths, URLs, or an engine operation name. The old Phase 0 `run_probe` call was a placeholder transport selector and is historical evidence only; it is not retained as a compatibility alias.
+`hypothesis.prediction` and `hypothesis.falsifier` are SafeText interpreted by the TrueForge sandbox. The tool returns no predicate-matched booleans. It returns condition and execution hashes, segment boundaries, and exactly 256 uniformly resampled rows. qpos, qvel, energy, and body position use linear interpolation; control and contact count use zero-order hold.
 
 The server first commits HYPOTHESIS_RECORDED, then calls the engine. If execution fails, the preregistration remains and an EXPERIMENT_FAILED event follows.
 
-Output reports only observations and whether the agent's own predicates matched:
-
-- prediction_matched;
-- falsifier_triggered;
-- inconclusive;
-- conflicting.
-
-It never returns hypothesis_supported, axis_error_deg, damping_too_low, or another diagnosed cause.
-
-With capture=analysis_trace, the response contains 256 uniformly sampled rows of time, qpos, qvel, known control, and end-effector XYZ. TrueForge Large Tool Response stores the exact JSON in its sandbox tool-results directory; the agent can analyze that file with Python after the direct tool call. The facade still computes fixed contract metrics for enforcement, but causal interpretation remains with the agent.
+It never returns hypothesis_supported, axis_error_deg, damping_too_low, predicate-matched booleans, or another diagnosed cause. TrueForge Large Tool Response stores the exact JSON in its sandbox tool-results directory; the agent can analyze that file with Python after the direct tool call. Fixed public conditions and automatic BehaviorDiff belong only to `run_task`.
 
 ### 10.5 create_revision
 
@@ -680,7 +666,7 @@ fresh load -> reset -> set state
   -> attach the known, content-hashed control value to every sample
 ~~~
 
-reach-and-hold uses one constant position setpoint. joint_pulse uses pulse then neutral recovery. pose_hold/ringdown uses a fixed offset initial state followed by one constant hold target. Arbitrary control schedules and wall-clock controller helpers are outside the MVP.
+Experiments use constant control within each requested segment. Initial hinge positions, actuator ranges, segment count, step limits, observable count, and scalar budget are public bounded contract fields; arbitrary targets, seeds, timesteps, paths, XML, URLs, and site timeseries remain outside the MVP.
 
 The facade rejects over-limit step counts before calling upstream and verifies that every returned segment length equals the requested value; it never relies on upstream's silent clamp.
 
@@ -1054,7 +1040,7 @@ Kill gate: if the staged symptom progression is not stable, simplify fixture phy
 
 - Child lifecycle, sanitized environment, schema preflight.
 - Constant-segment runner, response normalization, and poisoned-slot handling.
-- joint_pulse and pose_hold/ringdown.
+- the bounded generic experiment segment contract.
 - Strict schemas for seven tools.
 - Four SQLite tables, hash-named artifacts, and event hash chain.
 - Hypothesis-before-probe transaction ordering.

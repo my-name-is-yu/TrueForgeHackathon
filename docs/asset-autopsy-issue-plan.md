@@ -172,7 +172,7 @@ The graph is acyclic. AA-07 and AA-08 deliberately have three direct blockers ea
 
 ## 7. Ownership and integration rules
 
-- One issue owns one branch and one PR, always based on current `main`. Stacked PRs are not part of this workflow.
+- Ordinary work uses one issue per branch and PR based on current `main`. The explicitly approved SC1 exception is the named stack `main -> direction -> PR #15 -> PR #13 -> PR #14 -> final PR`; each stacked slice must be base-aware and the aggregate must be reviewed against `main`.
 - Dependency ownership is a serial Phase 0 handoff: AA-00A creates the initial `pyproject.toml` and `uv.lock`; after AA-00A merges, AA-00B exclusively owns those two files while closing the real TrueForge seam. AA-00B must preserve AA-00A's direct upstream pins and rerun the upstream 4/4 suite under the final lockfile. The dependency files freeze only after that regression and AA-00B's 5/5 gate pass and merge. Every later dependency change is a blocker, not an opportunistic edit.
 - `tests/conftest.py` belongs only to AA-00A. AA-00B keeps its helpers inside `tests/phase0/trueforge/**`.
 - AA-00A and AA-00B have disjoint spike, test, and evidence directories.
@@ -554,7 +554,7 @@ Acceptance:
 - [ ] A pre-provisioned case missing any required commitment fails with a bounded typed precondition error rather than inventing or repairing identity
 - [ ] Probe without a baseline is rejected
 - [ ] Hypothesis, alternative, prediction, and falsifier are committed before engine execution
-- [ ] Output contains observations and predicate matches, not a root-cause diagnosis
+- [ ] Output contains condition/execution hashes, segment boundaries, and resampled observations but no predicate-matched booleans or root-cause diagnosis
 - [ ] Cited probe completed on the same base revision
 - [ ] Patch target appears in the cited hypothesis or alternative
 - [ ] Only the current linear head may be patched
