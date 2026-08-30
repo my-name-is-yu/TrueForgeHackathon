@@ -99,11 +99,13 @@ class _FakeSession:
         block_on_initialize: bool = False,
         render_is_error: bool = False,
         invalid_render_png: bool = False,
+        block_on_render: bool = False,
         timestamp_mode: str | None = None,
         boundary_mode: str | None = None,
         wrong_load_name: bool = False,
         invalid_load_metadata: str | None = None,
         negative_contacts: bool = False,
+        invalid_body_xpos: str | None = None,
         nested_final_energy: bool = False,
         reset_time: float = 0.0,
         set_state_time: float | None = None,
@@ -124,11 +126,13 @@ class _FakeSession:
         self.block_on_initialize = block_on_initialize
         self.render_is_error = render_is_error
         self.invalid_render_png = invalid_render_png
+        self.block_on_render = block_on_render
         self.timestamp_mode = timestamp_mode
         self.boundary_mode = boundary_mode
         self.wrong_load_name = wrong_load_name
         self.invalid_load_metadata = invalid_load_metadata
         self.negative_contacts = negative_contacts
+        self.invalid_body_xpos = invalid_body_xpos
         self.nested_final_energy = nested_final_energy
         self.reset_time = reset_time
         self.set_state_time = set_state_time
@@ -163,7 +167,9 @@ class _FakeSession:
             ]
         )
 
-    async def call_tool(self, name: str, *, arguments: dict[str, object]) -> SimpleNamespace:
+    async def call_tool(
+        self, name: str, *, arguments: dict[str, object]
+    ) -> SimpleNamespace:
         self.calls.append((name, arguments))
         if name == self.oversized_response_tool:
             return SimpleNamespace(
@@ -228,7 +234,9 @@ class _FakeSession:
             current_time = self.current_times.get(sim_name, 0.0)
             qpos = [0.0] if self.wrong_width_run else [0.0] * self.nq
             qvel = [0.0] if self.wrong_width_run else [0.0] * self.nv
-            timestamps = [current_time + self.timestep * (index + 1) for index in range(steps)]
+            timestamps = [
+                current_time + self.timestep * (index + 1) for index in range(steps)
+            ]
             if self.timestamp_mode == "duplicate" and len(timestamps) >= 2:
                 timestamps[1] = timestamps[0]
             elif self.timestamp_mode == "reversed":
@@ -243,13 +251,27 @@ class _FakeSession:
                 elif self.boundary_mode == "late":
                     timestamps[0] += self.timestep * 9e-6
             rows = []
+            track = cast(list[str], arguments["track"])
             for timestamp in timestamps:
                 row = {
                     "t": timestamp,
                     "E_pot": 0.0,
                     "E_kin": 0.0,
-                    "ncon": -1 if self.negative_contacts else 0,
                 }
+                if "contact_count" in track:
+                    row["ncon"] = -1 if self.negative_contacts else 0
+                for selection in track:
+                    if selection.startswith("body_xpos:"):
+                        if self.invalid_body_xpos == "missing":
+                            continue
+                        body_xpos: object = [0.0, 0.0, 0.0]
+                        if self.invalid_body_xpos == "wrong_width":
+                            body_xpos = [0.0, 0.0]
+                        elif self.invalid_body_xpos == "nested":
+                            body_xpos = [[0.0], [0.0], [0.0]]
+                        elif self.invalid_body_xpos == "nonfinite":
+                            body_xpos = [0.0, 0.0, float("inf")]
+                        row[selection] = body_xpos
                 if not self.incomplete_run:
                     row.update({"qpos": qpos, "qvel": qvel})
                 rows.append(row)
@@ -257,8 +279,12 @@ class _FakeSession:
             self.current_times[sim_name] = timestamps[-1]
             if self.timestamp_mode == "inconsistent":
                 sim_time[1] += 0.002
-            final_qpos = [1.0] * self.nq if self.final_state_mismatch == "qpos" else qpos
-            final_qvel = [1.0] * self.nv if self.final_state_mismatch == "qvel" else qvel
+            final_qpos = (
+                [1.0] * self.nq if self.final_state_mismatch == "qpos" else qpos
+            )
+            final_qvel = (
+                [1.0] * self.nv if self.final_state_mismatch == "qvel" else qvel
+            )
             final_energy = (
                 [1.0, 0.0]
                 if self.final_state_mismatch == "energy"
@@ -283,6 +309,9 @@ class _FakeSession:
                 }
             )
         if name == "render_snapshot":
+            if self.block_on_render:
+                self.run_started.set()
+                await asyncio.Event().wait()
             if self.invalid_render_png:
                 return SimpleNamespace(
                     isError=False,
@@ -313,11 +342,13 @@ def _fake_client(
     block_on_initialize: bool = False,
     render_is_error: bool = False,
     invalid_render_png: bool = False,
+    block_on_render: bool = False,
     timestamp_mode: str | None = None,
     boundary_mode: str | None = None,
     wrong_load_name: bool = False,
     invalid_load_metadata: str | None = None,
     negative_contacts: bool = False,
+    invalid_body_xpos: str | None = None,
     nested_final_energy: bool = False,
     reset_time: float = 0.0,
     set_state_time: float | None = None,
@@ -344,11 +375,13 @@ def _fake_client(
             block_on_initialize=block_on_initialize,
             render_is_error=render_is_error,
             invalid_render_png=invalid_render_png,
+            block_on_render=block_on_render,
             timestamp_mode=timestamp_mode,
             boundary_mode=boundary_mode,
             wrong_load_name=wrong_load_name,
             invalid_load_metadata=invalid_load_metadata,
             negative_contacts=negative_contacts,
+            invalid_body_xpos=invalid_body_xpos,
             nested_final_energy=nested_final_energy,
             reset_time=reset_time,
             set_state_time=set_state_time,
@@ -458,12 +491,15 @@ def test_runner_configuration_requires_constant_bounded_segments() -> None:
             xml_string="<mujoco/>",
             segments=tuple(ConstantSegment((), 1) for _ in range(100_001)),
         )
-    assert len(
-        RunConfiguration(
-            xml_string="<mujoco/>",
-            segments=tuple(ConstantSegment((), 1) for _ in range(MAX_SEGMENTS)),
-        ).segments
-    ) == MAX_SEGMENTS
+    assert (
+        len(
+            RunConfiguration(
+                xml_string="<mujoco/>",
+                segments=tuple(ConstantSegment((), 1) for _ in range(MAX_SEGMENTS)),
+            ).segments
+        )
+        == MAX_SEGMENTS
+    )
     with pytest.raises(ValueError, match="segments exceeds its bounded size"):
         RunConfiguration(
             xml_string="<mujoco/>",
@@ -489,6 +525,26 @@ def test_runner_configuration_requires_constant_bounded_segments() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "track",
+    (
+        ("body_xpos:",),
+        ("sensor:force",),
+        ("contact_count", "contact_count"),
+        (1,),
+    ),
+)
+def test_runner_configuration_rejects_unsupported_or_malformed_track(
+    track: tuple[Any, ...],
+) -> None:
+    with pytest.raises(ValueError):
+        RunConfiguration(
+            xml_string="<mujoco/>",
+            segments=(ConstantSegment((), 1),),
+            track=cast(Any, track),
+        )
+
+
 def test_client_uses_only_xml_string_and_poisoned_slots_cannot_be_reused() -> None:
     async def check() -> None:
         transport, make_session, get_session = _fake_client()
@@ -498,7 +554,7 @@ def test_client_uses_only_xml_string_and_poisoned_slots_cannot_be_reused() -> No
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            xml = "<mujoco model=\"synthetic\"/>"
+            xml = '<mujoco model="synthetic"/>'
             slot = await client.load(xml)
             await client.reset(slot)
             await client.set_state(slot)
@@ -516,6 +572,98 @@ def test_client_uses_only_xml_string_and_poisoned_slots_cannot_be_reused() -> No
     asyncio.run(check())
 
 
+def test_runner_tracks_contact_count_and_body_position_across_segments() -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client()
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        record = await DeterministicRunner(
+            PinnedMujocoClient(
+                transport_factory=lambda _parameters: transport,
+                session_factory=make_session,
+            )
+        ).run(
+            RunConfiguration(
+                xml_string='<mujoco model="synthetic"/>',
+                segments=(ConstantSegment((), 2), ConstantSegment((), 1)),
+                track=("contact_count", "body_xpos:world"),
+            )
+        )
+
+        rows = [row for segment in record.segments for row in segment.timeseries]
+        assert [row["t"] for row in rows] == [0.002, 0.004, 0.006]
+        assert [row["ncon"] for row in rows] == [0, 0, 0]
+        assert [row["body_xpos:world"] for row in rows] == [
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+        ]
+        run_calls = [
+            arguments
+            for name, arguments in get_session().calls
+            if name == "run_and_analyze"
+        ]
+        assert [call["track"] for call in run_calls] == [
+            ["qpos", "qvel", "energy", "contact_count", "body_xpos:world"],
+            ["qpos", "qvel", "energy", "contact_count", "body_xpos:world"],
+        ]
+
+    asyncio.run(check())
+
+
+def test_unknown_body_track_is_rejected_before_upstream_run() -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client()
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load('<mujoco model="synthetic"/>')
+            with pytest.raises(ValueError, match="loaded model"):
+                await client.run_segment(
+                    slot,
+                    ctrl=[],
+                    n_steps=1,
+                    track=("body_xpos:missing",),
+                )
+            assert slot.state is SlotState.READY
+            assert [name for name, _arguments in get_session().calls] == ["sim_load"]
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "invalid_body_xpos", ("missing", "wrong_width", "nested", "nonfinite")
+)
+def test_body_position_response_requires_three_finite_scalars(
+    invalid_body_xpos: str,
+) -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(
+            invalid_body_xpos=invalid_body_xpos
+        )
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load('<mujoco model="synthetic"/>')
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.run_segment(
+                    slot,
+                    ctrl=[],
+                    n_steps=1,
+                    track=("body_xpos:world",),
+                )
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
 def test_load_rejects_response_for_a_different_simulation_name() -> None:
     async def check() -> None:
         transport, make_session, _get_session = _fake_client(wrong_load_name=True)
@@ -526,7 +674,7 @@ def test_load_rejects_response_for_a_different_simulation_name() -> None:
             session_factory=make_session,
         ) as client:
             with pytest.raises(UpstreamToolError) as caught:
-                await client.load("<mujoco model=\"synthetic\"/>")
+                await client.load('<mujoco model="synthetic"/>')
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
             assert client._slots[0].state is SlotState.POISONED
 
@@ -545,7 +693,7 @@ def test_timeout_terminates_child_and_poisoned_slot() -> None:
             session_factory=make_session,
         )
         async with client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(UpstreamToolError) as caught:
                 await client.reset(slot)
             assert caught.value.code == UPSTREAM_TIMEOUT
@@ -569,7 +717,7 @@ def test_reset_rejects_nonzero_upstream_clock() -> None:
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(UpstreamToolError) as caught:
                 await client.reset(slot)
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
@@ -587,7 +735,7 @@ def test_set_state_requires_the_slot_current_clock() -> None:
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             await client.reset(slot)
             with pytest.raises(UpstreamToolError) as caught:
                 await client.set_state(slot)
@@ -606,7 +754,7 @@ def test_set_state_accepts_the_clock_after_a_segment() -> None:
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             await client.reset(slot)
             await client.run_segment(slot, ctrl=[], n_steps=1)
             await client.set_state(slot)
@@ -635,7 +783,7 @@ def test_run_response_requires_requested_signals_and_model_widths() -> None:
                 transport_factory=lambda _parameters: transport,
                 session_factory=make_session,
             ) as client:
-                slot = await client.load("<mujoco model=\"synthetic\"/>")
+                slot = await client.load('<mujoco model="synthetic"/>')
                 with pytest.raises(UpstreamToolError) as caught:
                     await client.run_segment(slot, ctrl=[], n_steps=1)
                 assert caught.value.code == UPSTREAM_BAD_RESPONSE
@@ -658,7 +806,7 @@ def test_run_response_is_bounded_before_json_decoding(
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             monkeypatch.setattr(
                 "asset_autopsy.mujoco_client.json.loads",
                 lambda _text: pytest.fail("oversized response reached json.loads"),
@@ -687,7 +835,7 @@ def test_small_json_responses_are_bounded_before_decoding(
         ) as client:
             slot = None
             if tool_name != "sim_load":
-                slot = await client.load("<mujoco model=\"synthetic\"/>")
+                slot = await client.load('<mujoco model="synthetic"/>')
                 get_session().oversized_response_tool = tool_name
             monkeypatch.setattr(
                 "asset_autopsy.mujoco_client.json.loads",
@@ -695,7 +843,7 @@ def test_small_json_responses_are_bounded_before_decoding(
             )
             with pytest.raises(UpstreamToolError) as caught:
                 if tool_name == "sim_load":
-                    await client.load("<mujoco model=\"synthetic\"/>")
+                    await client.load('<mujoco model="synthetic"/>')
                 elif tool_name == "sim_reset":
                     await client.reset(slot)
                 else:
@@ -720,9 +868,14 @@ def test_run_response_requires_final_state_to_match_last_sample(mismatch: str) -
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(UpstreamToolError) as caught:
-                await client.run_segment(slot, ctrl=[], n_steps=1)
+                await client.run_segment(
+                    slot,
+                    ctrl=[],
+                    n_steps=1,
+                    track=("contact_count",) if mismatch == "contacts" else (),
+                )
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
             assert slot.state is SlotState.POISONED
 
@@ -732,16 +885,20 @@ def test_run_response_requires_final_state_to_match_last_sample(mismatch: str) -
 @pytest.mark.parametrize(
     "timestamp_mode", ("duplicate", "reversed", "inconsistent", "wrong_interval")
 )
-def test_run_response_requires_monotonic_consistent_timestamps(timestamp_mode: str) -> None:
+def test_run_response_requires_monotonic_consistent_timestamps(
+    timestamp_mode: str,
+) -> None:
     async def check() -> None:
-        transport, make_session, _get_session = _fake_client(timestamp_mode=timestamp_mode)
+        transport, make_session, _get_session = _fake_client(
+            timestamp_mode=timestamp_mode
+        )
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
         async with PinnedMujocoClient(
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(UpstreamToolError) as caught:
                 await client.run_segment(slot, ctrl=[], n_steps=3)
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
@@ -761,7 +918,7 @@ def test_run_response_interval_tolerance_scales_to_tiny_timesteps() -> None:
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(UpstreamToolError) as caught:
                 await client.run_segment(slot, ctrl=[], n_steps=3)
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
@@ -779,7 +936,7 @@ def test_direct_run_rejects_a_trace_disconnected_from_the_slot_clock() -> None:
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             await client.run_segment(slot, ctrl=[], n_steps=1)
             with pytest.raises(UpstreamToolError) as caught:
                 await client.run_segment(slot, ctrl=[], n_steps=1)
@@ -792,7 +949,9 @@ def test_direct_run_rejects_a_trace_disconnected_from_the_slot_clock() -> None:
 @pytest.mark.parametrize("boundary_mode", ("duplicate", "backward"))
 def test_runner_rejects_noncontiguous_segment_boundaries(boundary_mode: str) -> None:
     async def check() -> None:
-        transport, make_session, _get_session = _fake_client(boundary_mode=boundary_mode)
+        transport, make_session, _get_session = _fake_client(
+            boundary_mode=boundary_mode
+        )
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
         client = PinnedMujocoClient(
@@ -803,7 +962,7 @@ def test_runner_rejects_noncontiguous_segment_boundaries(boundary_mode: str) -> 
             with pytest.raises(UpstreamToolError) as caught:
                 await DeterministicRunner(client).run(
                     RunConfiguration(
-                        xml_string="<mujoco model=\"synthetic\"/>",
+                        xml_string='<mujoco model="synthetic"/>',
                         segments=(
                             ConstantSegment((), 1, "first"),
                             ConstantSegment((), 1, "second"),
@@ -865,14 +1024,16 @@ def test_load_rejects_impossible_metadata(invalid_load_metadata: str) -> None:
             session_factory=make_session,
         ) as client:
             with pytest.raises(UpstreamToolError) as caught:
-                await client.load("<mujoco model=\"synthetic\"/>")
+                await client.load('<mujoco model="synthetic"/>')
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
             assert client._slots[-1].state is SlotState.POISONED
 
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("timeout_name", ("call_timeout", "render_timeout", "startup_timeout"))
+@pytest.mark.parametrize(
+    "timeout_name", ("call_timeout", "render_timeout", "startup_timeout")
+)
 @pytest.mark.parametrize("timeout_value", (float("nan"), float("inf"), 0.0, -1.0))
 def test_client_rejects_nonfinite_or_nonpositive_timeouts(
     timeout_name: str, timeout_value: float
@@ -898,7 +1059,7 @@ def test_render_failure_returns_one_numeric_only_fallback() -> None:
             )
         ).run(
             RunConfiguration(
-                xml_string="<mujoco model=\"synthetic\"/>",
+                xml_string='<mujoco model="synthetic"/>',
                 segments=(ConstantSegment((0.25,), 2, "numeric"),),
                 render=True,
             )
@@ -910,6 +1071,37 @@ def test_render_failure_returns_one_numeric_only_fallback() -> None:
         assert record.segments[0].ctrl == (0.25,)
         assert record.as_dict()["segments"][0]["ctrl"] == [0.25]
         assert record.as_dict()["segments"][0]["timeseries"][0]["ctrl"] == [0.25]
+
+    asyncio.run(run())
+
+
+def test_render_cancellation_is_not_converted_to_numeric_fallback() -> None:
+    async def run() -> None:
+        transport, make_session, get_session = _fake_client(block_on_render=True)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        task = asyncio.create_task(
+            DeterministicRunner(
+                PinnedMujocoClient(
+                    transport_factory=lambda _parameters: transport,
+                    session_factory=make_session,
+                )
+            ).run(
+                RunConfiguration(
+                    xml_string='<mujoco model="synthetic"/>',
+                    segments=(ConstantSegment((), 1),),
+                    render=True,
+                )
+            )
+        )
+        while get_session() is None:
+            await asyncio.sleep(0)
+        await get_session().run_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert transport.closed is True
+        assert get_session().closed is True
 
     asyncio.run(run())
 
@@ -926,7 +1118,7 @@ def test_render_error_flag_uses_bounded_typed_error_path() -> None:
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(UpstreamToolError) as caught:
                 await client.render(slot)
             assert caught.value.code == UPSTREAM_UNAVAILABLE
@@ -957,7 +1149,7 @@ def test_run_records_are_immutable_but_as_dict_is_independent() -> None:
             )
         ).run(
             RunConfiguration(
-                xml_string="<mujoco model=\"synthetic\"/>",
+                xml_string='<mujoco model="synthetic"/>',
                 segments=(ConstantSegment((0.25,), 1, "numeric"),),
             )
         )
@@ -994,7 +1186,7 @@ def test_cancelled_upstream_call_poisoned_slot_and_closes_child() -> None:
             session_factory=make_session,
         )
         async with client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             task = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
             await get_session().run_started.wait()
             task.cancel()
@@ -1024,7 +1216,7 @@ def test_cancelled_upstream_call_preserves_cancellation_when_cleanup_fails() -> 
             session_factory=make_session,
         )
         async with client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             task = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
             assert session is not None
             await session.run_started.wait()
@@ -1055,7 +1247,7 @@ def test_timeout_preserves_timeout_code_when_cleanup_fails() -> None:
             session_factory=make_session,
         )
         async with client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(UpstreamToolError) as caught:
                 await client.reset(slot)
             assert caught.value.code == UPSTREAM_TIMEOUT
@@ -1078,12 +1270,21 @@ def test_real_client_runner_returns_requested_steps() -> None:
         record = await DeterministicRunner(PinnedMujocoClient(no_render=True)).run(
             RunConfiguration(
                 xml_string=xml,
-                segments=(ConstantSegment((), 2, "first"), ConstantSegment((), 3, "second")),
+                segments=(
+                    ConstantSegment((), 2, "first"),
+                    ConstantSegment((), 3, "second"),
+                ),
+                track=("contact_count", "body_xpos:world"),
             )
         )
         assert record.step_count == 5
         assert [segment.step_count for segment in record.segments] == [2, 3]
         assert record.numeric_only is True
+        assert all(
+            row["ncon"] >= 0 and len(row["body_xpos:world"]) == 3
+            for segment in record.segments
+            for row in segment.timeseries
+        )
 
     asyncio.run(run())
 
@@ -1098,7 +1299,9 @@ def test_step_mismatch_error_is_typed() -> None:
     assert error.envelope()["code"] == UPSTREAM_STEP_MISMATCH
 
 
-def test_render_payload_accepts_only_observed_profile_and_bounds_data(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_payload_accepts_only_observed_profile_and_bounds_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from asset_autopsy.mujoco_client import _render_png
 
     png = _png_bytes()
@@ -1122,9 +1325,7 @@ def test_render_payload_accepts_only_observed_profile_and_bounds_data(monkeypatc
     metadata = PngImagePlugin.PngInfo()
     metadata.add_text("private", "private host path")
     metadata_output = BytesIO()
-    Image.new("RGB", (160, 120)).save(
-        metadata_output, format="PNG", pnginfo=metadata
-    )
+    Image.new("RGB", (160, 120)).save(metadata_output, format="PNG", pnginfo=metadata)
     result.content[0].data = base64.b64encode(metadata_output.getvalue()).decode()
     clean_png = _render_png(result, width=160, height=120)
     assert b"private host path" not in clean_png
@@ -1224,7 +1425,7 @@ def test_concurrent_first_runner_startup_shares_lifecycle_without_early_close() 
         )
         runner = DeterministicRunner(client)
         configuration = RunConfiguration(
-            xml_string="<mujoco model=\"synthetic\"/>",
+            xml_string='<mujoco model="synthetic"/>',
             segments=(ConstantSegment((), 1),),
         )
         first, second = await asyncio.gather(
@@ -1283,7 +1484,7 @@ def test_concurrent_calls_on_one_slot_are_serialized(second_operation: str) -> N
             transport_factory=lambda _parameters: _FakeTransport(),
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             first = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
             await first_started.wait()
             second = asyncio.create_task(
@@ -1340,8 +1541,8 @@ def test_queue_wait_between_slots_does_not_consume_call_timeout() -> None:
             transport_factory=lambda _parameters: _FakeTransport(),
             session_factory=QueueSession,
         ) as client:
-            first_slot = await client.load("<mujoco model=\"first\"/>")
-            second_slot = await client.load("<mujoco model=\"second\"/>")
+            first_slot = await client.load('<mujoco model="first"/>')
+            second_slot = await client.load('<mujoco model="second"/>')
             render = asyncio.create_task(client.render(first_slot))
             await render_started.wait()
             reset = asyncio.create_task(client.reset(second_slot))
@@ -1517,7 +1718,7 @@ def test_old_session_failure_does_not_close_the_restarted_child() -> None:
             session_factory=make_session,
         )
         await client.__aenter__()
-        slot = await client.load("<mujoco model=\"synthetic\"/>")
+        slot = await client.load('<mujoco model="synthetic"/>')
         old_call = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
         await failure_started.wait()
         await client._shutdown_child()
@@ -1545,7 +1746,7 @@ def test_queued_load_cannot_cross_into_a_restarted_session() -> None:
         )
         await client.__aenter__()
         await client._operation_lock.acquire()
-        queued = asyncio.create_task(client.load("<mujoco model=\"queued\"/>"))
+        queued = asyncio.create_task(client.load('<mujoco model="queued"/>'))
         while not client._slots:
             await asyncio.sleep(0)
         stale_slot = client._slots[-1]
@@ -1637,7 +1838,7 @@ def test_foreign_and_restarted_slots_are_rejected() -> None:
             session_factory=second_factory,
         )
         async with first, second:
-            slot = await first.load("<mujoco model=\"synthetic\"/>")
+            slot = await first.load('<mujoco model="synthetic"/>')
             with pytest.raises(UpstreamToolError) as foreign:
                 await second.reset(slot)
             assert foreign.value.code == "SLOT_POISONED"
@@ -1671,7 +1872,7 @@ def test_runner_rejects_initial_state_widths_before_set_state(
             session_factory=make_session,
         )
         configuration = RunConfiguration(
-            xml_string="<mujoco model=\"synthetic\"/>",
+            xml_string='<mujoco model="synthetic"/>',
             segments=(ConstantSegment((), 1),),
             **{field_name: value},
         )
@@ -1697,9 +1898,37 @@ def test_trace_budget_rejects_high_dimensional_run_before_upstream_call(
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(ValueError, match="bounded numeric record budget"):
                 await client.run_segment(slot, ctrl=[0.0] * nu, n_steps=n_steps)
+            assert [name for name, _arguments in get_session().calls] == ["sim_load"]
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "track",
+    (("contact_count",), ("body_xpos:world",)),
+)
+def test_dynamic_track_scalars_are_included_in_trace_budget(
+    track: tuple[str, ...],
+) -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client(nq=17)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load('<mujoco model="synthetic"/>')
+            with pytest.raises(ValueError, match="bounded numeric record budget"):
+                await client.run_segment(
+                    slot,
+                    ctrl=[],
+                    n_steps=100_000,
+                    track=track,
+                )
             assert [name for name, _arguments in get_session().calls] == ["sim_load"]
 
     asyncio.run(check())
@@ -1720,7 +1949,7 @@ def test_run_segment_rejects_invalid_control_before_upstream_call(
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(ValueError, match="ctrl must match"):
                 await client.run_segment(slot, ctrl=ctrl, n_steps=1)
             assert [name for name, _arguments in get_session().calls] == ["sim_load"]
@@ -1775,7 +2004,7 @@ def test_set_state_rejects_invalid_vectors_before_upstream_call(
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(ValueError, match="loaded model width"):
                 await client.set_state(slot, **{field_name: value})
             assert [name for name, _arguments in get_session().calls] == ["sim_load"]
@@ -1793,7 +2022,7 @@ def test_runner_enforces_trace_budget_across_all_segments() -> None:
             session_factory=make_session,
         )
         configuration = RunConfiguration(
-            xml_string="<mujoco model=\"synthetic\"/>",
+            xml_string='<mujoco model="synthetic"/>',
             segments=(ConstantSegment((), 10_000), ConstantSegment((), 10_000)),
         )
         with pytest.raises(ValueError, match="bounded numeric record budget"):
@@ -1812,9 +2041,11 @@ def test_run_response_rejects_negative_contact_counts() -> None:
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         ) as client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             with pytest.raises(UpstreamToolError) as caught:
-                await client.run_segment(slot, ctrl=[], n_steps=1)
+                await client.run_segment(
+                    slot, ctrl=[], n_steps=1, track=("contact_count",)
+                )
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
             assert slot.state is SlotState.POISONED
 
@@ -1836,7 +2067,7 @@ def test_segment_boundary_tolerance_does_not_grow_with_absolute_time() -> None:
                 )
             ).run(
                 RunConfiguration(
-                    xml_string="<mujoco model=\"synthetic\"/>",
+                    xml_string='<mujoco model="synthetic"/>',
                     segments=(ConstantSegment((), 11), ConstantSegment((), 1)),
                 )
             )
@@ -1855,7 +2086,7 @@ def test_shutdown_releases_slot_bookkeeping_without_retaining_xml() -> None:
             session_factory=make_session,
         )
         async with client:
-            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            slot = await client.load('<mujoco model="synthetic"/>')
             assert not hasattr(slot, "_xml_string")
             assert client._slots == [slot]
         assert client._slots == []

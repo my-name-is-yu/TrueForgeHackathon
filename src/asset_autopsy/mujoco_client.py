@@ -217,9 +217,7 @@ class SimulationSlot:
 
 def server_parameters(*, no_render: bool = False) -> StdioServerParameters:
     environment = {
-        key: os.environ[key]
-        for key in _INHERITED_ENVIRONMENT
-        if key in os.environ
+        key: os.environ[key] for key in _INHERITED_ENVIRONMENT if key in os.environ
     }
     environment.update(REQUIRED_ENVIRONMENT)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -378,7 +376,9 @@ def _numeric_tree(value: Any, depth: int = 0) -> bool:
         return False
     if _strict_float(value):
         return True
-    return isinstance(value, list) and all(_numeric_tree(item, depth + 1) for item in value)
+    return isinstance(value, list) and all(
+        _numeric_tree(item, depth + 1) for item in value
+    )
 
 
 def _matches_load(payload: dict[str, Any], *, expected_name: str | None = None) -> bool:
@@ -400,7 +400,9 @@ def _matches_load(payload: dict[str, Any], *, expected_name: str | None = None) 
     list_fields = {"bodies", "joints", "actuators", "sensors", "cameras"}
     if set(payload) != set(scalar_types) | list_fields:
         return False
-    if any(type(payload[name]) is not expected for name, expected in scalar_types.items()):
+    if any(
+        type(payload[name]) is not expected for name, expected in scalar_types.items()
+    ):
         return False
     if expected_name is not None and payload["name"] != expected_name:
         return False
@@ -408,24 +410,71 @@ def _matches_load(payload: dict[str, Any], *, expected_name: str | None = None) 
         return False
     if any(
         payload[name] < 0
-        for name in ("nq", "nv", "nu", "nbody", "ngeom", "njnt", "nsite", "nsensor", "ncam")
+        for name in (
+            "nq",
+            "nv",
+            "nu",
+            "nbody",
+            "ngeom",
+            "njnt",
+            "nsite",
+            "nsensor",
+            "ncam",
+        )
     ):
         return False
     if not _strict_float(payload["timestep"]) or payload["timestep"] <= 0:
         return False
     return all(
-        type(payload[name]) is list
-        and all(type(item) is str for item in payload[name])
+        type(payload[name]) is list and all(type(item) is str for item in payload[name])
         for name in list_fields
     )
 
 
 def _matches_status(payload: dict[str, Any], status: str) -> bool:
-    return set(payload) == {"status", "time"} and payload["status"] == status and _strict_float(payload["time"])
+    return (
+        set(payload) == {"status", "time"}
+        and payload["status"] == status
+        and _strict_float(payload["time"])
+    )
 
 
 def _numeric_vector(value: Any, width: int) -> bool:
-    return type(value) is list and len(value) == width and all(_strict_float(item) for item in value)
+    return (
+        type(value) is list
+        and len(value) == width
+        and all(_strict_float(item) for item in value)
+    )
+
+
+def _validate_track(track: tuple[str, ...], bodies: list[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    for selection in track:
+        if type(selection) is not str or selection in seen:
+            raise ValueError("track selections must be unique strings")
+        if selection == "contact_count":
+            pass
+        elif selection.startswith("body_xpos:"):
+            body_name = selection.partition(":")[2]
+            if not body_name or body_name not in bodies:
+                raise ValueError("body_xpos must name a body in the loaded model")
+        else:
+            raise ValueError("unsupported track selection")
+        seen.add(selection)
+    return track
+
+
+def _trace_scalars_per_step(
+    *, nq: int, nv: int, nu: int, track: tuple[str, ...]
+) -> int:
+    return (
+        nq
+        + nv
+        + nu
+        + 3
+        + (1 if "contact_count" in track else 0)
+        + 3 * sum(selection.startswith("body_xpos:") for selection in track)
+    )
 
 
 def _matches_run(
@@ -435,6 +484,7 @@ def _matches_run(
     qvel_width: int,
     timestep: float,
     expected_start: float,
+    track: tuple[str, ...],
 ) -> bool:
     if set(payload) != {"n_steps", "sim_time", "final_state", "timeseries"}:
         return False
@@ -464,19 +514,22 @@ def _matches_run(
     timeseries = payload["timeseries"]
     if type(timeseries) is not list or len(timeseries) > MAX_STEPS:
         return False
+    body_fields = {
+        selection for selection in track if selection.startswith("body_xpos:")
+    }
+    row_fields = {"t", "E_pot", "E_kin", "qpos", "qvel"} | body_fields
+    if "contact_count" in track:
+        row_fields.add("ncon")
     if not all(
         isinstance(row, dict)
-        and {"t", "E_pot", "E_kin", "qpos", "qvel"}.issubset(row)
-        and set(row).issubset({"t", "E_pot", "E_kin", "ncon", "qpos", "qvel"})
+        and set(row) == row_fields
         and _strict_float(row["t"])
         and _strict_float(row["E_pot"])
         and _strict_float(row["E_kin"])
-        and (
-            "ncon" not in row
-            or (type(row["ncon"]) is int and row["ncon"] >= 0)
-        )
+        and ("ncon" not in row or (type(row["ncon"]) is int and row["ncon"] >= 0))
         and _numeric_vector(row["qpos"], qpos_width)
         and _numeric_vector(row["qvel"], qvel_width)
+        and all(_numeric_vector(row[field], 3) for field in body_fields)
         for row in timeseries
     ):
         return False
@@ -491,7 +544,9 @@ def _matches_run(
     ):
         return False
     timestamps = [row["t"] for row in timeseries]
-    if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
+    if any(
+        current <= previous for previous, current in zip(timestamps, timestamps[1:])
+    ):
         return False
     sim_start, sim_end = payload["sim_time"]
     interval_tolerance = timestep * 1e-6
@@ -559,7 +614,11 @@ def _render_png(result: Any, *, width: int, height: int) -> bytes:
             break
     try:
         with Image.open(BytesIO(data)) as decoded:
-            if decoded.format != "PNG" or decoded.mode != "RGB" or decoded.size != (width, height):
+            if (
+                decoded.format != "PNG"
+                or decoded.mode != "RGB"
+                or decoded.size != (width, height)
+            ):
                 raise _bad_response("Upstream render response was invalid.")
             if width * height * 3 > MAX_RENDER_BYTES:
                 raise _bad_response("Upstream render response was too large.")
@@ -634,7 +693,9 @@ class PinnedMujocoClient:
                 timeout=self.startup_timeout,
             )
             await asyncio.wait_for(session.initialize(), timeout=self.startup_timeout)
-            tools = await asyncio.wait_for(session.list_tools(), timeout=self.startup_timeout)
+            tools = await asyncio.wait_for(
+                session.list_tools(), timeout=self.startup_timeout
+            )
             started.set_result((session, tools))
             await stop.wait()
         except asyncio.CancelledError:
@@ -679,7 +740,10 @@ class PinnedMujocoClient:
                         False,
                         "Install the pinned upstream dependency.",
                     ) from None
-                if any(actual.get(name) != REQUIRED_TOOL_SCHEMAS[name] for name in REQUIRED_TOOL_NAMES):
+                if any(
+                    actual.get(name) != REQUIRED_TOOL_SCHEMAS[name]
+                    for name in REQUIRED_TOOL_NAMES
+                ):
                     raise UpstreamToolError(
                         UPSTREAM_SCHEMA_DRIFT,
                         SAFE_SCHEMA_MESSAGE,
@@ -887,7 +951,11 @@ class PinnedMujocoClient:
                 ) from None
 
     async def load(self, xml_string: str) -> SimulationSlot:
-        if not isinstance(xml_string, str) or not xml_string or len(xml_string.encode("utf-8")) > MAX_XML_BYTES:
+        if (
+            not isinstance(xml_string, str)
+            or not xml_string
+            or len(xml_string.encode("utf-8")) > MAX_XML_BYTES
+        ):
             raise ValueError("xml_string is invalid")
         slot = self._new_slot(xml_string)
         try:
@@ -901,7 +969,9 @@ class PinnedMujocoClient:
                 lambda value: _matches_load(value, expected_name=slot._name),
                 max_text_chars=4096 + 4 * len(xml_string),
             )
-            slot.summary = {key: value for key, value in payload.items() if key != "name"}
+            slot.summary = {
+                key: value for key, value in payload.items() if key != "name"
+            }
         except UpstreamToolError:
             slot.state = SlotState.POISONED
             raise
@@ -914,8 +984,9 @@ class PinnedMujocoClient:
             try:
                 payload = normalize_json_result(
                     result,
-                    lambda payload: _matches_status(payload, "reset")
-                    and payload["time"] == 0.0,
+                    lambda payload: (
+                        _matches_status(payload, "reset") and payload["time"] == 0.0
+                    ),
                     max_text_chars=4096,
                 )
             except UpstreamToolError:
@@ -953,8 +1024,9 @@ class PinnedMujocoClient:
             try:
                 normalize_json_result(
                     result,
-                    lambda payload: _matches_status(payload, "ok")
-                    and payload["time"] == slot._time,
+                    lambda payload: (
+                        _matches_status(payload, "ok") and payload["time"] == slot._time
+                    ),
                     max_text_chars=4096,
                 )
             except UpstreamToolError:
@@ -967,18 +1039,29 @@ class PinnedMujocoClient:
         *,
         ctrl: list[float],
         n_steps: int,
+        track: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         async with slot._operation_lock:
             if type(n_steps) is not int or not 1 <= n_steps <= MAX_STEPS:
                 raise ValueError(f"n_steps must be between 1 and {MAX_STEPS}")
             self._require_ready_slot(slot)
             if not _numeric_vector(ctrl, slot.summary["nu"]):
-                raise ValueError("ctrl must match the loaded model width with finite values")
-            projected_scalars = n_steps * (
-                slot.summary["nq"] + slot.summary["nv"] + slot.summary["nu"] + 4
+                raise ValueError(
+                    "ctrl must match the loaded model width with finite values"
+                )
+            if type(track) is not tuple:
+                raise ValueError("track must be a tuple")
+            track = _validate_track(track, slot.summary["bodies"])
+            projected_scalars = n_steps * _trace_scalars_per_step(
+                nq=slot.summary["nq"],
+                nv=slot.summary["nv"],
+                nu=slot.summary["nu"],
+                track=track,
             )
             if projected_scalars > MAX_TRACE_SCALARS:
-                raise ValueError("requested trace exceeds the bounded numeric record budget")
+                raise ValueError(
+                    "requested trace exceeds the bounded numeric record budget"
+                )
             result = await self._invoke(
                 slot,
                 "run_and_analyze",
@@ -987,7 +1070,7 @@ class PinnedMujocoClient:
                     "ctrl": list(ctrl),
                     "n_steps": n_steps,
                     "capture_every_n": 0,
-                    "track": ["qpos", "qvel", "energy"],
+                    "track": ["qpos", "qvel", "energy", *track],
                 },
             )
             try:
@@ -999,10 +1082,21 @@ class PinnedMujocoClient:
                         qvel_width=slot.summary["nv"],
                         timestep=slot.summary["timestep"],
                         expected_start=slot._time + slot.summary["timestep"],
+                        track=track,
                     ),
                     max_text_chars=4096
                     + n_steps
-                    * (512 + 64 * (slot.summary["nq"] + slot.summary["nv"])),
+                    * (
+                        512
+                        + 64
+                        * _trace_scalars_per_step(
+                            nq=slot.summary["nq"],
+                            nv=slot.summary["nv"],
+                            nu=0,
+                            track=track,
+                        )
+                        + sum(len(selection) + 16 for selection in track)
+                    ),
                 )
             except UpstreamToolError:
                 slot.state = SlotState.POISONED

@@ -19,6 +19,7 @@ from .mujoco_client import (
     UPSTREAM_TIMEOUT,
     UPSTREAM_UNAVAILABLE,
     UpstreamToolError,
+    _trace_scalars_per_step,
 )
 
 MAX_TOTAL_STEPS = MAX_STEPS
@@ -99,6 +100,7 @@ class RunConfiguration:
     initial_qpos: tuple[float, ...] = ()
     initial_qvel: tuple[float, ...] = ()
     initial_ctrl: tuple[float, ...] | None = None
+    track: tuple[str, ...] = ()
     render: bool = False
     render_width: int = 160
     render_height: int = 120
@@ -137,6 +139,11 @@ class RunConfiguration:
                     name="initial_ctrl",
                 ),
             )
+        object.__setattr__(
+            self,
+            "track",
+            _bounded_tuple(self.track, limit=MAX_TRACE_SCALARS, name="track"),
+        )
         if not isinstance(self.xml_string, str) or not self.xml_string:
             raise ValueError("xml_string is required")
         if not self.segments:
@@ -145,8 +152,19 @@ class RunConfiguration:
             raise ValueError(f"total steps must not exceed {MAX_TOTAL_STEPS}")
         if not all(_number(value) for value in self.initial_qpos + self.initial_qvel):
             raise ValueError("initial state must contain finite numbers")
-        if self.initial_ctrl is not None and not all(_number(value) for value in self.initial_ctrl):
+        if self.initial_ctrl is not None and not all(
+            _number(value) for value in self.initial_ctrl
+        ):
             raise ValueError("initial control must contain finite numbers")
+        seen: set[str] = set()
+        for selection in self.track:
+            if type(selection) is not str or selection in seen:
+                raise ValueError("track selections must be unique strings")
+            if selection != "contact_count" and not (
+                selection.startswith("body_xpos:") and selection.partition(":")[2]
+            ):
+                raise ValueError("unsupported track selection")
+            seen.add(selection)
         if (
             type(self.render_width) is not int
             or type(self.render_height) is not int
@@ -215,14 +233,27 @@ class DeterministicRunner:
 
     async def _run(self, configuration: RunConfiguration) -> RunRecord:
         slot = await self.client.load(configuration.xml_string)
-        projected_scalars = sum(segment.n_steps for segment in configuration.segments) * (
-            slot.summary["nq"] + slot.summary["nv"] + slot.summary["nu"] + 4
+        projected_scalars = sum(
+            segment.n_steps for segment in configuration.segments
+        ) * (
+            _trace_scalars_per_step(
+                nq=slot.summary["nq"],
+                nv=slot.summary["nv"],
+                nu=slot.summary["nu"],
+                track=configuration.track,
+            )
         )
         if projected_scalars > MAX_TRACE_SCALARS:
             raise ValueError("requested run exceeds the bounded numeric record budget")
-        if configuration.initial_qpos and len(configuration.initial_qpos) != slot.summary["nq"]:
+        if (
+            configuration.initial_qpos
+            and len(configuration.initial_qpos) != slot.summary["nq"]
+        ):
             raise ValueError("initial qpos width does not match the loaded model")
-        if configuration.initial_qvel and len(configuration.initial_qvel) != slot.summary["nv"]:
+        if (
+            configuration.initial_qvel
+            and len(configuration.initial_qvel) != slot.summary["nv"]
+        ):
             raise ValueError("initial qvel width does not match the loaded model")
         if (
             configuration.initial_ctrl is not None
@@ -234,7 +265,9 @@ class DeterministicRunner:
             slot,
             qpos=list(configuration.initial_qpos) or None,
             qvel=list(configuration.initial_qvel) or None,
-            ctrl=list(configuration.initial_ctrl) if configuration.initial_ctrl is not None else None,
+            ctrl=list(configuration.initial_ctrl)
+            if configuration.initial_ctrl is not None
+            else None,
         )
 
         records: list[SegmentRecord] = []
@@ -248,6 +281,7 @@ class DeterministicRunner:
                 slot,
                 ctrl=list(segment.ctrl),
                 n_steps=segment.n_steps,
+                track=configuration.track,
             )
             rows = tuple(
                 {**row, "ctrl": list(segment.ctrl)} for row in payload["timeseries"]
@@ -259,7 +293,11 @@ class DeterministicRunner:
                 for row in rows
             ):
                 raise ValueError("runner received a non-numeric run record")
-            expected_start = timestep if previous_timestamp is None else previous_timestamp + timestep
+            expected_start = (
+                timestep
+                if previous_timestamp is None
+                else previous_timestamp + timestep
+            )
             if not math.isclose(
                 rows[0]["t"],
                 expected_start,
