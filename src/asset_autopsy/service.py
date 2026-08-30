@@ -1326,6 +1326,29 @@ class AssetAutopsyService:
         ]
         if len(hypothesis) != 1 or hypothesis[0].event_type != "HYPOTHESIS_RECORDED":
             raise self._integrity_error(request_id)
+        hypothesis_payload = hypothesis[0].payload.get("hypothesis")
+        candidate_attributes = {
+            f"{element.get('name')}.{attribute}"
+            for container in (
+                hypothesis_payload,
+                hypothesis_payload.get("competing_explanation")
+                if isinstance(hypothesis_payload, Mapping)
+                else None,
+            )
+            if isinstance(container, Mapping)
+            for element in container.get("suspected_elements", [])
+            if isinstance(element, Mapping)
+            for attribute in element.get("attributes", [])
+        }
+        patch_attribute = f"{value.patch.target.name}.{value.patch.attribute}"
+        if patch_attribute not in candidate_attributes:
+            raise self._error(
+                request_id,
+                "CAUSAL_PATCH_UNBOUND",
+                "The requested patch is not bound to the cited hypothesis.",
+                False,
+                "Patch only a joint attribute preregistered by the cited experiment.",
+            )
         return run, hypothesis[0]
 
     def _existing_revision_retry(

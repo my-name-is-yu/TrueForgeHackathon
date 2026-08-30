@@ -228,6 +228,22 @@ def test_full_two_revision_service_flow_qualifies_and_direct_publication_emits_o
             predicates=[Predicate(metric="hold_error_p95_m", op="lt", value=0.03)],
         ),
     )
+    unrelated_request = axis_revision_request.model_copy(
+        update={
+            "patch": ScalarPatch(
+                target=PatchTarget(kind="joint", name="joint_a"),
+                attribute="armature",
+                expected_old_value=0.01,
+                new_value=0.02,
+            )
+        }
+    )
+    before_events = len(service.store.ledger_events(CASE_ID))
+    with pytest.raises(DomainError) as exc_info:
+        run(service.create_revision(unrelated_request))
+    assert exc_info.value.code == "CAUSAL_PATCH_UNBOUND"
+    assert len(service.store.ledger_events(CASE_ID)) == before_events
+    assert len(service.store.list_revisions(CASE_ID)) == 1
     r001 = run(service.create_revision(axis_revision_request))
     assert r001.revision_id == "r001"
     assert (
