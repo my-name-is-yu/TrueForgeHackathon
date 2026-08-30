@@ -49,7 +49,7 @@ def _bounded_tuple(value: Any, *, limit: int, name: str) -> tuple[Any, ...]:
 
 
 def _numbers(value: Any) -> bool:
-    if _number(value):
+    if type(value) in (int, float):
         return True
     return isinstance(value, list) and all(_numbers(item) for item in value)
 
