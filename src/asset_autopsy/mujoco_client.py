@@ -542,8 +542,21 @@ def _render_png(result: Any, *, width: int, height: int) -> bytes:
         raise _bad_response("Upstream render response was invalid.") from None
     if len(data) > MAX_RENDER_BYTES:
         raise _bad_response("Upstream render response was invalid.")
-    if not data.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82"):
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         raise _bad_response("Upstream render response was invalid.")
+    offset = 8
+    while True:
+        if offset + 12 > len(data):
+            raise _bad_response("Upstream render response was invalid.")
+        chunk_size = int.from_bytes(data[offset : offset + 4], "big")
+        chunk_type = data[offset + 4 : offset + 8]
+        offset += 12 + chunk_size
+        if offset > len(data):
+            raise _bad_response("Upstream render response was invalid.")
+        if chunk_type == b"IEND":
+            if chunk_size != 0 or offset != len(data):
+                raise _bad_response("Upstream render response was invalid.")
+            break
     try:
         with Image.open(BytesIO(data)) as decoded:
             if decoded.format != "PNG" or decoded.mode != "RGB" or decoded.size != (width, height):
@@ -551,11 +564,16 @@ def _render_png(result: Any, *, width: int, height: int) -> bytes:
             if width * height * 3 > MAX_RENDER_BYTES:
                 raise _bad_response("Upstream render response was too large.")
             decoded.load()
+            clean = BytesIO()
+            decoded.save(clean, format="PNG")
     except UpstreamToolError:
         raise
     except Exception:
         raise _bad_response("Upstream render response was invalid.") from None
-    return data
+    clean_data = clean.getvalue()
+    if len(clean_data) > MAX_RENDER_BYTES:
+        raise _bad_response("Upstream render response was too large.")
+    return clean_data
 
 
 class PinnedMujocoClient:

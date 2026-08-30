@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from asset_autopsy.mujoco_client import (
     REQUIRED_TOOL_SCHEMAS,
@@ -1119,6 +1119,16 @@ def test_render_payload_accepts_only_observed_profile_and_bounds_data(monkeypatc
     assert caught.value.code == UPSTREAM_BAD_RESPONSE
     result.content[1].text = "synthetic"
 
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("private", "private host path")
+    metadata_output = BytesIO()
+    Image.new("RGB", (160, 120)).save(
+        metadata_output, format="PNG", pnginfo=metadata
+    )
+    result.content[0].data = base64.b64encode(metadata_output.getvalue()).decode()
+    clean_png = _render_png(result, width=160, height=120)
+    assert b"private host path" not in clean_png
+
     for invalid_data in (
         "not-base64",
         base64.b64encode(b"not an image").decode(),
@@ -1126,6 +1136,9 @@ def test_render_payload_accepts_only_observed_profile_and_bounds_data(monkeypatc
         base64.b64encode(_png_bytes(mode="RGBA")).decode(),
         base64.b64encode(png[:8] + b"malformed").decode(),
         base64.b64encode(png + b"private trailing data").decode(),
+        base64.b64encode(
+            png + b"private trailing data" + b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        ).decode(),
     ):
         result.content[0].data = invalid_data
         with pytest.raises(UpstreamToolError) as caught:
