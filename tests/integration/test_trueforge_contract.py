@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from asset_autopsy.mcp_server import TOOL_NAMES
+from asset_autopsy.mcp_server import TOOL_NAMES, trueforge_tool_input_schema
 from asset_autopsy.schemas import TOOL_INPUT_MODELS
 from asset_autopsy.trueforge_client import (
     AGENT_NAME,
@@ -20,7 +20,7 @@ def _tools() -> list[dict[str, Any]]:
     return [
         {
             "name": name,
-            "inputSchema": model.model_json_schema(by_alias=True),
+            "inputSchema": trueforge_tool_input_schema(model),
             "annotations": {
                 "readOnlyHint": name in {"open_case", "inspect_asset"},
                 "destructiveHint": name == "publish_revision",
@@ -134,6 +134,9 @@ def test_agent_spec_is_the_exact_serial_approval_contract() -> None:
         "remaining budgets",
         "allowed patch attributes",
         "successful Sandbox analysis",
+        "Before a direct run_experiment response literally contains",
+        "run_task and inspect_asset artifact URIs are audit metadata",
+        "If run_experiment is rejected or returns no saved path",
         "Do not use Sandbox to rediscover tool schemas",
         "public 1/1 and hidden 3/3",
         "Stop at the publication approval request",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -14,6 +14,7 @@ from asset_autopsy.mcp_server import (
     TOOL_NAMES,
     create_mcp_facade,
     serve,
+    trueforge_tool_input_schema,
 )
 from asset_autopsy.mujoco_client import UpstreamToolError
 from asset_autopsy.schemas import (
@@ -268,11 +269,33 @@ def test_exact_strict_tool_schemas_and_annotations() -> None:
         assert experiment_schema["properties"][field]["maxItems"] == maximum
     observable_schema = experiment_schema["properties"]["observables"]
     assert observable_schema["description"] == EXPERIMENT_OBSERVABLES_DESCRIPTION
-    assert set(observable_schema["items"]["discriminator"]["mapping"]) == set(
-        EXPERIMENT_OBSERVABLE_KINDS
+    observable_variants = observable_schema["items"]["oneOf"]
+    assert {
+        variant["properties"]["kind"]["const"] for variant in observable_variants
+    } == set(EXPERIMENT_OBSERVABLE_KINDS)
+    assert experiment_schema["properties"]["segments"]["description"] == (
+        "The sum of n_steps across all segments must be between 256 and 100000."
     )
 
-    inputs = json.dumps([tool.inputSchema for tool in tools], sort_keys=True)
+    schemas = json.dumps([tool.inputSchema for tool in tools], sort_keys=True)
+    assert '"$defs"' not in schemas
+    assert '"$ref"' not in schemas
+    assert "#/$defs/" not in schemas
+    assert set(experiment_schema["properties"]["hypothesis"]["required"]) == {
+        "claim",
+        "suspected_elements",
+        "competing_explanation",
+        "prediction",
+        "falsifier",
+    }
+    segment_schema = experiment_schema["properties"]["segments"]["items"]
+    assert set(segment_schema["required"]) == {"n_steps", "controls"}
+    assert set(segment_schema["properties"]["controls"]["items"]["required"]) == {
+        "actuator_name",
+        "value",
+    }
+
+    inputs = schemas
     for prohibited in (
         "xml_string",
         "file_path",
@@ -377,6 +400,26 @@ def test_validation_feedback_names_only_public_paths_and_safe_error_types() -> N
 
     asyncio.run(call())
     assert facade.recorder.counts["run_experiment"] == 0
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"$defs": {"Loop": {"$ref": "#/$defs/Loop"}}, "$ref": "#/$defs/Loop"},
+        {"$ref": "https://example.invalid/schema"},
+    ],
+)
+def test_trueforge_tool_schema_rejects_unresolvable_references(
+    schema: dict[str, Any],
+) -> None:
+    class InvalidModel:
+        @classmethod
+        def model_json_schema(cls, *, by_alias: bool) -> dict[str, Any]:
+            assert by_alias is True
+            return schema
+
+    with pytest.raises(RuntimeError):
+        trueforge_tool_input_schema(cast(Any, InvalidModel))
 
 
 def test_validation_feedback_is_bounded_and_reports_missing_public_fields() -> None:

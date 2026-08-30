@@ -13,7 +13,12 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from pydantic import ConfigDict, StrictBool, ValidationError as PydanticValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictBool,
+    ValidationError as PydanticValidationError,
+)
 
 from .schemas import (
     AssetHash,
@@ -477,6 +482,49 @@ def _annotations(
     )
 
 
+def trueforge_tool_input_schema(model: type[BaseModel]) -> dict[str, Any]:
+    schema = model.model_json_schema(by_alias=True)
+    definitions = schema.pop("$defs", {})
+    if not isinstance(definitions, dict):
+        raise RuntimeError("public tool schema definitions are invalid")
+
+    def expand(value: Any, stack: tuple[str, ...] = ()) -> Any:
+        if isinstance(value, list):
+            return [expand(item, stack) for item in value]
+        if not isinstance(value, dict):
+            return value
+        reference = value.get("$ref")
+        if reference is not None:
+            if set(value) != {"$ref"} or not isinstance(reference, str):
+                raise RuntimeError("public tool schema reference is invalid")
+            prefix = "#/$defs/"
+            name = reference.removeprefix(prefix)
+            if not reference.startswith(prefix) or not name or "/" in name:
+                raise RuntimeError("public tool schema reference is not local")
+            definition = definitions.get(name)
+            if not isinstance(definition, dict):
+                raise RuntimeError("public tool schema reference is missing")
+            if name in stack:
+                raise RuntimeError("public tool schema reference is cyclic")
+            return expand(definition, (*stack, name))
+
+        expanded: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "$defs":
+                raise RuntimeError("nested public tool schema definitions are invalid")
+            if key == "discriminator" and isinstance(item, dict):
+                item = {
+                    name: child for name, child in item.items() if name != "mapping"
+                }
+            expanded[key] = expand(item, stack)
+        return expanded
+
+    resolved = expand(schema)
+    if not isinstance(resolved, dict):
+        raise RuntimeError("resolved public tool schema is invalid")
+    return resolved
+
+
 def _enforce_strict_tool_arguments(mcp: FastMCP) -> None:
     manager = cast(Any, mcp)._tool_manager
     for name, public_model in zip(TOOL_NAMES, TOOL_INPUT_MODELS, strict=True):
@@ -488,7 +536,7 @@ def _enforce_strict_tool_arguments(mcp: FastMCP) -> None:
             **{**dict(model.model_config), "extra": "forbid"}
         )
         model.model_rebuild(force=True)
-        tool.parameters = public_model.model_json_schema(by_alias=True)
+        tool.parameters = trueforge_tool_input_schema(public_model)
 
 
 async def create_mcp_facade(
