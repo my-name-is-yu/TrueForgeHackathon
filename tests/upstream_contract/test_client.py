@@ -77,6 +77,13 @@ class _FailingCloseTransport(_FakeTransport):
         raise RuntimeError("private close failure")
 
 
+class _BlockingFailingCloseTransport(_BlockingCloseTransport):
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        self.close_started.set()
+        await self.allow_close.wait()
+        raise RuntimeError("private close failure")
+
+
 class _FakeSession:
     def __init__(
         self,
@@ -98,6 +105,7 @@ class _FakeSession:
         negative_contacts: bool = False,
         nested_final_energy: bool = False,
         reset_time: float = 0.0,
+        set_state_time: float | None = None,
         final_state_mismatch: str | None = None,
         nq: int = 0,
         nv: int = 0,
@@ -121,6 +129,7 @@ class _FakeSession:
         self.negative_contacts = negative_contacts
         self.nested_final_energy = nested_final_energy
         self.reset_time = reset_time
+        self.set_state_time = set_state_time
         self.final_state_mismatch = final_state_mismatch
         self.nq = nq
         self.nv = nv
@@ -193,7 +202,11 @@ class _FakeSession:
                 await asyncio.sleep(1)
             return _text_result({"status": "reset", "time": self.reset_time})
         if name == "sim_set_state":
-            return _text_result({"status": "ok", "time": 0.0})
+            sim_name = str(arguments["sim_name"])
+            time = self.current_times.get(sim_name, 0.0)
+            if self.set_state_time is not None:
+                time = self.set_state_time
+            return _text_result({"status": "ok", "time": time})
         if name == "run_and_analyze":
             steps = arguments["n_steps"]
             if self.block_on_run:
@@ -299,6 +312,7 @@ def _fake_client(
     negative_contacts: bool = False,
     nested_final_energy: bool = False,
     reset_time: float = 0.0,
+    set_state_time: float | None = None,
     final_state_mismatch: str | None = None,
     nq: int = 0,
     nv: int = 0,
@@ -328,6 +342,7 @@ def _fake_client(
             negative_contacts=negative_contacts,
             nested_final_energy=nested_final_energy,
             reset_time=reset_time,
+            set_state_time=set_state_time,
             final_state_mismatch=final_state_mismatch,
             nq=nq,
             nv=nv,
@@ -530,6 +545,43 @@ def test_reset_rejects_nonzero_upstream_clock() -> None:
                 await client.reset(slot)
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
             assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
+def test_set_state_requires_the_slot_current_clock() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(set_state_time=1.0)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            await client.reset(slot)
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.set_state(slot)
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
+def test_set_state_accepts_the_clock_after_a_segment() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client()
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            await client.reset(slot)
+            await client.run_segment(slot, ctrl=[], n_steps=1)
+            await client.set_state(slot)
+            assert slot.state is SlotState.READY
 
     asyncio.run(check())
 
@@ -1158,6 +1210,81 @@ def test_cancelled_shutdown_finishes_closing_child_before_propagating() -> None:
         assert transport.closed is True
         assert session is not None and session.closed is True
         assert client.ready is False
+
+    asyncio.run(check())
+
+
+def test_cancelled_shutdown_wins_over_a_late_cleanup_failure() -> None:
+    async def check() -> None:
+        transport = _BlockingFailingCloseTransport()
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=_FakeSession,
+        )
+        begin_exit = asyncio.Event()
+
+        async def owner() -> None:
+            async with client:
+                await begin_exit.wait()
+
+        task = asyncio.create_task(owner())
+        while not client.ready:
+            await asyncio.sleep(0)
+        begin_exit.set()
+        await transport.close_started.wait()
+        task.cancel()
+        transport.allow_close.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.ready is False
+
+    asyncio.run(check())
+
+
+def test_old_session_failure_does_not_close_the_restarted_child() -> None:
+    async def check() -> None:
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        failure_started = asyncio.Event()
+        release_failure = asyncio.Event()
+        sessions: list[_FakeSession] = []
+
+        class DelayedFailureSession(_FakeSession):
+            async def call_tool(
+                self, name: str, *, arguments: dict[str, object]
+            ) -> SimpleNamespace:
+                if name == "run_and_analyze":
+                    failure_started.set()
+                    await release_failure.wait()
+                    raise RuntimeError("old session failed")
+                return await super().call_tool(name, arguments=arguments)
+
+        def make_session(read: object, write: object) -> _FakeSession:
+            session_type = DelayedFailureSession if not sessions else _FakeSession
+            session = session_type(read, write)
+            sessions.append(session)
+            return session
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: _FakeTransport(),
+            session_factory=make_session,
+        )
+        await client.__aenter__()
+        slot = await client.load("<mujoco model=\"synthetic\"/>")
+        old_call = asyncio.create_task(client.run_segment(slot, ctrl=[], n_steps=1))
+        await failure_started.wait()
+        await client._shutdown_child()
+        await client.__aenter__()
+        release_failure.set()
+        with pytest.raises(UpstreamToolError) as caught:
+            await old_call
+        assert caught.value.code == UPSTREAM_UNAVAILABLE
+        assert client.ready is True
+        assert sessions[1].closed is False
+        await client.__aexit__(None, None, None)
+        await client.__aexit__(None, None, None)
 
     asyncio.run(check())
 

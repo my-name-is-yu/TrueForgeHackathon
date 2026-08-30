@@ -206,6 +206,7 @@ class SimulationSlot:
     summary: dict[str, Any]
     state: SlotState = SlotState.READY
     _session_token: object | None = field(default=None, repr=False)
+    _time: float = field(default=0.0, repr=False)
 
     @property
     def poisoned(self) -> bool:
@@ -291,12 +292,11 @@ async def _finish_resource_task(task: asyncio.Task[None]) -> None:
             cancelled = True
         except Exception:
             break
-    if not task.cancelled():
-        failure = task.exception()
-        if failure is not None:
-            raise failure
+    failure = None if task.cancelled() else task.exception()
     if cancelled:
         raise asyncio.CancelledError
+    if failure is not None:
+        raise failure
 
 
 async def _discard_resource_task_failure(task: asyncio.Task[None]) -> None:
@@ -700,9 +700,15 @@ class PinnedMujocoClient:
             self._context_owners = 0
             await self._shutdown_child_locked(poison=poison)
 
-    async def _shutdown_child_preserving_primary_error(self) -> None:
+    async def _shutdown_child_preserving_primary_error(
+        self, session_token: object | None
+    ) -> None:
         try:
-            await self._shutdown_child()
+            async with self._lifecycle_lock:
+                if session_token is not self._session_token:
+                    return
+                self._context_owners = 0
+                await self._shutdown_child_locked(poison=True)
         except UpstreamToolError:
             pass
 
@@ -774,6 +780,7 @@ class PinnedMujocoClient:
         if slot is not None and tool_name != "sim_load":
             self._require_ready_slot(slot)
         session = self._session
+        session_token = self._session_token
         if session is None:
             if slot is not None:
                 slot.state = SlotState.POISONED
@@ -791,12 +798,12 @@ class PinnedMujocoClient:
         except asyncio.CancelledError:
             if slot is not None:
                 slot.state = SlotState.POISONED
-            await self._shutdown_child_preserving_primary_error()
+            await self._shutdown_child_preserving_primary_error(session_token)
             raise
         except (TimeoutError, asyncio.TimeoutError):
             if slot is not None:
                 slot.state = SlotState.POISONED
-            await self._shutdown_child_preserving_primary_error()
+            await self._shutdown_child_preserving_primary_error(session_token)
             raise UpstreamToolError(
                 UPSTREAM_TIMEOUT,
                 SAFE_TIMEOUT_MESSAGE,
@@ -806,7 +813,7 @@ class PinnedMujocoClient:
         except Exception:
             if slot is not None:
                 slot.state = SlotState.POISONED
-            await self._shutdown_child_preserving_primary_error()
+            await self._shutdown_child_preserving_primary_error(session_token)
             raise UpstreamToolError(
                 UPSTREAM_UNAVAILABLE,
                 SAFE_MESSAGE,
@@ -838,13 +845,14 @@ class PinnedMujocoClient:
     async def reset(self, slot: SimulationSlot) -> None:
         result = await self._invoke(slot, "sim_reset", {"sim_name": slot._name})
         try:
-            normalize_json_result(
+            payload = normalize_json_result(
                 result,
                 lambda payload: _matches_status(payload, "reset") and payload["time"] == 0.0,
             )
         except UpstreamToolError:
             slot.state = SlotState.POISONED
             raise
+        slot._time = payload["time"]
 
     async def set_state(
         self,
@@ -871,7 +879,11 @@ class PinnedMujocoClient:
             arguments["ctrl"] = list(ctrl)
         result = await self._invoke(slot, "sim_set_state", arguments)
         try:
-            normalize_json_result(result, lambda payload: _matches_status(payload, "ok"))
+            normalize_json_result(
+                result,
+                lambda payload: _matches_status(payload, "ok")
+                and payload["time"] == slot._time,
+            )
         except UpstreamToolError:
             slot.state = SlotState.POISONED
             raise
@@ -925,6 +937,7 @@ class PinnedMujocoClient:
                 False,
                 SAFE_SLOT_ACTION,
             )
+        slot._time = payload["sim_time"][1]
         return payload
 
     async def render(
