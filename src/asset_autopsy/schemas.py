@@ -106,6 +106,9 @@ RunTaskMetricName: TypeAlias = Literal[
     "joint_limit_violation_count",
     "non_finite_count",
 ]
+ContractClauseId: TypeAlias = Literal[
+    "reach_error", "stable_hold", "settling", "finite_state", "joint_limits"
+]
 _RUN_TASK_METRICS = frozenset(
     {
         "final_target_error_m",
@@ -129,6 +132,13 @@ _PASS_METRIC_LIMITS = {
 _CONTRACT_CLAUSE_IDS = frozenset(
     {"reach_error", "stable_hold", "settling", "finite_state", "joint_limits"}
 )
+_CLAUSE_METRICS = {
+    "reach_error": "hold_error_p95_m",
+    "stable_hold": "joint_speed_rms_rad_s",
+    "settling": "settling_time_s",
+    "finite_state": "non_finite_count",
+    "joint_limits": "joint_limit_violation_count",
+}
 
 AllowedAttribute: TypeAlias = Literal["axis", "damping", "armature", "frictionloss"]
 HypothesisAttribute: TypeAlias = Literal[
@@ -443,7 +453,7 @@ class ScenarioSummary(StrictModel):
 
 
 class ContractClause(StrictModel):
-    clause_id: ElementName
+    clause_id: ContractClauseId
     description: SafeText
 
 
@@ -452,6 +462,18 @@ class RevisionSummary(StrictModel):
     asset_sha256: AssetHash
     parent_revision_id: RevisionId | None = None
     canonical_diff: list["CanonicalDiffEntry"] = Field(default_factory=list, max_length=1)
+
+    @model_validator(mode="after")
+    def validate_lineage(self) -> RevisionSummary:
+        if self.revision_id == "r000":
+            if self.parent_revision_id is not None or self.canonical_diff:
+                raise ValueError("root revision cannot have parent or diff provenance")
+            return self
+        if self.parent_revision_id is None or len(self.canonical_diff) != 1:
+            raise ValueError("child revision requires one parent and one canonical diff")
+        if self.parent_revision_id == self.revision_id:
+            raise ValueError("revision cannot be its own parent")
+        return self
 
 
 class PublicEventSummary(StrictModel):
@@ -528,8 +550,19 @@ class AnalysisTracePoint(StrictModel):
 class FirstDivergence(StrictModel):
     step: StrictInt = Field(ge=0)
     time_s: StrictFiniteFloat = Field(ge=0.0)
-    signal: MetricName
+    signal: Literal["end_effector_position", "qpos", "qvel"]
     magnitude: StrictFiniteFloat = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def validate_threshold(self) -> FirstDivergence:
+        thresholds = {
+            "end_effector_position": 1e-4,
+            "qpos": 1e-4,
+            "qvel": 1e-3,
+        }
+        if self.magnitude <= thresholds[self.signal]:
+            raise ValueError("first divergence magnitude must exceed the signal threshold")
+        return self
 
 
 class MetricDelta(StrictModel):
@@ -568,7 +601,7 @@ class MetricDelta(StrictModel):
 
 
 class ClauseResult(StrictModel):
-    clause_id: ElementName
+    clause_id: ContractClauseId
     outcome: Literal["improved", "regressed", "unchanged"]
 
 
@@ -589,6 +622,25 @@ class BehaviorDiff(StrictModel):
         clauses = [result.clause_id for result in self.clause_outcomes]
         if len(clauses) != len(_CONTRACT_CLAUSE_IDS) or set(clauses) != _CONTRACT_CLAUSE_IDS:
             raise ValueError("behavior diff must contain each fixed contract clause exactly once")
+        deltas = {delta.metric: delta for delta in self.metric_deltas}
+        for result in self.clause_outcomes:
+            delta = deltas[_CLAUSE_METRICS[result.clause_id]]
+            if delta.before is None or delta.after is None:
+                expected_outcome = (
+                    "unchanged"
+                    if delta.before is None and delta.after is None
+                    else "improved"
+                    if delta.before is None
+                    else "regressed"
+                )
+            elif delta.after < delta.before:
+                expected_outcome = "improved"
+            elif delta.after > delta.before:
+                expected_outcome = "regressed"
+            else:
+                expected_outcome = "unchanged"
+            if result.outcome != expected_outcome:
+                raise ValueError("clause outcome must match its metric transition")
         if self.changed and self.first_divergence is None:
             raise ValueError("changed behavior requires first divergence evidence")
         if self.changed and self.verdict == "unchanged_failure":
@@ -752,12 +804,16 @@ class IntegrityChecks(StrictModel):
 class AggregateResult(StrictModel):
     passed: StrictInt = Field(ge=0)
     total: StrictInt = Field(ge=0)
-    violated_clause_ids: list[ElementName] = Field(default_factory=list, max_length=32)
+    violated_clause_ids: list[ContractClauseId] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
     def validate_passed(self) -> AggregateResult:
         if self.passed > self.total:
             raise ValueError("passed must not exceed total")
+        if len(self.violated_clause_ids) != len(set(self.violated_clause_ids)):
+            raise ValueError("violated clause IDs must be unique")
+        if self.total > 0 and (self.passed < self.total) != bool(self.violated_clause_ids):
+            raise ValueError("aggregate counts and violated clauses must agree")
         return self
 
 

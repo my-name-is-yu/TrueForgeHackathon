@@ -9,6 +9,7 @@ from asset_autopsy.schemas import (
     AggregateResult,
     BehaviorDiff,
     CreateRevisionInput,
+    FirstDivergence,
     OpenCaseOutput,
     OpenCaseInput,
     PatchPolicy,
@@ -17,6 +18,7 @@ from asset_autopsy.schemas import (
     RunTaskOutput,
     ScalarPatch,
     RunProbeOutput,
+    RevisionSummary,
     VerifyRevisionOutput,
     TOOL_INPUT_MODELS,
     TOOL_OUTPUT_MODELS,
@@ -479,6 +481,39 @@ def test_behavior_diff_endpoints_obey_metric_domains(
         )
 
 
+def test_behavior_diff_clause_outcomes_match_metric_direction() -> None:
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(
+            {
+                "changed": True,
+                "first_divergence": {
+                    "step": 12,
+                    "time_s": 0.12,
+                    "signal": "qpos",
+                    "magnitude": 0.002,
+                },
+                "metric_deltas": _metric_deltas(hold_before=0.02, hold_after=0.04),
+                "clause_outcomes": _clause_outcomes(),
+                "verdict": "changed",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"step": 1, "time_s": 0.1, "signal": "invented", "magnitude": 1.0},
+        {"step": 1, "time_s": 0.1, "signal": "qpos", "magnitude": 1e-4},
+        {"step": 1, "time_s": 0.1, "signal": "qvel", "magnitude": 1e-3},
+    ],
+)
+def test_first_divergence_requires_a_supported_threshold_crossing(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        FirstDivergence.model_validate(payload)
+
+
 def test_behavior_diff_represents_nullable_settling_time_transitions() -> None:
     behavior_diff = BehaviorDiff.model_validate(
         {
@@ -489,7 +524,7 @@ def test_behavior_diff_represents_nullable_settling_time_transitions() -> None:
                 "signal": "qvel",
                 "magnitude": 0.002,
             },
-            "metric_deltas": _metric_deltas(settling_before=None),
+            "metric_deltas": _metric_deltas(hold_after=0.04, settling_before=None),
             "clause_outcomes": _clause_outcomes(reach_error="unchanged", settling="improved"),
             "verdict": "improved",
         }
@@ -682,7 +717,7 @@ def test_run_task_output_binds_behavior_diff_after_values_to_observations() -> N
                         "magnitude": 0.002,
                     },
                     "metric_deltas": _metric_deltas(hold_after=0.99),
-                    "clause_outcomes": _clause_outcomes(),
+                    "clause_outcomes": _clause_outcomes(reach_error="regressed"),
                     "verdict": "public_pass",
                 },
             }
@@ -1121,6 +1156,52 @@ def test_axis_is_normalized_and_family_ranges_are_enforced() -> None:
 def test_aggregate_result_rejects_passed_above_total_regardless_of_field_order() -> None:
     with pytest.raises(ValidationError):
         AggregateResult.model_validate({"passed": 4, "total": 3})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"passed": 3, "total": 3, "violated_clause_ids": ["reach_error"]},
+        {"passed": 2, "total": 3, "violated_clause_ids": []},
+        {
+            "passed": 2,
+            "total": 3,
+            "violated_clause_ids": ["reach_error", "reach_error"],
+        },
+        {"passed": 2, "total": 3, "violated_clause_ids": ["not_a_contract_clause"]},
+    ],
+)
+def test_aggregate_result_binds_counts_to_unique_fixed_clause_ids(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        AggregateResult.model_validate(payload)
+
+    AggregateResult.model_validate(
+        {"passed": 2, "total": 3, "violated_clause_ids": ["reach_error"]}
+    )
+
+
+def test_revision_summary_requires_root_and_child_provenance() -> None:
+    root = {
+        "revision_id": "r000",
+        "asset_sha256": "1" * 64,
+    }
+    child = {
+        "revision_id": "r001",
+        "asset_sha256": "2" * 64,
+        "parent_revision_id": "r000",
+        "canonical_diff": [
+            {"target": "elbow", "attribute": "damping", "before": "0.3", "after": "0.5"}
+        ],
+    }
+    RevisionSummary.model_validate(root)
+    RevisionSummary.model_validate(child)
+
+    with pytest.raises(ValidationError):
+        RevisionSummary.model_validate({**root, **child, "revision_id": "r000"})
+    with pytest.raises(ValidationError):
+        RevisionSummary.model_validate({**child, "canonical_diff": []})
 
 
 def test_schema_has_no_private_contract_fields() -> None:
