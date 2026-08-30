@@ -227,7 +227,7 @@ def _successful_events() -> list[dict[str, Any]]:
                     "print(json.dumps({\n"
                     "  'rows': len(rows),\n"
                     "  'run_id': payload['run_id'],\n"
-                    "  'metric': f'z_span={residual:.8g}',\n"
+                    "  'metric': f'body_position:end_effector:z={residual:.8g}',\n"
                     "  'finding': 'The isolated motion plane supports the axis hypothesis.',\n"
                     "  'candidate_attribute': 'joint_b.axis',\n"
                     "}))\n"
@@ -240,7 +240,7 @@ def _successful_events() -> list[dict[str, Any]]:
             {
                 "rows": 256,
                 "run_id": "run_axis_evidence",
-                "metric": "z_span=0.125",
+                "metric": "body_position:end_effector:z=0.125",
                 "finding": "The isolated motion plane supports the axis hypothesis.",
                 "candidate_attribute": "joint_b.axis",
             },
@@ -319,7 +319,7 @@ def _successful_events() -> list[dict[str, Any]]:
                     "print(json.dumps({\n"
                     "  'rows': len(rows),\n"
                     "  'run_id': payload['run_id'],\n"
-                    "  'metric': f'peak_qvel={peak:.8g}',\n"
+                    "  'metric': f'qvel:joint_c={peak:.8g}',\n"
                     "  'finding': 'The decay trace supports the damping hypothesis.',\n"
                     "  'candidate_attribute': 'joint_c.damping',\n"
                     "}))\n"
@@ -332,7 +332,7 @@ def _successful_events() -> list[dict[str, Any]]:
             {
                 "rows": 256,
                 "run_id": "run_damping_evidence",
-                "metric": "peak_qvel=0.75",
+                "metric": "qvel:joint_c=0.75",
                 "finding": "The decay trace supports the damping hypothesis.",
                 "candidate_attribute": "joint_c.damping",
             },
@@ -409,6 +409,58 @@ def _successful_events() -> list[dict[str, Any]]:
     return events
 
 
+def _use_guarded_alias_analysis(
+    events: list[dict[str, Any]],
+    *,
+    membership_signal: str = "body_position:end_effector:z",
+) -> None:
+    trace_path = "/sandbox/large_tool_responses/experiment-axis.json"
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = (
+        "python - <<'PY'\n"
+        "import json\n"
+        f"path = '{trace_path}'\n"
+        "payload = json.load(open(path))\n"
+        "rows = payload['trace']['rows']\n"
+        "signal = 'body_position:end_effector:z'\n"
+        "values = [abs(row['values'][signal]) for row in rows "
+        f"if '{membership_signal}' in row['values']]\n"
+        "metric = max(values) if values else None\n"
+        "out = {\n"
+        "  'rows': len(rows),\n"
+        "  'run_id': payload['run_id'],\n"
+        "  'metric': f'{signal}={metric:.8g}' if metric is not None "
+        "else f'{signal}=null',\n"
+        "  'finding': 'The isolated motion plane supports the axis hypothesis.',\n"
+        "  'candidate_attribute': 'joint_b.axis',\n"
+        "}\n"
+        "print(json.dumps(out, separators=(',', ':')))\n"
+        "PY"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+    response = next(
+        item["event"]
+        for item in events
+        if item["event"].get("tool_call_id") == "sandbox-1"
+    )
+    response["content"] = json.dumps(
+        {
+            "rows": 256,
+            "run_id": "run_axis_evidence",
+            "metric": "body_position:end_effector:z=0.125",
+            "finding": "The isolated motion plane supports the axis hypothesis.",
+            "candidate_attribute": "joint_b.axis",
+        },
+        sort_keys=True,
+    )
+
+
 def test_accepts_complete_one_prompt_evidence_sequence() -> None:
     evidence = evaluate_sc1_events(_successful_events())
 
@@ -449,6 +501,384 @@ def test_accepts_complete_one_prompt_evidence_sequence() -> None:
         "run_task",
         "verify_revision",
         "publish_revision",
+    ]
+
+
+def test_accepts_guarded_nonempty_aggregate_with_safe_string_aliases() -> None:
+    events = _successful_events()
+    _use_guarded_alias_analysis(events)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is True
+    assert evidence["sandbox"]["runs"][0]["signal_key"] == (
+        "body_position:end_effector:z"
+    )
+
+
+def test_rejects_guard_that_checks_a_different_trace_signal() -> None:
+    events = _successful_events()
+    _use_guarded_alias_analysis(events, membership_signal="qvel:joint_a")
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
+
+
+def test_uses_last_compact_analysis_when_sandbox_evidence_changes_conclusion() -> None:
+    events = _successful_events()
+    first_call_event = next(
+        item
+        for item in events
+        if any(
+            call.get("id") == "sandbox-1"
+            for call in item["event"].get("tool_calls", [])
+            if isinstance(call, dict)
+        )
+    )
+    first_response_event = next(
+        item
+        for item in events
+        if item["event"].get("tool_call_id") == "sandbox-1"
+    )
+    final_call_event = copy.deepcopy(first_call_event)
+    final_response_event = copy.deepcopy(first_response_event)
+    final_call_event["event"]["tool_calls"][0]["id"] = "sandbox-1-final"
+    final_response_event["event"]["tool_call_id"] = "sandbox-1-final"
+
+    first_call = first_call_event["event"]["tool_calls"][0]
+    first_arguments = json.loads(first_call["function"]["arguments"])
+    first_arguments["command"] = first_arguments["command"].replace(
+        "'joint_b.axis'", "'joint_c.frictionloss'"
+    )
+    first_call["function"]["arguments"] = json.dumps(
+        first_arguments, sort_keys=True
+    )
+    first_response = json.loads(first_response_event["event"]["content"])
+    first_response["candidate_attribute"] = "joint_c.frictionloss"
+    first_response_event["event"]["content"] = json.dumps(
+        first_response, sort_keys=True
+    )
+
+    revision_index = next(
+        index
+        for index, item in enumerate(events)
+        if any(
+            call.get("id") == "revision-1"
+            for call in item["event"].get("tool_calls", [])
+            if isinstance(call, dict)
+        )
+    )
+    events[revision_index:revision_index] = [final_call_event, final_response_event]
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is True
+    assert evidence["sandbox"]["runs"][0]["candidate_attribute"] == "joint_b.axis"
+
+
+def test_uses_last_compact_analysis_after_an_intervening_public_call() -> None:
+    events = _successful_events()
+    call_event = copy.deepcopy(
+        next(
+            item
+            for item in events
+            if any(
+                call.get("id") == "sandbox-1"
+                for call in item["event"].get("tool_calls", [])
+                if isinstance(call, dict)
+            )
+        )
+    )
+    response_event = copy.deepcopy(
+        next(
+            item
+            for item in events
+            if item["event"].get("tool_call_id") == "sandbox-1"
+        )
+    )
+    call = call_event["event"]["tool_calls"][0]
+    call["id"] = "sandbox-1-final-after-inspect"
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = arguments["command"].replace(
+        "'joint_b.axis'", "'joint_c.damping'"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+    response_event["event"]["tool_call_id"] = "sandbox-1-final-after-inspect"
+    response = json.loads(response_event["event"]["content"])
+    response["candidate_attribute"] = "joint_c.damping"
+    response_event["event"]["content"] = json.dumps(response, sort_keys=True)
+    revision_index = next(
+        index
+        for index, item in enumerate(events)
+        if any(
+            candidate.get("id") == "revision-1"
+            for candidate in item["event"].get("tool_calls", [])
+            if isinstance(candidate, dict)
+        )
+    )
+    events[revision_index:revision_index] = [
+        _model_call(
+            "inspect-late",
+            "inspect_asset",
+            {"case_id": CASE_ID, "revision_id": "r000", "view": "both"},
+        ),
+        _tool_response(
+            "inspect-late",
+            {"schema_version": "asset-autopsy/v1", "revision_id": "r000"},
+        ),
+        call_event,
+        response_event,
+    ]
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "a revision patch does not match its Sandbox candidate attribute" in evidence[
+        "failures"
+    ]
+
+
+@pytest.mark.parametrize("experiment_id", ("experiment-1", "experiment-2"))
+def test_rejects_candidate_outside_preregistered_hypotheses(
+    experiment_id: str,
+) -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == experiment_id
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["hypothesis"] = _experiment_arguments(
+        arguments["revision_id"],
+        primary="joint_a",
+        primary_attribute="armature",
+        competing="joint_b",
+        competing_attribute="frictionloss",
+    )["hypothesis"]
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "a Sandbox candidate was not preregistered by its experiment" in evidence[
+        "failures"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sandbox_id", "signal_key"),
+    (
+        ("sandbox-1", "body_position:end_effector:z"),
+        ("sandbox-2", "qvel:joint_c"),
+    ),
+)
+def test_rejects_control_input_as_causal_observation(
+    sandbox_id: str, signal_key: str
+) -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == sandbox_id
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = arguments["command"].replace(
+        signal_key, "control:motor_b"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+    response = next(
+        item["event"]
+        for item in events
+        if item["event"].get("tool_call_id") == sandbox_id
+    )
+    content = json.loads(response["content"])
+    content["metric"] = content["metric"].replace(
+        signal_key, "control:motor_b"
+    )
+    response["content"] = json.dumps(content, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert (
+        "a Sandbox metric is not a requested non-control experiment observable"
+        in evidence["failures"]
+    )
+
+
+def test_rejects_json_dumps_keyword_that_mutates_compact_evidence() -> None:
+    events = _successful_events()
+    _use_guarded_alias_analysis(events)
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = arguments["command"].replace(
+        "print(json.dumps(out, separators=(',', ':')))",
+        "print(json.dumps(out, sort_keys=(out.update({'run_id':'forged'}) or False)))",
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
+
+
+@pytest.mark.parametrize("suffix", ("null", "nan", "inf", "-inf"))
+def test_rejects_nonfinite_or_empty_compact_metric(suffix: str) -> None:
+    events = _successful_events()
+    _use_guarded_alias_analysis(events)
+    response = next(
+        item["event"]
+        for item in events
+        if item["event"].get("tool_call_id") == "sandbox-1"
+    )
+    content = json.loads(response["content"])
+    content["metric"] = f"body_position:end_effector:z={suffix}"
+    response["content"] = json.dumps(content, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "a Sandbox Python response does not match its analyzed stdout shape" in evidence[
+        "failures"
+    ]
+
+
+def test_rejects_later_compact_response_without_valid_trace_dataflow() -> None:
+    events = _successful_events()
+    call_event = copy.deepcopy(
+        next(
+            item
+            for item in events
+            if any(
+                call.get("id") == "sandbox-1"
+                for call in item["event"].get("tool_calls", [])
+                if isinstance(call, dict)
+            )
+        )
+    )
+    response_event = copy.deepcopy(
+        next(
+            item
+            for item in events
+            if item["event"].get("tool_call_id") == "sandbox-1"
+        )
+    )
+    call = call_event["event"]["tool_calls"][0]
+    call["id"] = "sandbox-1-invalid-final"
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = arguments["command"].replace(".8g", ".7g")
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+    response_event["event"]["tool_call_id"] = "sandbox-1-invalid-final"
+    revision_index = next(
+        index
+        for index, item in enumerate(events)
+        if any(
+            candidate.get("id") == "revision-1"
+            for candidate in item["event"].get("tool_calls", [])
+            if isinstance(candidate, dict)
+        )
+    )
+    events[revision_index:revision_index] = [call_event, response_event]
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
+
+
+def test_rejects_later_compact_response_with_an_extra_key() -> None:
+    events = _successful_events()
+    call_event = copy.deepcopy(
+        next(
+            item
+            for item in events
+            if any(
+                call.get("id") == "sandbox-1"
+                for call in item["event"].get("tool_calls", [])
+                if isinstance(call, dict)
+            )
+        )
+    )
+    response_event = copy.deepcopy(
+        next(
+            item
+            for item in events
+            if item["event"].get("tool_call_id") == "sandbox-1"
+        )
+    )
+    call = call_event["event"]["tool_calls"][0]
+    call["id"] = "sandbox-1-extra-key"
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = arguments["command"].replace(".8g", ".7g")
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+    response_event["event"]["tool_call_id"] = "sandbox-1-extra-key"
+    response = json.loads(response_event["event"]["content"])
+    response["debug"] = "must not make the latest compact attempt disappear"
+    response_event["event"]["content"] = json.dumps(response, sort_keys=True)
+    revision_index = next(
+        index
+        for index, item in enumerate(events)
+        if any(
+            candidate.get("id") == "revision-1"
+            for candidate in item["event"].get("tool_calls", [])
+            if isinstance(candidate, dict)
+        )
+    )
+    events[revision_index:revision_index] = [call_event, response_event]
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
+
+
+def test_rejects_metric_label_for_a_different_signal() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = arguments["command"].replace(
+        "body_position:end_effector:z={residual:.8g}",
+        "qpos:joint_a={residual:.8g}",
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+    response = next(
+        item["event"]
+        for item in events
+        if item["event"].get("tool_call_id") == "sandbox-1"
+    )
+    content = json.loads(response["content"])
+    content["metric"] = "qpos:joint_a=0.125"
+    response["content"] = json.dumps(content, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
     ]
 
 
@@ -547,6 +977,100 @@ def test_rejects_offloaded_experiment_without_sandbox_python_read() -> None:
     assert evidence["large_tool_response"]["all_read_by_sandbox_python"] is False
 
 
+def test_rejects_valid_analyzer_hidden_in_an_unexecuted_shell_branch() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    valid_command = arguments["command"]
+    arguments["command"] = (
+        "if false; then\n"
+        f"{valid_command}\n"
+        "fi\n"
+        "printf '%s\\n' '{\"rows\":256,\"run_id\":\"forged\"}'\n"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
+
+
+def test_rejects_ambiguous_sandbox_code_and_command_forms() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["language"] = "python"
+    arguments["code"] = "print('not the command that produced the response')"
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
+
+
+def test_rejects_unquoted_heredoc_with_shell_substitution() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = arguments["command"].replace(
+        "<<'PY'\n",
+        "<<PY\n# $(printf 'ignored\\nraise SystemExit')\n",
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
+
+
+def test_rejects_python_c_with_shell_substitution() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    command = arguments["command"]
+    source = command.split("\n", 1)[1].rsplit("\nPY", 1)[0]
+    arguments["command"] = (
+        "python -c \"# $(printf 'ignored\\nraise SystemExit')\n" f"{source}\""
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
+
+
 def test_rejects_sandbox_code_that_only_mentions_the_trace_path() -> None:
     events = _successful_events()
     call = next(
@@ -568,7 +1092,9 @@ def test_rejects_sandbox_code_that_only_mentions_the_trace_path() -> None:
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
 
 
 def test_rejects_sandbox_code_that_loads_json_without_analyzing_trace_values() -> None:
@@ -592,7 +1118,9 @@ def test_rejects_sandbox_code_that_loads_json_without_analyzing_trace_values() -
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
 
 
 def test_rejects_unreachable_trace_analysis_with_constant_aggregate() -> None:
@@ -613,7 +1141,7 @@ def test_rejects_unreachable_trace_analysis_with_constant_aggregate() -> None:
         "  signal = [row['values']['qvel:joint_c'] for row in rows]\n"
         "fake = max([1.0])\n"
         "print(json.dumps({'rows': 256, 'run_id': payload['run_id'], "
-        "'metric': f'z_span={fake:.8g}', 'finding': "
+        "'metric': f'qvel:joint_c={fake:.8g}', 'finding': "
         "'The isolated motion plane supports the axis hypothesis.', "
         "'candidate_attribute': 'joint_b.axis'}))\n"
         "PY"
@@ -623,7 +1151,9 @@ def test_rejects_unreachable_trace_analysis_with_constant_aggregate() -> None:
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
 
 
 def test_rejects_named_trace_read_with_unrelated_aggregate() -> None:
@@ -643,7 +1173,7 @@ def test_rejects_named_trace_read_with_unrelated_aggregate() -> None:
         "signal = [row['values']['qvel:joint_c'] for row in rows]\n"
         "fake = max([1.0])\n"
         "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
-        "'metric': f'z_span={fake:.8g}', 'finding': "
+        "'metric': f'qvel:joint_c={fake:.8g}', 'finding': "
         "'The isolated motion plane supports the axis hypothesis.', "
         "'candidate_attribute': 'joint_b.axis'}))\n"
         "PY"
@@ -653,7 +1183,9 @@ def test_rejects_named_trace_read_with_unrelated_aggregate() -> None:
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -692,7 +1224,7 @@ def test_rejects_signal_or_metric_expressions_that_erase_trace_dataflow(
         f"signal = [{series_expression} for row in rows]\n"
         f"computed = {metric_expression}\n"
         "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
-        "'metric': f'z_span={computed:.8g}', 'finding': "
+        "'metric': f'qvel:joint_c={computed:.8g}', 'finding': "
         "'The isolated motion plane supports the axis hypothesis.', "
         "'candidate_attribute': 'joint_b.axis'}))\n"
         "PY"
@@ -702,7 +1234,9 @@ def test_rejects_signal_or_metric_expressions_that_erase_trace_dataflow(
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -770,7 +1304,7 @@ def test_rejects_shadowed_or_mutated_analysis_functions(
         f"signal = [{series_expression} for row in rows]\n"
         f"computed = {metric_expression}\n"
         "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
-        "'metric': f'z_span={computed:.8g}', 'finding': "
+        "'metric': f'qvel:joint_c={computed:.8g}', 'finding': "
         "'The isolated motion plane supports the axis hypothesis.', "
         "'candidate_attribute': 'joint_b.axis'}))\n"
         "PY"
@@ -780,7 +1314,9 @@ def test_rejects_shadowed_or_mutated_analysis_functions(
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
 
 
 def test_rejects_json_load_hook_even_when_it_reads_the_exact_trace_path() -> None:
@@ -803,7 +1339,7 @@ def test_rejects_json_load_hook_even_when_it_reads_the_exact_trace_path() -> Non
         "signal = [row['values']['qvel:joint_c'] for row in rows]\n"
         "computed = max(signal)\n"
         "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
-        "'metric': f'z_span={computed:.8g}', 'finding': "
+        "'metric': f'qvel:joint_c={computed:.8g}', 'finding': "
         "'The isolated motion plane supports the axis hypothesis.', "
         "'candidate_attribute': 'joint_b.axis'}))\n"
         "PY"
@@ -813,7 +1349,9 @@ def test_rejects_json_load_hook_even_when_it_reads_the_exact_trace_path() -> Non
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
 
 
 def test_rejects_dynamic_metric_format_spec_with_side_effect() -> None:
@@ -834,7 +1372,7 @@ def test_rejects_dynamic_metric_format_spec_with_side_effect() -> None:
         "signal = [row['values']['qvel:joint_c'] for row in rows]\n"
         "computed = max(signal)\n"
         "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
-        "'metric': f'z_span={computed:{fmt}}', 'finding': "
+        "'metric': f'qvel:joint_c={computed:{fmt}}', 'finding': "
         "'The isolated motion plane supports the axis hypothesis.', "
         "'candidate_attribute': 'joint_b.axis'}))\n"
         "PY"
@@ -844,7 +1382,9 @@ def test_rejects_dynamic_metric_format_spec_with_side_effect() -> None:
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
 
 
 def test_rejects_overwritten_assignment_that_hides_an_earlier_side_effect() -> None:
@@ -866,7 +1406,7 @@ def test_rejects_overwritten_assignment_that_hides_an_earlier_side_effect() -> N
         "signal = [row['values']['qvel:joint_c'] for row in rows]\n"
         "computed = max(signal)\n"
         "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
-        "'metric': f'z_span={computed:.8g}', 'finding': finding, "
+        "'metric': f'qvel:joint_c={computed:.8g}', 'finding': finding, "
         "'candidate_attribute': 'joint_b.axis'}))\n"
         "PY"
     )
@@ -875,7 +1415,9 @@ def test_rejects_overwritten_assignment_that_hides_an_earlier_side_effect() -> N
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+    assert "the last compact Sandbox analysis lacks provable trace dataflow" in evidence[
+        "failures"
+    ]
 
 
 def test_rejects_sandbox_response_that_differs_from_printed_analysis() -> None:

@@ -3,8 +3,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import re
-import shlex
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
@@ -29,12 +29,12 @@ Follow this mandatory evidence loop in the same turn: open_case; failing run_tas
 
 Before every run_experiment, register a concrete causal claim, suspected elements, a competing explanation, a prediction, and a falsifier. Isolate a suspected joint from neutral positions and choose controls and qpos, qvel, energy, contact_count, or body_position observations that discriminate the explanations. Name joint_a, joint_b, and joint_c exactly once in initial_joint_positions. Name motor_a, motor_b, and motor_c exactly once in every segment, and use at least 256 total steps.
 
-Before choosing each experiment, use only public inspect and task evidence to rank at least two competing causal hypotheses. Choose an input and named observation whose measured outcome can falsify one explanation while supporting the other. Treat authored patterns as hypotheses, not diagnoses, until the trace discriminates them. For scalar dynamics, compare dynamically equivalent joints and use isolated decay responses before changing a repeated parameter. For direction vectors, use body-parent topology and isolated end-effector response planes to compare only kinematically equivalent joints; do not choose by a model-wide majority.
+Before choosing each experiment, use only public inspect and task evidence to rank at least two competing causal hypotheses. Choose an intervention and requested non-control observation whose measured outcome can falsify one explanation while supporting the other. Treat authored patterns as hypotheses, not diagnoses, until the trace discriminates them. Use public topology and metadata only to justify which elements are comparable; do not infer a repair from repeated values, a model-wide majority, or element names alone.
 
-Use this exact run_experiment structure. REVISION_ID, SUSPECTED_JOINT, SUSPECTED_ATTRIBUTE, COMPETING_JOINT, and COMPETING_ATTRIBUTE are metavariables, not literal values: replace every one from the current head, inspect_asset, and your ranking before calling the tool. The first REVISION_ID is r000; after create_revision use that latest child revision. Replace neutral numeric examples with an informative isolated excitation; all-zero controls are useful only for a decay experiment with a nonzero initial displacement. The request root contains exactly case_id, revision_id, hypothesis, initial_joint_positions, segments, observables, and capture_final_snapshot. Hypothesis contains exactly claim, suspected_elements, competing_explanation, prediction, and falsifier. Competing_explanation contains exactly claim, suspected_elements, and discriminating_reason. Close competing_explanation before prediction and falsifier, then close hypothesis before initial_joint_positions. Never move root fields under hypothesis or prediction/falsifier under competing_explanation.
+Use this exact run_experiment structure. REVISION_ID, SUSPECTED_JOINT, SUSPECTED_ATTRIBUTE, COMPETING_JOINT, and COMPETING_ATTRIBUTE are metavariables, not literal values: replace every one from the current head, inspect_asset, and your ranking before calling the tool. The first REVISION_ID is r000; after create_revision use that latest child revision. Replace neutral numeric examples with an informative isolated excitation; all-zero controls are useful only when a nonzero initial state is itself the intervention. The request root contains exactly case_id, revision_id, hypothesis, initial_joint_positions, segments, observables, and capture_final_snapshot. Hypothesis contains exactly claim, suspected_elements, competing_explanation, prediction, and falsifier. Competing_explanation contains exactly claim, suspected_elements, and discriminating_reason. Close competing_explanation before prediction and falsifier, then close hypothesis before initial_joint_positions. Never move root fields under hypothesis or prediction/falsifier under competing_explanation.
 {"case_id":"case_compound-arm-01","revision_id":"REVISION_ID","hypothesis":{"claim":"...","suspected_elements":[{"kind":"joint","name":"SUSPECTED_JOINT","attributes":["SUSPECTED_ATTRIBUTE"]}],"competing_explanation":{"claim":"...","suspected_elements":[{"kind":"joint","name":"COMPETING_JOINT","attributes":["COMPETING_ATTRIBUTE"]}],"discriminating_reason":"..."},"prediction":"...","falsifier":"..."},"initial_joint_positions":[{"joint_name":"joint_a","position_rad":0.0},{"joint_name":"joint_b","position_rad":0.0},{"joint_name":"joint_c","position_rad":0.0}],"segments":[{"label":"isolate","n_steps":512,"controls":[{"actuator_name":"motor_a","value":0.0},{"actuator_name":"motor_b","value":0.0},{"actuator_name":"motor_c","value":0.0}]}],"observables":[{"kind":"qpos"},{"kind":"qvel"},{"kind":"energy"},{"kind":"body_position","body_name":"end_effector"}],"capture_final_snapshot":false}
 
-After every run_experiment response, copy the exact `Result saved to:` path into a TrueForge Sandbox exec command using `python - <<'PY'` and `payload=json.load(open(exact_path))`. Actually analyze that JSON; do not merely mention the path or fabricate a result. The loaded root is the full run_experiment output: assign `rows=payload["trace"]["rows"]`. Each row is shaped as {"time_s": number, "values": {"qpos:joint_name": number, "control:actuator_name": number, ...}}. Build a list from one exact named signal key, optionally applying abs to each selected value. Compute a direct aggregate such as max(signal), mean(signal), or max(signal)-min(signal); do not replace or transform the aggregate afterward. Print one compact JSON object with exactly these keys: {"rows":len(rows),"run_id":payload["run_id"],"metric":f"signal_name={computed_value:.8g}","finding":"your evidence-bounded interpretation","candidate_attribute":"joint_name.attribute"}. The metric string must include the computed numeric aggregate. Never paste the 256 rows back into context. Use the exact hypothesis_id and run_id returned by that experiment in the next create_revision. A revision patch has target {"kind":"joint","name":"..."}, one attribute, expected_old_value, and new_value; expected_effect has scenario_id `public_center` and one or more metric predicates.
+After every run_experiment response, copy the exact `Result saved to:` path into a TrueForge Sandbox exec command using `python - <<'PY'` and `payload=json.load(open(exact_path))`. Actually analyze that JSON; do not merely mention the path or fabricate a result. The loaded root is the full run_experiment output: assign `rows=payload["trace"]["rows"]`. Each row is shaped as {"time_s": number, "values": {"qpos:joint_name": number, "control:actuator_name": number, ...}}. Build a list from one exact named signal key, optionally applying abs to each selected value. Compute a direct aggregate such as max(signal), mean(signal), or max(signal)-min(signal); do not replace or transform the aggregate afterward. Print one compact JSON object with exactly these keys: {"rows":len(rows),"run_id":payload["run_id"],"metric":f"signal_name={computed_value:.8g}","finding":"your evidence-bounded interpretation","candidate_attribute":"joint_name.attribute"}. The metric string must include the computed numeric aggregate. Additional Sandbox inspection is allowed. If it changes your conclusion, run the exact compact analysis again with the final candidate. Immediately before create_revision, the last compact analysis for that experiment must name the same candidate_attribute as the patch. Never paste the 256 rows back into context. Use the exact hypothesis_id and run_id returned by that experiment in the next create_revision. A revision patch has target {"kind":"joint","name":"..."}, one attribute, expected_old_value, and new_value; expected_effect has scenario_id `public_center` and one or more metric predicates.
 
 For create_revision, copy base_revision_id and expected_base_sha256 from open_case or the preceding revision, and copy basis_hypothesis_id and basis_experiment_run_id from the completed run_experiment. Use patch {"target":{"kind":"joint","name":"..."},"attribute":"...","expected_old_value":...,"new_value":...} and expected_effect {"scenario_id":"public_center","predicates":[{"metric":"hold_error_p95_m","op":"lte","value":0.03}]}. Choose the candidate value from public evidence and the analyzed experiment, not an arbitrary guess; only two revisions are available.
 
@@ -602,38 +602,114 @@ class SandboxAnalysisProof:
     signal_key: str
 
 
+_FINITE_METRIC_NUMBER = re.compile(
+    r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+)
+_PATCHABLE_HYPOTHESIS_ATTRIBUTES = frozenset(
+    {"axis", "damping", "armature", "frictionloss"}
+)
+
+
+def _metric_matches_proof(value: Any, prefix: str) -> bool:
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return False
+    number = value[len(prefix) :]
+    if _FINITE_METRIC_NUMBER.fullmatch(number) is None:
+        return False
+    try:
+        return math.isfinite(float(number))
+    except ValueError:
+        return False
+
+
+def _experiment_candidate_attributes(arguments: Mapping[str, Any]) -> set[str]:
+    hypothesis = arguments.get("hypothesis")
+    if not isinstance(hypothesis, Mapping):
+        return set()
+    competing = hypothesis.get("competing_explanation")
+    references: list[Any] = []
+    for container in (hypothesis, competing):
+        if not isinstance(container, Mapping):
+            continue
+        suspected = container.get("suspected_elements")
+        if isinstance(suspected, list):
+            references.extend(suspected)
+    candidates: set[str] = set()
+    for reference in references:
+        if not isinstance(reference, Mapping) or reference.get("kind") != "joint":
+            continue
+        name = reference.get("name")
+        attributes = reference.get("attributes")
+        if not isinstance(name, str) or not isinstance(attributes, list):
+            continue
+        candidates.update(
+            f"{name}.{attribute}"
+            for attribute in attributes
+            if attribute in _PATCHABLE_HYPOTHESIS_ATTRIBUTES
+        )
+    return candidates
+
+
+def _experiment_observable_signals(arguments: Mapping[str, Any]) -> set[str]:
+    positions = arguments.get("initial_joint_positions")
+    observables = arguments.get("observables")
+    if not isinstance(positions, list) or not isinstance(observables, list):
+        return set()
+    joint_names = {
+        name
+        for position in positions
+        if isinstance(position, Mapping)
+        and isinstance((name := position.get("joint_name")), str)
+    }
+    signals: set[str] = set()
+    for observable in observables:
+        if not isinstance(observable, Mapping):
+            continue
+        kind = observable.get("kind")
+        if kind in {"qpos", "qvel"}:
+            signals.update(f"{kind}:{name}" for name in joint_names)
+        elif kind == "energy":
+            signals.update({"energy:potential", "energy:kinetic"})
+        elif kind == "contact_count":
+            signals.add("contact_count")
+        elif kind == "body_position" and isinstance(
+            body_name := observable.get("body_name"), str
+        ):
+            signals.update(
+                f"body_position:{body_name}:{axis}" for axis in ("x", "y", "z")
+            )
+    return signals
+
+
 def _sandbox_python_reads_json(
     arguments: Mapping[str, Any], path: str
 ) -> SandboxAnalysisProof | None:
     language = arguments.get("language")
     code = arguments.get("code")
-    sources: list[str] = []
-    if isinstance(language, str) and language.lower() == "python" and isinstance(code, str):
-        sources.append(code)
     command = arguments.get("command")
-    if isinstance(command, str):
+    source: str | None = None
+    if command is not None:
+        if not isinstance(command, str) or code is not None or language is not None:
+            return None
         heredoc = re.compile(
-            r"(?ms)(?:^|\n)\s*python(?:3(?:\.\d+)?)?\s+-\s+"
-            r"<<['\"]?(?P<tag>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*\n"
-            r"(?P<source>.*?)\n(?P=tag)\s*(?:\n|$)"
+            r"\s*python(?:3(?:\.\d+)?)?\s+-\s+"
+            r"<<(?P<quote>['\"])(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)"
+            r"[ \t]*\r?\n(?P<source>.*?)\r?\n(?P=tag)[ \t]*\s*",
+            re.DOTALL,
         )
-        sources.extend(match.group("source") for match in heredoc.finditer(command))
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
-            tokens = []
-        for index, token in enumerate(tokens[:-2]):
-            if (
-                re.fullmatch(r"python(?:3(?:\.\d+)?)?", token)
-                and tokens[index + 1] == "-c"
-            ):
-                sources.append(tokens[index + 2])
-
-    for source in sources:
-        proof = _python_source_reads_json(source, path)
-        if proof is not None:
-            return proof
-    return None
+        match = heredoc.fullmatch(command)
+        if match is None:
+            return None
+        source = match.group("source")
+    elif (
+        isinstance(language, str)
+        and language.lower() == "python"
+        and isinstance(code, str)
+    ):
+        source = code
+    if source is None:
+        return None
+    return _python_source_reads_json(source, path)
 
 
 def _python_source_reads_json(
@@ -702,6 +778,8 @@ def _python_source_reads_json(
             and isinstance(statement.value.func, ast.Name)
             and statement.value.func.id == "print"
         ):
+            if len(statement.value.args) != 1 or statement.value.keywords:
+                return None
             print_statements.append(statement)
             continue
         return None
@@ -807,7 +885,6 @@ def _python_source_reads_json(
             or generator.target.id in assignments
             or not isinstance(generator.iter, ast.Name)
             or generator.iter.id != rows_name
-            or generator.ifs
             or generator.is_async
         ):
             return None
@@ -841,6 +918,19 @@ def _python_source_reads_json(
             or values.value.id != generator.target.id
         ):
             return None
+        for condition in generator.ifs:
+            if not (
+                isinstance(condition, ast.Compare)
+                and len(condition.ops) == 1
+                and isinstance(condition.ops[0], ast.In)
+                and len(condition.comparators) == 1
+                and resolved_string(condition.left) == key
+                and subscript_key(condition.comparators[0]) == "values"
+                and isinstance(condition.comparators[0], ast.Subscript)
+                and isinstance(condition.comparators[0].value, ast.Name)
+                and condition.comparators[0].value.id == generator.target.id
+            ):
+                return None
         return key
 
     series_to_signal: dict[str, str] = {}
@@ -894,6 +984,17 @@ def _python_source_reads_json(
         direct = aggregate_series_name(expression)
         if direct is not None:
             return direct
+        if isinstance(expression, ast.IfExp):
+            guarded = aggregate_series_name(expression.body)
+            if (
+                guarded is not None
+                and isinstance(expression.test, ast.Name)
+                and expression.test.id == guarded
+                and isinstance(expression.orelse, ast.Constant)
+                and expression.orelse.value is None
+            ):
+                return guarded
+            return None
         if not isinstance(expression, ast.BinOp) or not isinstance(
             expression.op, ast.Sub
         ):
@@ -931,38 +1032,132 @@ def _python_source_reads_json(
             and expression.value.id == payload_name
         )
 
-    def metric_prefix(node: ast.expr) -> tuple[str, str] | None:
-        expression = resolved_expression(node)
+    def joined_metric_prefix(
+        expression: ast.expr,
+    ) -> tuple[str, str] | None:
         if not isinstance(expression, ast.JoinedStr):
             return None
-        formatted = [
-            value for value in expression.values if isinstance(value, ast.FormattedValue)
+        metric_values = [
+            value
+            for value in expression.values
+            if (
+                isinstance(value, ast.FormattedValue)
+                and value.conversion == -1
+                and isinstance(value.value, ast.Name)
+                and value.value.id in metric_to_series
+                and isinstance(value.format_spec, ast.JoinedStr)
+                and len(value.format_spec.values) == 1
+                and isinstance(value.format_spec.values[0], ast.Constant)
+                and value.format_spec.values[0].value == ".8g"
+            )
         ]
-        fixed_format = (
-            len(formatted) == 1
-            and formatted[0].conversion == -1
-            and isinstance(formatted[0].format_spec, ast.JoinedStr)
-            and len(formatted[0].format_spec.values) == 1
-            and isinstance(formatted[0].format_spec.values[0], ast.Constant)
-            and formatted[0].format_spec.values[0].value == ".8g"
-        )
-        if (
-            len(formatted) != 1
-            or not fixed_format
-            or not isinstance(formatted[0].value, ast.Name)
-            or formatted[0].value.id not in metric_to_series
-            or not expression.values
+        if len(metric_values) != 1:
+            return None
+        metric_value = metric_values[0]
+        metric_name = metric_value.value.id
+        signal_key = series_to_signal[metric_to_series[metric_name]]
+        prefix_parts: list[str] = []
+        for value in expression.values:
+            if value is metric_value:
+                if value is not expression.values[-1]:
+                    return None
+                break
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                prefix_parts.append(value.value)
+                continue
+            if (
+                isinstance(value, ast.FormattedValue)
+                and value.conversion == -1
+                and value.format_spec is None
+                and resolved_string(value.value) == signal_key
+            ):
+                prefix_parts.append(signal_key)
+                continue
+            return None
+        prefix = "".join(prefix_parts)
+        if prefix != f"{signal_key}=":
+            return None
+        return prefix, metric_name
+
+    def rendered_null_fallback(node: ast.expr, prefix: str) -> bool:
+        expression = resolved_expression(node)
+        if isinstance(expression, ast.Constant) and isinstance(
+            expression.value, str
+        ):
+            return expression.value == f"{prefix}null"
+        if not isinstance(expression, ast.JoinedStr):
+            return False
+        parts: list[str] = []
+        for value in expression.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+                continue
+            if (
+                isinstance(value, ast.FormattedValue)
+                and value.conversion == -1
+                and value.format_spec is None
+                and (rendered := resolved_string(value.value)) is not None
+            ):
+                parts.append(rendered)
+                continue
+            return False
+        return "".join(parts) == f"{prefix}null"
+
+    def metric_prefix(node: ast.expr) -> tuple[str, str] | None:
+        expression = resolved_expression(node)
+        if not isinstance(expression, ast.IfExp):
+            return joined_metric_prefix(expression)
+        metric = joined_metric_prefix(expression.body)
+        if metric is None:
+            return None
+        prefix, metric_name = metric
+        test = expression.test
+        if not (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == metric_name
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.IsNot)
+            and len(test.comparators) == 1
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value is None
+            and rendered_null_fallback(expression.orelse, prefix)
         ):
             return None
-        first = expression.values[0]
-        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
-            return None
-        prefix = first.value
-        if not prefix or "=" not in prefix:
-            return None
-        return prefix, formatted[0].value.id
+        return metric
 
     required_keys = {"rows", "run_id", "metric", "finding", "candidate_attribute"}
+
+    def safe_json_dumps_keywords(call: ast.Call) -> bool:
+        seen: set[str] = set()
+        for keyword in call.keywords:
+            name = keyword.arg
+            if name is None or name in seen:
+                return False
+            seen.add(name)
+            if name in {"sort_keys", "ensure_ascii"}:
+                if not (
+                    isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, bool)
+                ):
+                    return False
+                continue
+            if name == "separators":
+                value = keyword.value
+                if not (
+                    isinstance(value, ast.Tuple)
+                    and len(value.elts) == 2
+                    and all(
+                        isinstance(item, ast.Constant)
+                        and isinstance(item.value, str)
+                        and len(item.value) <= 4
+                        for item in value.elts
+                    )
+                ):
+                    return False
+                continue
+            return False
+        return True
 
     def reachable_assignment_names(node: ast.AST) -> set[str]:
         reachable: set[str] = set()
@@ -989,8 +1184,9 @@ def _python_source_reads_json(
             and isinstance(printed.func.value, ast.Name)
             and printed.func.value.id == "json"
             and printed.func.attr == "dumps"
-            and printed.args
         ):
+            if len(printed.args) != 1 or not safe_json_dumps_keywords(printed):
+                continue
             printed = resolved_expression(printed.args[0])
         if not isinstance(printed, ast.Dict):
             continue
@@ -1120,57 +1316,105 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             failures.append("an experiment response was not moved by Large Tool Response")
             continue
         ltr_path = match.group(1).rstrip(".\"')")
-        next_public_index = min(
+        next_revision_index = min(
             (
                 record["event_index"]
-                for record in all_public_calls
+                for record in revisions
                 if record["event_index"] > response["event_index"]
             ),
             default=len(events),
         )
-        matching_exec: tuple[dict[str, Any], SandboxAnalysisProof] | None = None
+        compact_keys = {
+            "rows",
+            "run_id",
+            "metric",
+            "finding",
+            "candidate_attribute",
+        }
+        last_compact_attempt: tuple[
+            dict[str, Any],
+            SandboxAnalysisProof | None,
+            dict[str, Any] | None,
+            Mapping[str, Any] | None,
+        ] | None = None
         for record in exec_calls:
             if not (
                 record["event_index"] > response["event_index"]
-                and record["event_index"] < next_public_index
+                and record["event_index"] < next_revision_index
             ):
                 continue
             proof = _sandbox_python_reads_json(
                 _call_arguments(record["call"]), ltr_path
             )
-            if proof is not None:
-                matching_exec = (record, proof)
-                break
-        if matching_exec is None:
+            exec_response = responses.get(record["id"])
+            analysis = (
+                _response_payload(exec_response)
+                if exec_response is not None
+                else None
+            )
+            compact_response = (
+                isinstance(analysis, Mapping)
+                and compact_keys.issubset(analysis)
+            )
+            if proof is not None or compact_response:
+                last_compact_attempt = (
+                    record,
+                    proof,
+                    exec_response,
+                    analysis,
+                )
+        if last_compact_attempt is None:
             failures.append("an offloaded experiment was not read by Sandbox Python")
             continue
-        exec_record, analysis_proof = matching_exec
-        exec_response = responses.get(exec_record["id"])
+        exec_record, analysis_proof, exec_response, analysis = last_compact_attempt
+        if analysis_proof is None:
+            failures.append(
+                "the last compact Sandbox analysis lacks provable trace dataflow"
+            )
+            continue
         if (
             exec_response is None
             or exec_response["event_index"] <= exec_record["event_index"]
-            or exec_response["event_index"] >= next_public_index
+            or exec_response["event_index"] >= next_revision_index
         ):
             failures.append("a Sandbox Python analysis lacks an ordered tool response")
             continue
-        analysis = _response_payload(exec_response)
         if analysis is None:
             failures.append("a Sandbox Python analysis has no parseable response")
             continue
         required = ("run_id", "metric", "finding", "candidate_attribute")
-        if analysis.get("rows") != 256 or any(not isinstance(analysis.get(key), str) for key in required):
+        if (
+            set(analysis) != compact_keys
+            or analysis.get("rows") != 256
+            or any(not isinstance(analysis.get(key), str) for key in required)
+        ):
             failures.append("a Sandbox Python analysis lacks the compact 256-row evidence")
             continue
         if (
             analysis.get("candidate_attribute")
             != analysis_proof.candidate_attribute
             or analysis.get("finding") != analysis_proof.finding
-            or not str(analysis.get("metric", "")).startswith(
-                analysis_proof.metric_prefix
+            or not _metric_matches_proof(
+                analysis.get("metric"), analysis_proof.metric_prefix
             )
         ):
             failures.append(
                 "a Sandbox Python response does not match its analyzed stdout shape"
+            )
+            continue
+        experiment_arguments = _call_arguments(experiment["call"])
+        if analysis["candidate_attribute"] not in _experiment_candidate_attributes(
+            experiment_arguments
+        ):
+            failures.append(
+                "a Sandbox candidate was not preregistered by its experiment"
+            )
+            continue
+        if analysis_proof.signal_key not in _experiment_observable_signals(
+            experiment_arguments
+        ):
+            failures.append(
+                "a Sandbox metric is not a requested non-control experiment observable"
             )
             continue
         sandbox_evidence.append(
