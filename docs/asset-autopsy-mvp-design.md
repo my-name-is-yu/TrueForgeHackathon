@@ -886,7 +886,7 @@ MVP controls:
 - The TrueForge sandbox starts in a fresh workspace with no repository checkout.
 - Demo agent configuration enables no web/search MCP and no host-file tool.
 - Agent tools accept no arbitrary path, URL, XML, target, controller, or seed.
-- Fixture provisioning validates the self-created MJCF subset and rejects DOCTYPE, ENTITY, include, external mesh, plugin, and external references.
+- Revision patching accepts only service-owned fixture bytes: UTF-8 without a BOM or XML declaration, one non-namespaced `mujoco` root using the fixture's element set, at most 65,536 bytes, 32 element levels, and 256 elements. It rejects document-level nodes, processing instructions, namespaces, DOCTYPE/entity declarations, includes, plugins, external assets, paths, and URLs before patching.
 - Patches are allowlisted and verified by a canonical whole-document diff.
 - Controller, contract, runner, source, and holdout commitment hashes are checked before qualification.
 - Qualification always reloads the revision from the artifact hash.
