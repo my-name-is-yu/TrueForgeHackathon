@@ -777,6 +777,11 @@ def test_restore_rejects_unqualified_case_commitment_corruption(
 @pytest.mark.parametrize(
     ("mutation", "error"),
     [
+        (
+            f"UPDATE revisions SET patch_manifest_sha256 = '{'f' * 64}' "
+            "WHERE revision_id = 'r000'",
+            "root revision state",
+        ),
         ("DELETE FROM revisions WHERE revision_id = 'r001'", "revision event state"),
         ("UPDATE revisions SET ordinal = 9 WHERE revision_id = 'r001'", "revision event state"),
         (
@@ -784,6 +789,18 @@ def test_restore_rejects_unqualified_case_commitment_corruption(
             "does not match its ledger event",
         ),
         ("DELETE FROM runs WHERE run_id = 'run-probe-1'", "causal citations"),
+        (
+            """INSERT INTO revisions (
+                case_id, revision_id, parent_revision_id, ordinal,
+                asset_sha256, patch_manifest_sha256,
+                hypothesis_event_id, probe_run_id, created_at
+            ) VALUES (
+                'case-1', 'r999', 'r001', 2,
+                'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                NULL, 'evt-hypothesis-1', 'run-probe-1', '2026-01-01T00:00:00Z'
+            )""",
+            "revision rows do not match",
+        ),
     ],
 )
 def test_restore_rejects_missing_or_invalid_child_revision_state(
@@ -827,6 +844,24 @@ def test_qualification_reservation_requires_exact_case_commitments(tmp_path: Pat
     assert store.get_case("case-1").qualification_state == "unused"
 
 
+def test_get_qualification_reports_corrupt_case_commitment_as_integrity_error(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            "UPDATE cases SET controller_sha256 = 'invalid' WHERE case_id = 'case-1'"
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="stored case commitments"):
+        store.get_qualification("case-1")
+
+
 def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
@@ -861,13 +896,29 @@ def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_pat
     terminal = store.record_qualification_terminal(
         **identity,
         state="PASSED",
-        result={"qualified_core_sha256": "9" * 64, "passed": 3},
+        result={
+            "qualified_core_sha256": "9" * 64,
+            "passed": 3,
+            "members": ("a", "b"),
+        },
     )
     assert terminal.state == "PASSED"
-    assert terminal.result == {"qualified_core_sha256": "9" * 64, "passed": 3}
+    assert terminal.result == {
+        "qualified_core_sha256": "9" * 64,
+        "passed": 3,
+        "members": ["a", "b"],
+    }
     assert store.get_case("case-1").qualification_state == "passed"
     assert store.get_qualification("case-1").result == terminal.result
-    assert store.record_qualification_terminal(**identity, state="PASSED").result == terminal.result
+    assert store.record_qualification_terminal(
+        **identity,
+        state="PASSED",
+        result={
+            "qualified_core_sha256": "9" * 64,
+            "passed": 3,
+            "members": ("a", "b"),
+        },
+    ).result == terminal.result
     qualification_events = tuple(
         event
         for event in store.ledger_events("case-1")
