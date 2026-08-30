@@ -13,6 +13,8 @@ from .mujoco_client import (
     MAX_STEPS,
     MAX_TRACE_SCALARS,
     PinnedMujocoClient,
+    SAFE_SLOT_ACTION,
+    SlotState,
     UPSTREAM_BAD_RESPONSE,
     UPSTREAM_TIMEOUT,
     UPSTREAM_UNAVAILABLE,
@@ -264,7 +266,13 @@ class DeterministicRunner:
                 rel_tol=0.0,
                 abs_tol=interval_tolerance,
             ):
-                raise ValueError("runner received discontinuous segment timestamps")
+                slot.state = SlotState.POISONED
+                raise UpstreamToolError(
+                    UPSTREAM_BAD_RESPONSE,
+                    "Upstream returned discontinuous segment timestamps.",
+                    False,
+                    SAFE_SLOT_ACTION,
+                )
             previous_timestamp = rows[-1]["t"]
             records.append(
                 SegmentRecord(

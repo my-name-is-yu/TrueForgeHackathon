@@ -159,14 +159,17 @@ class _FakeSession:
             nv = self.nv
             nu = self.nu
             timestep = self.timestep
+            mujoco_version = "3.5.0"
             if self.invalid_load_metadata == "negative_dimension":
                 nu = -1
             elif self.invalid_load_metadata == "invalid_timestep":
                 timestep = 0.0
+            elif self.invalid_load_metadata == "runtime_version":
+                mujoco_version = "3.4.0"
             return _text_result(
                 {
                     "name": "unexpected" if self.wrong_load_name else arguments["name"],
-                    "mujoco_version": "3.5.0",
+                    "mujoco_version": mujoco_version,
                     "nq": nq,
                     "nv": nv,
                     "nu": nu,
@@ -631,35 +634,65 @@ def test_runner_rejects_noncontiguous_segment_boundaries(boundary_mode: str) -> 
         transport, make_session, _get_session = _fake_client(boundary_mode=boundary_mode)
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
-        with pytest.raises(ValueError, match="discontinuous segment timestamps"):
-            await DeterministicRunner(
-                PinnedMujocoClient(
-                    transport_factory=lambda _parameters: transport,
-                    session_factory=make_session,
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        async with client:
+            with pytest.raises(UpstreamToolError) as caught:
+                await DeterministicRunner(client).run(
+                    RunConfiguration(
+                        xml_string="<mujoco model=\"synthetic\"/>",
+                        segments=(
+                            ConstantSegment((), 1, "first"),
+                            ConstantSegment((), 1, "second"),
+                        ),
+                    )
                 )
-            ).run(
-                RunConfiguration(
-                    xml_string="<mujoco model=\"synthetic\"/>",
-                    segments=(ConstantSegment((), 1, "first"), ConstantSegment((), 1, "second")),
-                )
-            )
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert client._slots[-1].state is SlotState.POISONED
 
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("timeout_name", ("call_timeout", "render_timeout", "startup_timeout"))
-@pytest.mark.parametrize("timeout_value", (float("nan"), float("inf"), 0.0, -1.0))
-def test_client_rejects_nonfinite_or_nonpositive_timeouts(
-    timeout_name: str, timeout_value: float
-) -> None:
-    from asset_autopsy.mujoco_client import PinnedMujocoClient
+def test_cancelled_context_preserves_cancellation_when_cleanup_fails() -> None:
+    async def check() -> None:
+        transport = _FailingCloseTransport()
+        session: _FakeSession | None = None
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
 
-    with pytest.raises(ValueError, match="finite and positive"):
-        PinnedMujocoClient(**{timeout_name: timeout_value})
+        def make_session(read: object, write: object) -> _FakeSession:
+            nonlocal session
+            session = _FakeSession(read, write)
+            return session
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        entered = asyncio.Event()
+
+        async def owner() -> None:
+            async with client:
+                entered.set()
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(owner())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.ready is False
+        assert session is not None and session.closed is True
+
+    asyncio.run(check())
 
 
-@pytest.mark.parametrize("invalid_load_metadata", ("negative_dimension", "invalid_timestep"))
-def test_load_rejects_impossible_dimensions_and_timestep(invalid_load_metadata: str) -> None:
+@pytest.mark.parametrize(
+    "invalid_load_metadata",
+    ("negative_dimension", "invalid_timestep", "runtime_version"),
+)
+def test_load_rejects_impossible_metadata(invalid_load_metadata: str) -> None:
     async def check() -> None:
         transport, make_session, _get_session = _fake_client(
             invalid_load_metadata=invalid_load_metadata
@@ -673,9 +706,20 @@ def test_load_rejects_impossible_dimensions_and_timestep(invalid_load_metadata: 
             with pytest.raises(UpstreamToolError) as caught:
                 await client.load("<mujoco model=\"synthetic\"/>")
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
-            assert client._slots[0].state is SlotState.POISONED
+            assert client._slots[-1].state is SlotState.POISONED
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("timeout_name", ("call_timeout", "render_timeout", "startup_timeout"))
+@pytest.mark.parametrize("timeout_value", (float("nan"), float("inf"), 0.0, -1.0))
+def test_client_rejects_nonfinite_or_nonpositive_timeouts(
+    timeout_name: str, timeout_value: float
+) -> None:
+    from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        PinnedMujocoClient(**{timeout_name: timeout_value})
 
 
 def test_render_failure_returns_one_numeric_only_fallback() -> None:
@@ -1383,7 +1427,7 @@ def test_segment_boundary_tolerance_does_not_grow_with_absolute_time() -> None:
         )
         from asset_autopsy.mujoco_client import PinnedMujocoClient
 
-        with pytest.raises(ValueError, match="discontinuous segment timestamps"):
+        with pytest.raises(UpstreamToolError) as caught:
             await DeterministicRunner(
                 PinnedMujocoClient(
                     transport_factory=lambda _parameters: transport,
@@ -1395,6 +1439,7 @@ def test_segment_boundary_tolerance_does_not_grow_with_absolute_time() -> None:
                     segments=(ConstantSegment((), 11), ConstantSegment((), 1)),
                 )
             )
+        assert caught.value.code == UPSTREAM_BAD_RESPONSE
 
     asyncio.run(check())
 

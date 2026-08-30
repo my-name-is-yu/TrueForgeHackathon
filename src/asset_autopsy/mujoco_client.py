@@ -21,6 +21,7 @@ from PIL import Image
 
 UPSTREAM_COMMIT = "ce9bed80ec3698d7b778230abc21f2228a3ce94b"
 UPSTREAM_PACKAGE = "mujoco-mcp-server"
+REQUIRED_MUJOCO_VERSION = "3.5.0"
 MAX_STEPS = 100_000
 MAX_XML_BYTES = 2_000_000
 MAX_RENDER_DIMENSION = 4096
@@ -383,6 +384,8 @@ def _matches_load(payload: dict[str, Any], *, expected_name: str | None = None) 
         return False
     if expected_name is not None and payload["name"] != expected_name:
         return False
+    if payload["mujoco_version"] != REQUIRED_MUJOCO_VERSION:
+        return False
     if any(
         payload[name] < 0
         for name in ("nq", "nv", "nu", "nbody", "ngeom", "njnt", "nsite", "nsensor", "ncam")
@@ -679,7 +682,11 @@ class PinnedMujocoClient:
                 return
             self._context_owners -= 1
             if self._context_owners == 0:
-                await self._shutdown_child_locked(poison=False)
+                try:
+                    await self._shutdown_child_locked(poison=False)
+                except UpstreamToolError:
+                    if exc is None:
+                        raise
 
     def _record_context_owner(self) -> None:
         task = asyncio.current_task()
