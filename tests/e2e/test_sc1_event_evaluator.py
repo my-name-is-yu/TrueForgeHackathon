@@ -203,7 +203,13 @@ def _analysis_response(style: str, run_id: str) -> Any:
             "exit_code": 0,
             "stdout": f"analyzed public trace for {run_id}",
         }
-    return f"analysis completed for public experiment {run_id}"
+    return {
+        "success": True,
+        "response": {
+            "exitCode": 0,
+            "result": f"analysis completed for public experiment {run_id}",
+        },
+    }
 
 
 def _successful_events(style: str = "python_code") -> list[dict[str, Any]]:
@@ -516,16 +522,50 @@ def test_rejects_exec_that_references_a_different_experiment_path() -> None:
     )
 
 
-@pytest.mark.parametrize("violation", ["missing", "failed"])
-def test_rejects_revision_without_successful_sandbox_outcome(violation: str) -> None:
+@pytest.mark.parametrize(
+    ("violation", "content"),
+    [
+        ("missing", None),
+        (
+            "failed",
+            {"exit_code": 1, "status": "failed", "stderr": "analysis failed"},
+        ),
+        (
+            "trueforge_failed",
+            {
+                "success": True,
+                "response": {"exitCode": 1, "result": "analysis failed"},
+            },
+        ),
+        (
+            "trueforge_outer_failed",
+            {
+                "success": False,
+                "response": {"exitCode": 0, "result": "analysis complete"},
+            },
+        ),
+        (
+            "structured_without_outcome",
+            {"success": True, "response": {"result": "analysis complete"}},
+        ),
+        (
+            "conflicting_exit_codes",
+            {"success": True, "response": {"exit_code": None, "exitCode": 1}},
+        ),
+        ("plain_text", "analysis complete"),
+    ],
+)
+def test_rejects_revision_without_successful_sandbox_outcome(
+    violation: str, content: Any
+) -> None:
     events = _successful_events()
     if violation == "missing":
         events[:] = [
             item for item in events if item["event"].get("tool_call_id") != "sandbox-1"
         ]
     else:
-        _response_event(events, "sandbox-1")["content"] = json.dumps(
-            {"exit_code": 1, "status": "failed", "stderr": "analysis failed"}
+        _response_event(events, "sandbox-1")["content"] = (
+            content if isinstance(content, str) else json.dumps(content)
         )
 
     evidence = evaluate_sc1_events(events)
@@ -535,6 +575,20 @@ def test_rejects_revision_without_successful_sandbox_outcome(violation: str) -> 
         "a revision lacks successful Sandbox analysis of a preceding offloaded current-base experiment"
         in evidence["failures"]
     )
+
+
+def test_accepts_trueforge_local_sandbox_zero_exit_code() -> None:
+    events = _successful_events()
+    _response_event(events, "sandbox-1")["content"] = json.dumps(
+        {
+            "success": True,
+            "response": {"exitCode": 0, "result": "analysis complete"},
+        }
+    )
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is True
 
 
 def test_rejects_experiment_from_a_different_revision_base() -> None:

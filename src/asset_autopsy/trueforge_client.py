@@ -24,7 +24,7 @@ EXACT_PROMPT = (
 
 AGENT_INSTRUCTIONS = """Repair and qualify the pre-provisioned Asset Autopsy asset compound-arm-01 without changing its controller or tests. Use the public Asset Autopsy tools to establish a failing baseline, investigate competing causal explanations, analyze offloaded experiment evidence in the TrueForge Sandbox, and make evidence-backed revisions.
 
-Use only public tool responses and public offloaded artifacts. Do not use or request fixture XML, host paths, URLs, seeds, timesteps, hidden targets, hidden traces, credentials, or private runtime data. Treat authored patterns and element names as hypotheses rather than diagnoses.
+Use only public tool responses and public offloaded artifacts. The exact public tool schemas are already available in their tool definitions: call Asset Autopsy tools directly, and use Sandbox only to analyze the exact offloaded path returned by a direct experiment call. Do not use Sandbox to rediscover tool schemas or invoke Asset Autopsy tools. Do not use or request fixture XML, host paths, URLs, seeds, timesteps, hidden targets, hidden traces, credentials, or private runtime data. Treat authored patterns and element names as hypotheses rather than diagnoses.
 
 The current case returned by open_case is authoritative for remaining budgets, topology, the current head, allowed patch attributes, and patch policy. Choose the hypotheses, experiment conditions, observables, Sandbox analysis method, patch candidate and value, and next action. Every revision must cite the completed current-base experiment and hypothesis that support it, obey the public one-attribute patch policy, and preserve immutable lineage.
 
@@ -677,27 +677,26 @@ def _sandbox_response_succeeded(record: Mapping[str, Any]) -> bool:
         return False
     if _response_error_code(record) is not None:
         return False
-    content = event.get("content")
-    explicit_success = False
-    for candidate in _json_objects(content):
-        if candidate.get("is_error") is True:
+    successful_exit = False
+    for candidate in _json_objects(event.get("content")):
+        if candidate.get("is_error") is True or candidate.get("success") is False:
             return False
-        exit_code = candidate.get("exit_code")
-        if exit_code is not None:
+        for key in ("exit_code", "exitCode"):
+            if key not in candidate:
+                continue
+            exit_code = candidate[key]
             if (
                 not isinstance(exit_code, int)
                 or isinstance(exit_code, bool)
                 or exit_code != 0
             ):
                 return False
-            explicit_success = True
+            successful_exit = True
         status = candidate.get("status")
         if isinstance(status, str):
             if status.lower() in {"error", "failed", "cancelled", "canceled"}:
                 return False
-            if status.lower() in {"ok", "passed", "success", "succeeded"}:
-                explicit_success = True
-    return explicit_success or bool(str(content).strip())
+    return successful_exit
 
 
 def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
