@@ -325,6 +325,8 @@ class ObjectStore:
                 stored, stored_size = self._digest_file(destination)
                 if stored != actual:
                     raise ObjectIntegrityError("canonical object failed hash verification")
+                temporary_path.unlink()
+                temporary_path = None
                 self._fsync_directory(destination.parent)
                 self._fsync_directory(self.hash_root)
                 self._fsync_directory(self.root)

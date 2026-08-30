@@ -234,6 +234,29 @@ def test_new_object_syncs_ancestors_even_when_they_already_exist(
     ]
 
 
+def test_existing_object_removes_temporary_before_directory_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    object_store = ObjectStore(tmp_path / "objects")
+    payload = b"deduplicated object publication"
+    digest = hashlib.sha256(payload).hexdigest()
+    object_store.put_bytes(payload, expected_sha256=digest)
+
+    original_fsync = object_store._fsync_directory
+    temp_files_seen_during_sync: list[Path] = []
+
+    def record_temp_files(path: Path) -> None:
+        temp_files_seen_during_sync.extend(object_store.hash_root.glob(".tmp-*"))
+        original_fsync(path)
+
+    monkeypatch.setattr(object_store, "_fsync_directory", record_temp_files)
+
+    object_store.put_bytes(payload, expected_sha256=digest)
+
+    assert temp_files_seen_during_sync == []
+    assert not list(object_store.hash_root.glob(".tmp-*"))
+
+
 def test_object_store_rejects_missing_parent_instead_of_recursive_creation(
     tmp_path: Path,
 ) -> None:
