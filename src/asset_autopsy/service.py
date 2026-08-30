@@ -82,6 +82,7 @@ from .storage import (
     ObjectIntegrityError,
     QualificationConflictError,
     RevisionConflictError,
+    RevisionNotFoundError,
     RevisionRecord,
     RunRecord as StoredRunRecord,
     StorageError,
@@ -1900,7 +1901,7 @@ class AssetAutopsyService:
     ) -> RevisionRecord:
         try:
             return self.store.get_revision(case_id, revision_id)
-        except StorageError:
+        except RevisionNotFoundError:
             raise self._error(
                 request_id,
                 "REVISION_NOT_FOUND",
@@ -1908,6 +1909,8 @@ class AssetAutopsyService:
                 False,
                 "Open the case and use a listed revision ID.",
             ) from None
+        except StorageError:
+            raise self._integrity_error(request_id) from None
 
     def _asset_bytes(self, sha256: str, request_id: str) -> bytes:
         try:

@@ -35,6 +35,10 @@ COMMITMENTS = {
 }
 
 
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def directory_chain_to_root(path: Path) -> list[Path]:
     chain = [path]
     while path.parent != path:
@@ -157,8 +161,8 @@ def add_probe_evidence(store: EvidenceStore) -> None:
             revision_id="r000",
             run_kind="probe",
             probe_kind="joint_pulse",
-            condition_hash="condition-1",
-            execution_fingerprint="execution-1",
+            condition_hash=sha256_text("condition-1"),
+            execution_fingerprint=sha256_text("execution-1"),
             trace_sha256="f" * 64,
             metrics_sha256="1" * 64,
             passed=True,
@@ -489,6 +493,62 @@ def test_event_artifact_references_must_be_objects(tmp_path: Path) -> None:
     assert store.ledger_events("case-1")[-1].artifact_refs == (valid_reference,)
 
 
+def test_event_artifact_reference_snapshot_survives_mutation_during_and_after_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = make_store(tmp_path)
+    verified = store.objects.put_bytes(b"a")
+    replacement = store.objects.put_bytes(b"b")
+    reference = {
+        "sha256": verified.sha256,
+        "kind": "trace",
+        "size": verified.bytes,
+        "media_type": "application/octet-stream",
+    }
+    expected = dict(reference)
+    original_read = store.objects.read_bytes
+
+    def mutate_during_verification(digest: str) -> bytes:
+        data = original_read(digest)
+        reference.update(
+            sha256=replacement.sha256,
+            kind="changed-during-call",
+            size=replacement.bytes,
+            media_type="text/plain",
+        )
+        return data
+
+    monkeypatch.setattr(store.objects, "read_bytes", mutate_during_verification)
+
+    stored = store.append_event(
+        LedgerEventRecord(
+            event_id="evt-frozen-artifact-ref",
+            case_id="case-1",
+            revision_id="r000",
+            event_type="EVIDENCE_RECORDED",
+            payload={},
+            artifact_refs=[reference],
+        )
+    )
+    reference.update(
+        sha256="invalid-after-call",
+        kind="changed-after-call",
+        size=999,
+        media_type="text/plain",
+    )
+
+    assert stored.artifact_refs == (expected,)
+    store.close()
+
+    reopened = EvidenceStore(tmp_path / "ledger.sqlite", tmp_path / "objects")
+    replayed = next(
+        event
+        for event in reopened.verify_ledger()
+        if event.event_id == "evt-frozen-artifact-ref"
+    )
+    assert replayed.artifact_refs == (expected,)
+
+
 @pytest.mark.parametrize("failure", ["missing", "wrong_hash", "wrong_size"])
 def test_event_artifact_reference_must_match_stored_object(
     tmp_path: Path, failure: str
@@ -545,8 +605,8 @@ def test_record_run_accepts_a_valid_artifact_reference(tmp_path: Path) -> None:
             revision_id="r000",
             run_kind="probe",
             probe_kind="joint_pulse",
-            condition_hash="condition-artifact",
-            execution_fingerprint="execution-artifact",
+            condition_hash=sha256_text("condition-artifact"),
+            execution_fingerprint=sha256_text("execution-artifact"),
             trace_sha256=published.sha256,
             passed=True,
         ),
@@ -564,6 +624,56 @@ def test_record_run_accepts_a_valid_artifact_reference(tmp_path: Path) -> None:
     assert store.ledger_events("case-1")[-1].artifact_refs == (reference,)
 
 
+@pytest.mark.parametrize("field", ["condition_hash", "execution_fingerprint"])
+def test_record_run_rejects_malformed_identity_digest(
+    tmp_path: Path, field: str
+) -> None:
+    store = make_store(tmp_path)
+    values = {
+        "run_id": "run-invalid-digest",
+        "case_id": "case-1",
+        "revision_id": "r000",
+        "run_kind": "probe",
+        "probe_kind": "joint_pulse",
+        "condition_hash": sha256_text("condition"),
+        "execution_fingerprint": sha256_text("execution"),
+        "passed": False,
+    }
+    values[field] = "not-a-sha256"
+
+    with pytest.raises(ValidationError, match=field):
+        store.record_run(run=RunRecord(**values))
+    with pytest.raises(StorageError, match="run was not found"):
+        store.get_run("run-invalid-digest")
+
+
+def test_get_run_reports_a_corrupt_identity_digest_as_integrity_error(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    store.record_run(
+        run=RunRecord(
+            run_id="run-corrupt-digest",
+            case_id="case-1",
+            revision_id="r000",
+            run_kind="probe",
+            probe_kind="joint_pulse",
+            condition_hash=sha256_text("condition"),
+            execution_fingerprint=sha256_text("execution"),
+            passed=False,
+        )
+    )
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            "UPDATE runs SET condition_hash = 'corrupt' WHERE run_id = ?",
+            ("run-corrupt-digest",),
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="stored run is invalid"):
+        store.get_run("run-corrupt-digest")
+
+
 def test_failed_partial_run_and_ledger_evidence_survive_reopen(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     partial = store.objects.put_bytes(b'{"completed_steps":128}')
@@ -579,8 +689,8 @@ def test_failed_partial_run_and_ledger_evidence_survive_reopen(tmp_path: Path) -
         revision_id="r000",
         run_kind="probe",
         probe_kind="agent_defined",
-        condition_hash="condition-partial",
-        execution_fingerprint="execution-partial",
+        condition_hash=sha256_text("condition-partial"),
+        execution_fingerprint=sha256_text("execution-partial"),
         trace_sha256=None,
         metrics_sha256=None,
         passed=False,
@@ -628,8 +738,8 @@ def test_record_run_missing_artifact_rolls_back_run_and_ledger(tmp_path: Path) -
                 revision_id="r000",
                 run_kind="probe",
                 probe_kind="joint_pulse",
-                condition_hash="condition-missing",
-                execution_fingerprint="execution-missing",
+                condition_hash=sha256_text("condition-missing"),
+                execution_fingerprint=sha256_text("execution-missing"),
                 trace_sha256=missing_digest,
                 passed=False,
             ),
@@ -776,8 +886,8 @@ def test_revision_and_ledger_event_are_one_atomic_transaction(tmp_path: Path) ->
             revision_id="r001",
             run_kind="probe",
             probe_kind="pose_hold",
-            condition_hash="condition-2",
-            execution_fingerprint="execution-2",
+            condition_hash=sha256_text("condition-2"),
+            execution_fingerprint=sha256_text("execution-2"),
             passed=True,
         )
     )
@@ -962,8 +1072,8 @@ def test_child_revision_requires_probe_run(tmp_path: Path) -> None:
             revision_id="r000",
             run_kind="task",
             probe_kind=None,
-            condition_hash="condition-task",
-            execution_fingerprint="execution-task",
+            condition_hash=sha256_text("condition-task"),
+            execution_fingerprint=sha256_text("execution-task"),
             passed=True,
         )
     )
@@ -1196,7 +1306,7 @@ def test_restore_rejects_unqualified_case_commitment_corruption(
         ("DELETE FROM runs WHERE run_id = 'run-probe-1'", "causal citations"),
         (
             "UPDATE runs SET condition_hash = 'changed' WHERE run_id = 'run-probe-1'",
-            "probe run does not match",
+            "stored run is invalid",
         ),
         (
             """INSERT INTO revisions (
@@ -1801,8 +1911,8 @@ def test_uncited_run_cannot_reference_a_missing_revision(tmp_path: Path) -> None
             revision_id="r000",
             run_kind="probe",
             probe_kind="pose_hold",
-            condition_hash="condition-uncited",
-            execution_fingerprint="execution-uncited",
+            condition_hash=sha256_text("condition-uncited"),
+            execution_fingerprint=sha256_text("execution-uncited"),
             passed=False,
         )
     )
@@ -1847,8 +1957,8 @@ def _add_child_evidence(store: EvidenceStore) -> None:
             revision_id="r001",
             run_kind="probe",
             probe_kind="pose_hold",
-            condition_hash="condition-2",
-            execution_fingerprint="execution-2",
+            condition_hash=sha256_text("condition-2"),
+            execution_fingerprint=sha256_text("execution-2"),
             passed=False,
         )
     )
