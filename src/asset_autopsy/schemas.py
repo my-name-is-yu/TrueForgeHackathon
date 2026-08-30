@@ -141,9 +141,6 @@ _CLAUSE_METRICS = {
 }
 
 AllowedAttribute: TypeAlias = Literal["axis", "damping", "armature", "frictionloss"]
-HypothesisAttribute: TypeAlias = Literal[
-    "axis", "damping", "armature", "frictionloss", "joint"
-]
 
 
 class StrictModel(BaseModel):
@@ -192,18 +189,6 @@ class ScalarPatch(StrictModel):
 AttributePatch: TypeAlias = Annotated[AxisPatch | ScalarPatch, Field(discriminator="attribute")]
 
 
-class ElementReference(StrictModel):
-    kind: Literal["joint", "actuator", "body", "site"]
-    name: ElementName
-    attributes: list[HypothesisAttribute] = Field(min_length=1, max_length=4)
-
-
-class CompetingExplanation(StrictModel):
-    claim: SafeText
-    suspected_elements: list[ElementReference] = Field(min_length=1, max_length=8)
-    discriminating_reason: SafeText
-
-
 PredicateOperator: TypeAlias = Literal["lt", "lte", "eq", "gte", "gt"]
 
 
@@ -213,60 +198,65 @@ class Predicate(StrictModel):
     value: StrictFiniteFloat
 
 
-class Prediction(StrictModel):
-    rationale: SafeText
-    all_of: list[Predicate] = Field(min_length=1, max_length=16)
-
-
-class Falsifier(StrictModel):
-    rationale: SafeText
-    any_of: list[Predicate] = Field(min_length=1, max_length=16)
-
-
 class Hypothesis(StrictModel):
-    claim: SafeText
-    suspected_elements: list[ElementReference] = Field(min_length=1, max_length=8)
-    competing_explanation: CompetingExplanation
-    prediction: Prediction
-    falsifier: Falsifier
+    prediction: SafeText
+    falsifier: SafeText
 
 
-class JointPulseProbe(StrictModel):
-    kind: Literal["joint_pulse"]
+class JointPosition(StrictModel):
     joint_name: ElementName
-    direction: StrictInt
-    amplitude_rad: StrictFiniteFloat
-    duration_s: StrictFiniteFloat
-    observe_body: ElementName
+    position: StrictFiniteFloat
 
-    @field_validator("direction")
-    @classmethod
-    def validate_direction(cls, value: int) -> int:
-        if value not in (-1, 1):
-            raise ValueError("direction must be -1 or 1")
-        return value
 
-    @field_validator("amplitude_rad")
-    @classmethod
-    def validate_amplitude(cls, value: float) -> float:
-        if not 0.0 < value <= 1.0:
-            raise ValueError("amplitude_rad is outside the safety range")
-        return value
+class ActuatorControl(StrictModel):
+    actuator_name: ElementName
+    value: StrictFiniteFloat
 
-    @field_validator("duration_s")
+
+class ConstantControlSegment(StrictModel):
+    steps: StrictInt = Field(ge=1)
+    controls: list[ActuatorControl] = Field(min_length=1, max_length=64)
+
+    @field_validator("controls")
     @classmethod
-    def validate_duration(cls, value: float) -> float:
-        if not 0.0 < value <= 10.0:
-            raise ValueError("duration_s is outside the safety range")
+    def validate_unique_controls(
+        cls, value: list[ActuatorControl]
+    ) -> list[ActuatorControl]:
+        names = [control.actuator_name for control in value]
+        if len(names) != len(set(names)):
+            raise ValueError("each position actuator must appear exactly once per segment")
         return value
 
 
-class PoseHoldProbe(StrictModel):
-    kind: Literal["pose_hold"]
+class QposObservable(StrictModel):
+    kind: Literal["qpos"]
 
 
-Probe: TypeAlias = Annotated[JointPulseProbe | PoseHoldProbe, Field(discriminator="kind")]
-CaptureMode: TypeAlias = Literal["metrics_and_filmstrip", "analysis_trace"]
+class QvelObservable(StrictModel):
+    kind: Literal["qvel"]
+
+
+class EnergyObservable(StrictModel):
+    kind: Literal["energy"]
+
+
+class ContactCountObservable(StrictModel):
+    kind: Literal["contact_count"]
+
+
+class BodyPositionObservable(StrictModel):
+    kind: Literal["body_position"]
+    name: ElementName
+
+
+ExperimentObservable: TypeAlias = Annotated[
+    QposObservable
+    | QvelObservable
+    | EnergyObservable
+    | ContactCountObservable
+    | BodyPositionObservable,
+    Field(discriminator="kind"),
+]
 
 
 class ExpectedEffect(StrictModel):
@@ -291,12 +281,41 @@ class RunTaskInput(StrictModel):
     capture: Literal["metrics", "metrics_and_filmstrip"]
 
 
-class RunProbeInput(StrictModel):
+class RunExperimentInput(StrictModel):
     case_id: CaseId
     revision_id: RevisionId
     hypothesis: Hypothesis
-    probe: Probe
-    capture: Literal["analysis_trace"]
+    initial_joint_positions: list[JointPosition] = Field(min_length=1, max_length=64)
+    segments: list[ConstantControlSegment] = Field(min_length=1, max_length=16)
+    observables: list[ExperimentObservable] = Field(min_length=1, max_length=8)
+    capture_final_snapshot: StrictBool = False
+
+    @model_validator(mode="after")
+    def validate_experiment(self) -> RunExperimentInput:
+        joint_names = [position.joint_name for position in self.initial_joint_positions]
+        if len(joint_names) != len(set(joint_names)):
+            raise ValueError("each hinge joint must appear exactly once in initial positions")
+
+        actuator_names = {
+            control.actuator_name for control in self.segments[0].controls
+        }
+        if any(
+            {control.actuator_name for control in segment.controls} != actuator_names
+            for segment in self.segments[1:]
+        ):
+            raise ValueError("every segment must control the same position actuators")
+
+        total_steps = sum(segment.steps for segment in self.segments)
+        if not 256 <= total_steps <= 100_000:
+            raise ValueError("experiment total steps must be between 256 and 100000")
+
+        observable_keys = [
+            (observable.kind, getattr(observable, "name", None))
+            for observable in self.observables
+        ]
+        if len(observable_keys) != len(set(observable_keys)):
+            raise ValueError("experiment observables must be unique")
+        return self
 
 
 class CreateRevisionInput(StrictModel):
@@ -304,7 +323,7 @@ class CreateRevisionInput(StrictModel):
     base_revision_id: RevisionId
     expected_base_sha256: AssetHash
     basis_hypothesis_id: HypothesisId
-    basis_probe_run_id: RunId
+    basis_experiment_run_id: RunId
     patch: AttributePatch
     rationale: SafeText
     expected_effect: ExpectedEffect
@@ -473,6 +492,17 @@ class BodySummary(StrictModel):
 class ActuatorSummary(StrictModel):
     name: ElementName
     joint_name: ElementName
+    control_kind: Literal["position"]
+    control_range: tuple[StrictFiniteFloat, StrictFiniteFloat]
+
+    @field_validator("control_range")
+    @classmethod
+    def validate_control_range(
+        cls, value: tuple[StrictFiniteFloat, StrictFiniteFloat]
+    ) -> tuple[StrictFiniteFloat, StrictFiniteFloat]:
+        if value[0] > value[1]:
+            raise ValueError("control range lower bound cannot exceed upper bound")
+        return value
 
 
 class ScenarioSummary(StrictModel):
@@ -519,8 +549,8 @@ class PublicEventSummary(StrictModel):
         "CASE_OPENED",
         "TASK_COMPLETED",
         "HYPOTHESIS_RECORDED",
-        "PROBE_COMPLETED",
-        "PROBE_FAILED",
+        "EXPERIMENT_COMPLETED",
+        "EXPERIMENT_FAILED",
         "REVISION_CREATED",
         "REVISION_REJECTED",
         "QUALIFICATION_PASSED",
@@ -545,9 +575,6 @@ class OpenCaseOutput(CommonOutput):
     joints: list[JointSummary] = Field(min_length=1, max_length=32)
     bodies: list[BodySummary] = Field(min_length=1, max_length=64)
     actuators: list[ActuatorSummary] = Field(min_length=1, max_length=64)
-    available_probe_kinds: tuple[Literal["joint_pulse", "pose_hold"], ...] = Field(
-        min_length=1, max_length=2
-    )
     observable_metric_names: list[MetricName] = Field(min_length=1, max_length=64)
     patch_policy: PatchPolicy
     remaining_budgets: "BudgetSummary"
@@ -561,10 +588,6 @@ class OpenCaseOutput(CommonOutput):
         clause_ids = [clause.clause_id for clause in self.contract_clauses]
         if len(clause_ids) != len(_CONTRACT_CLAUSE_IDS) or set(clause_ids) != _CONTRACT_CLAUSE_IDS:
             raise ValueError("open case must advertise each fixed contract clause exactly once")
-        if set(self.available_probe_kinds) != {"joint_pulse", "pose_hold"} or len(
-            self.available_probe_kinds
-        ) != 2:
-            raise ValueError("open case must advertise both fixed probe kinds exactly once")
         if len(self.observable_metric_names) != len(set(self.observable_metric_names)):
             raise ValueError("observable metric names must be unique")
         if not _RUN_TASK_METRICS.issubset(self.observable_metric_names):
@@ -608,14 +631,6 @@ class MetricObservation(StrictModel):
 class TracePoint(StrictModel):
     time_s: StrictFiniteFloat = Field(ge=0.0)
     values: tuple[StrictFiniteFloat, ...] = Field(min_length=1, max_length=64)
-
-
-class AnalysisTracePoint(StrictModel):
-    time_s: StrictFiniteFloat = Field(ge=0.0)
-    qpos: tuple[StrictFiniteFloat, ...] = Field(min_length=1, max_length=64)
-    qvel: tuple[StrictFiniteFloat, ...] = Field(min_length=1, max_length=64)
-    control: tuple[StrictFiniteFloat, ...] = Field(min_length=1, max_length=64)
-    end_effector_xyz: tuple[StrictFiniteFloat, StrictFiniteFloat, StrictFiniteFloat]
 
 
 class FirstDivergence(StrictModel):
@@ -816,50 +831,85 @@ class RunTaskOutput(CommonOutput):
         return self
 
 
-class ProbeObservation(StrictModel):
-    metric: MetricName
-    value: StrictFiniteFloat
-
-
-class RunProbeOutput(CommonOutput):
-    revision_id: RevisionId
-    hypothesis_id: HypothesisId
-    run_id: RunId
-    prediction_matched: StrictBool
-    falsifier_triggered: StrictBool
-    inconclusive: StrictBool
-    conflicting: StrictBool
-    observations: list[ProbeObservation] = Field(min_length=1, max_length=128)
-    trace: list[AnalysisTracePoint] = Field(min_length=256, max_length=256)
+class SegmentBoundary(StrictModel):
+    segment_index: StrictInt = Field(ge=0)
+    start_step: StrictInt = Field(ge=0)
+    end_step: StrictInt = Field(gt=0)
 
     @model_validator(mode="after")
-    def validate_predicate_state(self) -> RunProbeOutput:
-        expected_conflicting = self.prediction_matched and self.falsifier_triggered
-        expected_inconclusive = not self.prediction_matched and not self.falsifier_triggered
-        if self.conflicting != expected_conflicting:
-            raise ValueError("conflicting must match the predicate results")
-        if self.inconclusive != expected_inconclusive:
-            raise ValueError("inconclusive must match the predicate results")
+    def validate_order(self) -> SegmentBoundary:
+        if self.end_step <= self.start_step:
+            raise ValueError("segment boundary end must follow start")
         return self
 
-    @model_validator(mode="after")
-    def validate_analysis_trace(self) -> RunProbeOutput:
-        first = self.trace[0]
-        widths = (len(first.qpos), len(first.qvel), len(first.control))
-        for point in self.trace[1:]:
-            if (len(point.qpos), len(point.qvel), len(point.control)) != widths:
-                raise ValueError("analysis trace signal widths must remain constant")
 
-        intervals = [
-            current.time_s - previous.time_s
-            for previous, current in zip(self.trace, self.trace[1:])
-        ]
-        if not intervals or intervals[0] <= 0.0 or any(
-            interval <= 0.0
-            or not math.isclose(interval, intervals[0], rel_tol=1e-9, abs_tol=1e-12)
-            for interval in intervals[1:]
+class ExperimentTraceColumn(StrictModel):
+    name: MetricName
+    values: list[StrictFiniteFloat] = Field(min_length=256, max_length=256)
+
+
+class ExperimentTrace(StrictModel):
+    steps: list[StrictInt] = Field(min_length=256, max_length=256)
+    columns: list[ExperimentTraceColumn] = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_trace(self) -> ExperimentTrace:
+        if self.steps[0] < 0 or any(
+            current <= previous
+            for previous, current in zip(self.steps, self.steps[1:])
         ):
-            raise ValueError("analysis trace timestamps must be uniformly sampled")
+            raise ValueError("trace steps must be nonnegative and strictly increasing")
+        names = [column.name for column in self.columns]
+        if len(names) != len(set(names)):
+            raise ValueError("trace column names must be unique")
+        return self
+
+
+class FinalSnapshotMetadata(StrictModel):
+    artifact_id: ArtifactId
+    uri: Annotated[
+        str,
+        StringConstraints(
+            strict=True,
+            min_length=10,
+            max_length=160,
+            pattern=r"^autopsy://[A-Za-z0-9_./-]+$",
+        ),
+    ]
+    sha256: AssetHash
+    bytes: StrictInt = Field(ge=0)
+    step: StrictInt = Field(ge=0)
+
+
+class RunExperimentOutput(CommonOutput):
+    revision_id: RevisionId
+    hypothesis_id: HypothesisId
+    experiment_run_id: RunId
+    asset_sha256: AssetHash
+    experiment_sha256: AssetHash
+    trace_sha256: AssetHash
+    outcome: Literal["completed"]
+    segment_boundaries: list[SegmentBoundary] = Field(min_length=1, max_length=16)
+    trace: ExperimentTrace
+    final_snapshot: FinalSnapshotMetadata | None = None
+
+    @model_validator(mode="after")
+    def validate_boundaries_and_trace(self) -> RunExperimentOutput:
+        for index, boundary in enumerate(self.segment_boundaries):
+            if boundary.segment_index != index:
+                raise ValueError("segment boundary indices must be contiguous")
+            expected_start = (
+                0 if index == 0 else self.segment_boundaries[index - 1].end_step
+            )
+            if boundary.start_step != expected_start:
+                raise ValueError("segment boundaries must be contiguous")
+        total_steps = self.segment_boundaries[-1].end_step
+        if not 256 <= total_steps <= 100_000:
+            raise ValueError("experiment total steps must be between 256 and 100000")
+        if self.trace.steps[-1] >= total_steps:
+            raise ValueError("trace steps must remain inside experiment boundaries")
+        if self.final_snapshot is not None and self.final_snapshot.step >= total_steps:
+            raise ValueError("final snapshot step must remain inside experiment boundaries")
         return self
 
 
@@ -912,7 +962,7 @@ class AggregateResult(StrictModel):
 
 class BudgetSummary(StrictModel):
     runs_remaining: StrictInt = Field(ge=0)
-    probes_remaining: StrictInt = Field(ge=0)
+    experiments_remaining: StrictInt = Field(ge=0)
     revisions_remaining: StrictInt = Field(ge=0)
     qualification_remaining: StrictInt = Field(ge=0, le=1)
 
@@ -1033,7 +1083,7 @@ TOOL_INPUT_MODELS = (
     OpenCaseInput,
     InspectAssetInput,
     RunTaskInput,
-    RunProbeInput,
+    RunExperimentInput,
     CreateRevisionInput,
     VerifyRevisionInput,
     PublishRevisionInput,
@@ -1042,7 +1092,7 @@ TOOL_OUTPUT_MODELS = (
     OpenCaseOutput,
     InspectAssetOutput,
     RunTaskOutput,
-    RunProbeOutput,
+    RunExperimentOutput,
     CreateRevisionOutput,
     VerifyRevisionOutput,
     PublishRevisionOutput,
@@ -1052,7 +1102,7 @@ TOOL_OUTPUT_MODELS = (
 OpenCaseOutput.model_rebuild()
 InspectAssetOutput.model_rebuild()
 RunTaskOutput.model_rebuild()
-RunProbeOutput.model_rebuild()
+RunExperimentOutput.model_rebuild()
 CreateRevisionOutput.model_rebuild()
 VerifyRevisionOutput.model_rebuild()
 PublishRevisionOutput.model_rebuild()
@@ -1074,8 +1124,8 @@ __all__ = [
     "OpenCaseOutput",
     "PublishRevisionInput",
     "PublishRevisionOutput",
-    "RunProbeInput",
-    "RunProbeOutput",
+    "RunExperimentInput",
+    "RunExperimentOutput",
     "RunTaskInput",
     "RunTaskOutput",
     "ScalarPatch",
