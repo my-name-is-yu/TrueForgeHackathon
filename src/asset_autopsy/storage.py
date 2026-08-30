@@ -281,14 +281,6 @@ class ObjectStore:
         except OSError as exc:
             raise ObjectIntegrityError("object directory cannot be synchronized") from exc
 
-    def _fsync_to_root(self, path: Path) -> None:
-        while True:
-            self._fsync_directory(path)
-            parent = path.parent
-            if parent == path:
-                return
-            path = parent
-
     def put_bytes(self, data: bytes, *, expected_sha256: str | None = None) -> ObjectReference:
         if not isinstance(data, bytes):
             raise TypeError("data must be bytes")
@@ -302,7 +294,10 @@ class ObjectStore:
     ) -> ObjectReference:
         if expected_sha256 is not None:
             _sha256(expected_sha256, "expected_sha256")
-        self.hash_root.mkdir(parents=True, exist_ok=True)
+        if not self.root.parent.is_dir():
+            raise ObjectIntegrityError("object root parent must already exist")
+        self.root.mkdir(exist_ok=True)
+        self.hash_root.mkdir(exist_ok=True)
         temporary_path: Path | None = None
         digest = hashlib.sha256()
         size = 0
@@ -330,11 +325,17 @@ class ObjectStore:
                 stored, stored_size = self._digest_file(destination)
                 if stored != actual:
                     raise ObjectIntegrityError("canonical object failed hash verification")
-                self._fsync_to_root(destination.parent)
+                self._fsync_directory(destination.parent)
+                self._fsync_directory(self.hash_root)
+                self._fsync_directory(self.root)
+                self._fsync_directory(self.root.parent)
                 return ObjectReference(stored, stored_size)
             os.replace(temporary_path, destination)
             temporary_path = None
-            self._fsync_to_root(destination.parent)
+            self._fsync_directory(destination.parent)
+            self._fsync_directory(self.hash_root)
+            self._fsync_directory(self.root)
+            self._fsync_directory(self.root.parent)
             return ObjectReference(actual, size)
         except OSError as exc:
             raise ObjectIntegrityError("object publication failed") from exc
@@ -789,8 +790,7 @@ class EvidenceStore:
 
     def append_event(self, event: LedgerEventRecord) -> LedgerEvent:
         self._validate_event_record(event)
-        if event.event_type in TRANSACTIONAL_EVENT_TYPES:
-            raise ValidationError("event type requires its dedicated transaction API")
+        self._validate_generic_event_type(event.event_type)
         with self._transaction() as connection:
             if connection.execute(
                 "SELECT 1 FROM cases WHERE case_id = ?", (event.case_id,)
@@ -806,6 +806,11 @@ class EvidenceStore:
             return self._append_event(connection, event)
 
     append_ledger_event = append_event
+
+    @staticmethod
+    def _validate_generic_event_type(event_type: str) -> None:
+        if event_type in TRANSACTIONAL_EVENT_TYPES:
+            raise ValidationError("event type requires its dedicated transaction API")
 
     @staticmethod
     def _validate_revision(revision: RevisionRecord) -> str:
@@ -1004,8 +1009,7 @@ class EvidenceStore:
             self._validate_event_record(event)
             if event.case_id != run.case_id or event.revision_id != run.revision_id:
                 raise ValidationError("run and event identities do not match")
-            if event.event_type in TRANSACTIONAL_EVENT_TYPES:
-                raise ValidationError("event type requires its dedicated transaction API")
+            self._validate_generic_event_type(event.event_type)
         with self._transaction() as connection:
             if connection.execute(
                 "SELECT 1 FROM runs WHERE run_id = ?", (run.run_id,)
