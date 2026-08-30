@@ -435,9 +435,7 @@ class AssetAutopsyService:
                     )
                 )
             except PartialRunError as exc:
-                completed_boundaries = boundaries[
-                    : len(exc.partial_record.segments)
-                ]
+                completed_boundaries = boundaries[: len(exc.partial_record.segments)]
                 partial_bytes = canonical_json_bytes(
                     {
                         "run_id": run_id,
@@ -448,8 +446,7 @@ class AssetAutopsyService:
                             for boundary in completed_boundaries
                         ],
                         "segments": [
-                            segment.as_dict()
-                            for segment in exc.partial_record.segments
+                            segment.as_dict() for segment in exc.partial_record.segments
                         ],
                     }
                 )
@@ -1880,8 +1877,7 @@ def _contract_clauses() -> list[ContractClause]:
         ContractClause(
             clause_id="reach_error",
             description=(
-                "Hold error p95 must not exceed "
-                f"{PASS_LIMITS['hold_error_p95_m']:g} m."
+                f"Hold error p95 must not exceed {PASS_LIMITS['hold_error_p95_m']:g} m."
             ),
         ),
         ContractClause(
@@ -1894,8 +1890,7 @@ def _contract_clauses() -> list[ContractClause]:
         ContractClause(
             clause_id="settling",
             description=(
-                "Settling time must not exceed "
-                f"{PASS_LIMITS['settling_time_s']:.1f} s."
+                f"Settling time must not exceed {PASS_LIMITS['settling_time_s']:.1f} s."
             ),
         ),
         ContractClause(

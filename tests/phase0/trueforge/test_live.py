@@ -5,6 +5,7 @@ import pytest
 from spikes.phase0.trueforge.runner import run_live_probe
 
 
+@pytest.mark.cgl
 @pytest.mark.phase0_trueforge
 def test_live_trueforge_phase0_gates() -> None:
     result = run_live_probe()

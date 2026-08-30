@@ -775,9 +775,7 @@ def test_unknown_body_track_is_rejected_before_upstream_run() -> None:
     asyncio.run(check())
 
 
-@pytest.mark.parametrize(
-    "invalid_body_xpos", ("missing", "wrong_width", "nested")
-)
+@pytest.mark.parametrize("invalid_body_xpos", ("missing", "wrong_width", "nested"))
 def test_body_position_response_requires_three_numeric_scalars(
     invalid_body_xpos: str,
 ) -> None:
@@ -905,9 +903,7 @@ def test_load_maps_oversized_integer_json_to_a_poisoning_typed_error() -> None:
         ) as client:
             with pytest.raises(UpstreamToolError) as caught:
                 await client.load(
-                    '<mujoco model="synthetic">'
-                    + " " * 1_000
-                    + "</mujoco>"
+                    '<mujoco model="synthetic">' + " " * 1_000 + "</mujoco>"
                 )
             assert caught.value.envelope() == {
                 "code": UPSTREAM_BAD_RESPONSE,
@@ -1521,7 +1517,9 @@ def test_timeout_primary_survives_bounded_blocking_cleanup() -> None:
             with pytest.raises(UpstreamToolError) as caught:
                 await client.reset(slot)
             assert caught.value.code == UPSTREAM_TIMEOUT
-            assert caught.value.message == "The upstream simulation operation timed out."
+            assert (
+                caught.value.message == "The upstream simulation operation timed out."
+            )
             assert slot.state is SlotState.POISONED
             assert client.ready is False
             with pytest.raises(UpstreamToolError) as reused:
@@ -1718,9 +1716,7 @@ def test_cancelled_exit_waiting_for_lifecycle_lock_finishes_slot_cleanup() -> No
 
         async def owner() -> None:
             async with client:
-                slot_holder.append(
-                    await client.load('<mujoco model="synthetic"/>')
-                )
+                slot_holder.append(await client.load('<mujoco model="synthetic"/>'))
                 entered.set()
                 await leave_body.wait()
 

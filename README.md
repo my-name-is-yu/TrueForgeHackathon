@@ -120,17 +120,29 @@ private runtime data. TrueForge's local state lives outside this repository unde
 
 ## Reproduce the verification suite
 
-Run the same dependency, upstream, TrueForge boundary, and repository checks used for the
-submission candidate:
+Run the frozen install and GPU-independent checks used by hosted CI:
 
 ```bash
 npm ci
 uv sync --frozen
-uv run pytest tests/phase0/upstream -q
-uv run pytest tests/phase0/trueforge -q
-uv run pytest -q
+uv run pytest -q -m "not cgl"
+uv run ruff check .
+uv run ruff format --check .
 git diff --check
 ```
+
+Before final evidence, run the isolated render gate and then the default full suite on a
+CGL-capable real Mac:
+
+```bash
+uv run pytest -q -m cgl
+uv run pytest -q
+```
+
+GitHub CI runs all GPU-independent repository tests on hosted macOS for pull requests and pushes
+to `main`. It does not load provider secrets or run the real-model evidence driver. Hosted CI
+therefore does not establish the CGL render gate; both real-Mac commands above remain required
+before the post-merge exact-`main` evidence run.
 
 The Phase 0 TrueForge test exercises its original transport placeholder and historical measured
 boundary. The SC1 contract is the generic `run_experiment` flow implemented by the current

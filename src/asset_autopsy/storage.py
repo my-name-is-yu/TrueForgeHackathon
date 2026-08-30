@@ -310,7 +310,9 @@ class ObjectStore:
             finally:
                 os.close(descriptor)
         except OSError as exc:
-            raise ObjectIntegrityError("object directory cannot be synchronized") from exc
+            raise ObjectIntegrityError(
+                "object directory cannot be synchronized"
+            ) from exc
 
     def _fsync_object_tree(self, path: Path) -> None:
         if path != self.root and self.root not in path.parents:
@@ -321,10 +323,14 @@ class ObjectStore:
                 return
             parent = path.parent
             if parent == path:
-                raise ObjectIntegrityError("object directory is outside the object root")
+                raise ObjectIntegrityError(
+                    "object directory is outside the object root"
+                )
             path = parent
 
-    def put_bytes(self, data: bytes, *, expected_sha256: str | None = None) -> ObjectReference:
+    def put_bytes(
+        self, data: bytes, *, expected_sha256: str | None = None
+    ) -> ObjectReference:
         if not isinstance(data, bytes):
             raise ValidationError("data must be bytes")
         if len(data) > MAX_OBJECT_BYTES:
@@ -383,7 +389,9 @@ class ObjectStore:
                     raise ObjectIntegrityError("canonical object path is not a file")
                 stored, stored_size = self._digest_file(destination)
                 if stored != actual:
-                    raise ObjectIntegrityError("canonical object failed hash verification")
+                    raise ObjectIntegrityError(
+                        "canonical object failed hash verification"
+                    )
                 temporary_path.unlink()
                 temporary_path = None
                 self._fsync_object_tree(destination.parent)
@@ -617,9 +625,7 @@ class EvidenceStore:
         revision: RevisionRecord | sqlite3.Row,
     ) -> dict[str, Any]:
         if isinstance(revision, RevisionRecord):
-            return {
-                field: getattr(revision, field) for field in REVISION_EVENT_FIELDS
-            }
+            return {field: getattr(revision, field) for field in REVISION_EVENT_FIELDS}
         return {field: revision[field] for field in REVISION_EVENT_FIELDS}
 
     @staticmethod
@@ -704,7 +710,11 @@ class EvidenceStore:
             created_at=row["created_at"],
         )
         try:
-            if not isinstance(event.seq, int) or isinstance(event.seq, bool) or event.seq <= 0:
+            if (
+                not isinstance(event.seq, int)
+                or isinstance(event.seq, bool)
+                or event.seq <= 0
+            ):
                 raise ValidationError("ledger sequence is invalid")
             _id(event.event_id, "event_id")
             _id(event.request_id, "request_id")
@@ -717,7 +727,9 @@ class EvidenceStore:
             _timestamp(event.created_at)
             _sha256(event.prev_hash, "prev_hash")
             _sha256(event.event_hash, "event_hash")
-            if any(not isinstance(reference, Mapping) for reference in event.artifact_refs):
+            if any(
+                not isinstance(reference, Mapping) for reference in event.artifact_refs
+            ):
                 raise ValidationError("artifact_refs must contain objects")
             for reference in event.artifact_refs:
                 cls._validate_artifact_reference(reference)
@@ -751,10 +763,7 @@ class EvidenceStore:
         except (TypeError, ValueError, ValidationError) as exc:
             raise IntegrityError("stored ledger event hash inputs are invalid") from exc
         return (
-            all(
-                row[field] == value
-                for field, value in without_hash.items()
-            )
+            all(row[field] == value for field, value in without_hash.items())
             and row["event_hash"] == expected_hash
         )
 
@@ -781,7 +790,9 @@ class EvidenceStore:
             or isinstance(size, bool)
             or not 0 <= size <= MAX_OBJECT_BYTES
         ):
-            raise ValidationError("artifact reference size is outside the object size limit")
+            raise ValidationError(
+                "artifact reference size is outside the object size limit"
+            )
 
     @classmethod
     def _prepare_event_record(cls, event: LedgerEventRecord) -> _PreparedLedgerEvent:
@@ -827,7 +838,9 @@ class EvidenceStore:
             payload_json=payload_json,
             artifact_refs=artifact_refs,
             artifact_refs_json=(
-                "[" + ",".join(reference.canonical_json for reference in artifact_refs) + "]"
+                "["
+                + ",".join(reference.canonical_json for reference in artifact_refs)
+                + "]"
             ),
             request_id=request_id,
             created_at=created_at,
@@ -1124,7 +1137,9 @@ class EvidenceStore:
     def get_run(self, run_id: str) -> RunRecord:
         _id(run_id, "run_id")
         with self._read_transaction() as connection:
-            row = connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
             if row is None:
                 raise StorageError("run was not found")
             self._validate_case_lifecycle_from_connection(connection, row["case_id"])
@@ -1134,17 +1149,24 @@ class EvidenceStore:
         prepared = self._prepare_event_record(event)
         self._validate_generic_event_type(prepared.event_type)
         with self._transaction() as connection:
-            if connection.execute(
-                "SELECT 1 FROM cases WHERE case_id = ?", (prepared.case_id,)
-            ).fetchone() is None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM cases WHERE case_id = ?", (prepared.case_id,)
+                ).fetchone()
+                is None
+            ):
                 raise CaseNotFoundError("case was not found")
             self._validate_case_lifecycle_from_connection(connection, prepared.case_id)
-            if prepared.revision_id is not None and connection.execute(
-                """
+            if (
+                prepared.revision_id is not None
+                and connection.execute(
+                    """
                 SELECT 1 FROM revisions WHERE case_id = ? AND revision_id = ?
                 """,
-                (prepared.case_id, prepared.revision_id),
-            ).fetchone() is None:
+                    (prepared.case_id, prepared.revision_id),
+                ).fetchone()
+                is None
+            ):
                 raise RevisionNotFoundError("revision was not found")
             self._validate_artifact_objects(prepared.artifact_refs)
             return self._append_event(connection, prepared)
@@ -1167,7 +1189,10 @@ class EvidenceStore:
                 raise ValidationError("root revision ordinal must be zero")
             if revision.patch_manifest_sha256 is not None:
                 raise ValidationError("root revision cannot have a patch manifest")
-            if revision.hypothesis_event_id is not None or revision.probe_run_id is not None:
+            if (
+                revision.hypothesis_event_id is not None
+                or revision.probe_run_id is not None
+            ):
                 raise ValidationError("root revision citations must be null")
         else:
             _id(revision.parent_revision_id, "parent_revision_id")
@@ -1176,7 +1201,9 @@ class EvidenceStore:
             if revision.patch_manifest_sha256 is None:
                 raise ValidationError("child revision requires a patch manifest")
             if revision.hypothesis_event_id is None or revision.probe_run_id is None:
-                raise ValidationError("child revision requires hypothesis and probe citations")
+                raise ValidationError(
+                    "child revision requires hypothesis and probe citations"
+                )
             _id(revision.hypothesis_event_id, "hypothesis_event_id")
             _id(revision.probe_run_id, "probe_run_id")
         return _timestamp(revision.created_at)
@@ -1213,7 +1240,9 @@ class EvidenceStore:
         created_at = self._validate_revision(revision)
         prepared_event = self._prepare_event_record(event)
         if revision.parent_revision_id is None:
-            raise ValidationError("commit_revision_with_event requires a child revision")
+            raise ValidationError(
+                "commit_revision_with_event requires a child revision"
+            )
         if (
             prepared_event.case_id != revision.case_id
             or prepared_event.revision_id != revision.revision_id
@@ -1378,16 +1407,22 @@ class EvidenceStore:
             self._validate_case_lifecycle_from_connection(connection, run.case_id)
             if prepared_event is not None:
                 self._validate_artifact_objects(prepared_event.artifact_refs)
-            if connection.execute(
-                "SELECT 1 FROM runs WHERE run_id = ?", (run.run_id,)
-            ).fetchone() is not None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM runs WHERE run_id = ?", (run.run_id,)
+                ).fetchone()
+                is not None
+            ):
                 raise StorageError("run identity already exists")
-            if connection.execute(
-                """
+            if (
+                connection.execute(
+                    """
                 SELECT 1 FROM revisions WHERE case_id = ? AND revision_id = ?
                 """,
-                (run.case_id, run.revision_id),
-            ).fetchone() is None:
+                    (run.case_id, run.revision_id),
+                ).fetchone()
+                is None
+            ):
                 raise StorageError("revision was not found")
             try:
                 connection.execute(
@@ -1416,7 +1451,9 @@ class EvidenceStore:
                     self._append_event(connection, prepared_event)
             except sqlite3.IntegrityError as exc:
                 raise StorageError("run transaction conflicted") from exc
-            row = connection.execute("SELECT * FROM runs WHERE run_id = ?", (run.run_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run.run_id,)
+            ).fetchone()
             assert row is not None
             return self._run_from_row(row)
 
@@ -1447,9 +1484,7 @@ class EvidenceStore:
         values: Mapping[str, Any] | sqlite3.Row,
     ) -> dict[str, str]:
         try:
-            return {
-                field: _sha256(values[field], field) for field in COMMITMENT_FIELDS
-            }
+            return {field: _sha256(values[field], field) for field in COMMITMENT_FIELDS}
         except (KeyError, IndexError) as exc:
             raise ValidationError("qualification commitments are incomplete") from exc
 
@@ -1530,10 +1565,14 @@ class EvidenceStore:
         *,
         commitments: Mapping[str, str],
     ) -> QualificationAttempt:
-        if event.event_type not in {
-            "QUALIFICATION_PASSED",
-            "QUALIFICATION_FAILED",
-        } and "result" in event.payload:
+        if (
+            event.event_type
+            not in {
+                "QUALIFICATION_PASSED",
+                "QUALIFICATION_FAILED",
+            }
+            and "result" in event.payload
+        ):
             raise IntegrityError("nonterminal qualification result is invalid")
         result = event.payload.get("result")
         if result is not None and not isinstance(result, Mapping):
@@ -1588,12 +1627,16 @@ class EvidenceStore:
                     case.case_id, "RUNNING", event, commitments=commitments
                 )
                 if attempt.revision_id != current_revision_id:
-                    raise IntegrityError("qualification revision is not the restored head")
+                    raise IntegrityError(
+                        "qualification revision is not the restored head"
+                    )
                 if (
                     case.qualification_revision_id != attempt.revision_id
                     or case.qualification_attempt_id != attempt.attempt_id
                 ):
-                    raise IntegrityError("qualification reservation differs from the case")
+                    raise IntegrityError(
+                        "qualification reservation differs from the case"
+                    )
                 qualification_revision_id = attempt.revision_id
                 qualification_attempt_id = attempt.attempt_id
                 qualification_result = "RUNNING"
@@ -1607,7 +1650,9 @@ class EvidenceStore:
                     "QUALIFICATION_FAILED": "FAILED",
                 }[event.event_type]
                 if qualification_result != "RUNNING":
-                    raise IntegrityError("qualification lifecycle transition is invalid")
+                    raise IntegrityError(
+                        "qualification lifecycle transition is invalid"
+                    )
                 attempt = cls._attempt_from_event(
                     case.case_id, state, event, commitments=commitments
                 )
@@ -1649,7 +1694,9 @@ class EvidenceStore:
         run_rows = connection.execute(
             "SELECT * FROM runs WHERE case_id = ?", (case_id,)
         ).fetchall()
-        revisions_by_id = {revision["revision_id"]: revision for revision in revision_rows}
+        revisions_by_id = {
+            revision["revision_id"]: revision for revision in revision_rows
+        }
         runs_by_id = {run["run_id"]: run for run in run_rows}
         for run in run_rows:
             run_record = self._validated_run_from_row(run)
@@ -1849,9 +1896,16 @@ class EvidenceStore:
                         scenario_hashes=normalized,
                     ):
                         return existing
-                raise QualificationConflictError("qualification attempt is already used")
-            if case["head_revision_id"] != expected_head_revision_id or revision_id != expected_head_revision_id:
-                raise QualificationConflictError("qualification revision is not the current head")
+                raise QualificationConflictError(
+                    "qualification attempt is already used"
+                )
+            if (
+                case["head_revision_id"] != expected_head_revision_id
+                or revision_id != expected_head_revision_id
+            ):
+                raise QualificationConflictError(
+                    "qualification revision is not the current head"
+                )
             payload = self._identity_payload(
                 attempt_id=attempt_id,
                 revision_id=revision_id,
@@ -1884,7 +1938,9 @@ class EvidenceStore:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
-                raise QualificationConflictError("qualification reservation conflicted") from exc
+                raise QualificationConflictError(
+                    "qualification reservation conflicted"
+                ) from exc
             return QualificationAttempt(
                 case_id=case_id,
                 attempt_id=attempt_id,
@@ -1966,9 +2022,9 @@ class EvidenceStore:
                     and existing.scenario_hashes == normalized
                     and case["qualification_result"] == state
                 ):
-                    if result_payload is not None and _json_text(result_payload) != _json_text(
-                        stored_result
-                    ):
+                    if result_payload is not None and _json_text(
+                        result_payload
+                    ) != _json_text(stored_result):
                         raise QualificationConflictError(
                             "qualification terminal result is immutable"
                         )
@@ -1981,7 +2037,9 @@ class EvidenceStore:
                         state=existing.state,
                         result=stored_result,
                     )
-                raise QualificationConflictError("qualification terminal state is immutable")
+                raise QualificationConflictError(
+                    "qualification terminal state is immutable"
+                )
             if case["qualification_result"] != "RUNNING":
                 raise QualificationConflictError("qualification is not running")
             self._require_attempt(
@@ -2077,7 +2135,6 @@ class EvidenceStore:
                     result=terminal_attempt.result,
                 )
             return attempt
-
 
     def ledger_events(self, case_id: str | None = None) -> tuple[LedgerEvent, ...]:
         if case_id is not None:

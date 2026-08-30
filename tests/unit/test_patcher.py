@@ -38,13 +38,16 @@ def test_scalar_patch_is_copy_on_write_and_has_one_canonical_change() -> None:
         },
     )
 
-    assert BASE_XML == b"""<mujoco>
+    assert (
+        BASE_XML
+        == b"""<mujoco>
   <worldbody>
     <body name="arm">
       <joint name="elbow" axis="0 0 2" damping="0.3" armature="0.01" frictionloss="0"/>
     </body>
   </worldbody>
 </mujoco>"""
+    )
     assert len(result.canonical_diff) == 1
     assert result.canonical_diff[0].attribute == "damping"
     assert result.canonical_diff[0].before == "0.3"
@@ -160,13 +163,9 @@ def test_fixture_enforces_byte_depth_and_element_limits() -> None:
         provision_fixture(too_deep)
     assert depth_exc_info.value.code == "INVALID_XML"
 
-    at_element_limit = (
-        b"<mujoco>" + b"<body/>" * (MAX_XML_ELEMENTS - 1) + b"</mujoco>"
-    )
+    at_element_limit = b"<mujoco>" + b"<body/>" * (MAX_XML_ELEMENTS - 1) + b"</mujoco>"
     assert provision_fixture(at_element_limit) == at_element_limit
-    too_many_elements = at_element_limit.replace(
-        b"</mujoco>", b"<body/></mujoco>"
-    )
+    too_many_elements = at_element_limit.replace(b"</mujoco>", b"<body/></mujoco>")
     with pytest.raises(PatcherError) as count_exc_info:
         provision_fixture(too_many_elements)
     assert count_exc_info.value.code == "INVALID_XML"
@@ -278,11 +277,14 @@ def test_axis_expected_value_allows_only_normalization_roundoff() -> None:
 @pytest.mark.parametrize(
     ("xml", "expected_code"),
     [
-        (b"<mujoco><include file=\"fixture.xml\"/></mujoco>", "UNSAFE_XML"),
-        (b"<!DOCTYPE mujoco [<!ENTITY x \"external\">]><mujoco/>", "UNSAFE_XML"),
-        (b"<mujoco><asset><mesh file=\"mesh.stl\"/></asset></mujoco>", "UNSAFE_XML"),
-        (b"<mujoco><plugin plugin=\"external\"/></mujoco>", "UNSAFE_XML"),
-        (b"<mujoco><worldbody><body path=\"../secret\"/></worldbody></mujoco>", "UNSAFE_XML"),
+        (b'<mujoco><include file="fixture.xml"/></mujoco>', "UNSAFE_XML"),
+        (b'<!DOCTYPE mujoco [<!ENTITY x "external">]><mujoco/>', "UNSAFE_XML"),
+        (b'<mujoco><asset><mesh file="mesh.stl"/></asset></mujoco>', "UNSAFE_XML"),
+        (b'<mujoco><plugin plugin="external"/></mujoco>', "UNSAFE_XML"),
+        (
+            b'<mujoco><worldbody><body path="../secret"/></worldbody></mujoco>',
+            "UNSAFE_XML",
+        ),
     ],
 )
 def test_fixture_provisioning_rejects_unsafe_external_features(

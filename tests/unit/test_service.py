@@ -103,9 +103,7 @@ def test_service_requires_strict_models_and_a_same_revision_baseline(tmp_path) -
 def test_removed_surfaces_have_no_production_references() -> None:
     package = Path(__file__).resolve().parents[2] / "src" / "asset_autopsy"
     assert not (package / "publisher.py").exists()
-    production = "\n".join(
-        path.read_text() for path in sorted(package.glob("*.py"))
-    )
+    production = "\n".join(path.read_text() for path in sorted(package.glob("*.py")))
     for removed in (
         "PublishRevisionOutput",
         "PublicationBundle",
@@ -176,7 +174,9 @@ def test_revision_resolution_preserves_corrupt_row_as_integrity_error(tmp_path) 
     assert caught.value.retryable is False
 
 
-def test_revision_resolution_keeps_missing_row_distinct_from_corruption(tmp_path) -> None:
+def test_revision_resolution_keeps_missing_row_distinct_from_corruption(
+    tmp_path,
+) -> None:
     service = AssetAutopsyService(tmp_path)
 
     with pytest.raises(DomainError) as caught:

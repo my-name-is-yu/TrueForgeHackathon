@@ -46,8 +46,7 @@ def matches_sim_load_result(payload: dict[str, Any]) -> bool:
     ):
         return False
     return all(
-        type(payload[name]) is list
-        and all(type(item) is str for item in payload[name])
+        type(payload[name]) is list and all(type(item) is str for item in payload[name])
         for name in SIM_LOAD_LIST_FIELDS
     )
 

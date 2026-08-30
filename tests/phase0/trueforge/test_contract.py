@@ -45,7 +45,11 @@ def test_resolved_tool_boundary_is_exact() -> None:
     assert DUMMY_TOOLS == ("inspect_asset", "publish_revision")
     schemas = {schema["name"]: schema for schema in planned_tool_schemas()}
     assert list(schemas) == list(PLANNED_TOOLS)
-    assert [name for name, schema in schemas.items() if schema["annotations"]["destructiveHint"]] == ["publish_revision"]
+    assert [
+        name
+        for name, schema in schemas.items()
+        if schema["annotations"]["destructiveHint"]
+    ] == ["publish_revision"]
 
 
 def test_large_tool_fixture_is_exactly_256_rows() -> None:
@@ -63,7 +67,9 @@ def test_image_fixture_is_160_by_120_png() -> None:
 
 def test_string_encoded_image_payload_is_detected() -> None:
     image_data = base64.b64encode(make_png()).decode("ascii")
-    assert _contains_image_content({"content": json.dumps({"data": image_data})}, image_data)
+    assert _contains_image_content(
+        {"content": json.dumps({"data": image_data})}, image_data
+    )
 
 
 def _passing_evidence() -> dict:
@@ -75,12 +81,22 @@ def _passing_evidence() -> dict:
             "wrong_bearer": {
                 "trueforge_status": 401,
                 "request_count": 1,
-                "request": {"path": "/mcp", "auth_ok": False, "origin_ok": True, "response_status": 401},
+                "request": {
+                    "path": "/mcp",
+                    "auth_ok": False,
+                    "origin_ok": True,
+                    "response_status": 401,
+                },
             },
             "wrong_origin": {
                 "trueforge_status": 403,
                 "request_count": 1,
-                "request": {"path": "/mcp", "auth_ok": True, "origin_ok": False, "response_status": 403},
+                "request": {
+                    "path": "/mcp",
+                    "auth_ok": True,
+                    "origin_ok": False,
+                    "response_status": 403,
+                },
             },
         },
         "ltr": {"offloaded_reference_seen": True},
@@ -115,23 +131,74 @@ def _passing_evidence() -> dict:
 @pytest.mark.parametrize(
     ("gate", "change"),
     [
-        ("http_auth_origin", lambda evidence: evidence["http"].update(saved_connection=False)),
-        ("http_auth_origin", lambda evidence: evidence["http"].update(streamable_http_tools=False)),
-        ("http_auth_origin", lambda evidence: evidence["http"]["wrong_bearer"]["request"].update(response_status=200)),
-        ("http_auth_origin", lambda evidence: evidence["http"]["wrong_origin"]["request"].update(response_status=200)),
-        ("large_tool_response", lambda evidence: evidence["ltr"].update(offloaded_reference_seen=False)),
-        ("large_tool_response", lambda evidence: evidence["sandbox"].update(rows=False)),
-        ("large_tool_response", lambda evidence: evidence["sandbox"].update(analyzed=False)),
-        ("sandbox", lambda evidence: evidence["sandbox"].update(checkout_isolated=False)),
-        ("sandbox", lambda evidence: evidence["sandbox"].update(private_runtime_isolated=False)),
-        ("sandbox", lambda evidence: evidence["sandbox"].update(sentinels_intact=False)),
+        (
+            "http_auth_origin",
+            lambda evidence: evidence["http"].update(saved_connection=False),
+        ),
+        (
+            "http_auth_origin",
+            lambda evidence: evidence["http"].update(streamable_http_tools=False),
+        ),
+        (
+            "http_auth_origin",
+            lambda evidence: evidence["http"]["wrong_bearer"]["request"].update(
+                response_status=200
+            ),
+        ),
+        (
+            "http_auth_origin",
+            lambda evidence: evidence["http"]["wrong_origin"]["request"].update(
+                response_status=200
+            ),
+        ),
+        (
+            "large_tool_response",
+            lambda evidence: evidence["ltr"].update(offloaded_reference_seen=False),
+        ),
+        (
+            "large_tool_response",
+            lambda evidence: evidence["sandbox"].update(rows=False),
+        ),
+        (
+            "large_tool_response",
+            lambda evidence: evidence["sandbox"].update(analyzed=False),
+        ),
+        (
+            "sandbox",
+            lambda evidence: evidence["sandbox"].update(checkout_isolated=False),
+        ),
+        (
+            "sandbox",
+            lambda evidence: evidence["sandbox"].update(private_runtime_isolated=False),
+        ),
+        (
+            "sandbox",
+            lambda evidence: evidence["sandbox"].update(sentinels_intact=False),
+        ),
         ("sandbox", lambda evidence: evidence["sandbox"].update(helper_staged=False)),
-        ("sandbox", lambda evidence: evidence["sandbox"].update(private_data_clear=False)),
-        ("sandbox", lambda evidence: evidence["sandbox"].update(network_attempted=False)),
+        (
+            "sandbox",
+            lambda evidence: evidence["sandbox"].update(private_data_clear=False),
+        ),
+        (
+            "sandbox",
+            lambda evidence: evidence["sandbox"].update(network_attempted=False),
+        ),
         ("sandbox", lambda evidence: evidence["sandbox"].update(network="reachable")),
-        ("agent_spec_approval", lambda evidence: evidence["approval"].update(publish_approval_call_match=False)),
-        ("image_transport", lambda evidence: evidence["image"].update(model_context_image_data=True)),
-        ("image_transport", lambda evidence: evidence["image"].update(host_path_exposed=True)),
+        (
+            "agent_spec_approval",
+            lambda evidence: evidence["approval"].update(
+                publish_approval_call_match=False
+            ),
+        ),
+        (
+            "image_transport",
+            lambda evidence: evidence["image"].update(model_context_image_data=True),
+        ),
+        (
+            "image_transport",
+            lambda evidence: evidence["image"].update(host_path_exposed=True),
+        ),
         ("agent_spec_approval", lambda evidence: evidence.update(turn_status="failed")),
     ],
 )
@@ -153,7 +220,10 @@ def _tool_response(call_id: str, analysis: dict) -> dict:
             "content": json.dumps(
                 {
                     "success": True,
-                    "response": {"exitCode": 0, "result": json.dumps(analysis, separators=(",", ":"))},
+                    "response": {
+                        "exitCode": 0,
+                        "result": json.dumps(analysis, separators=(",", ":")),
+                    },
                 }
             ),
         }
@@ -185,7 +255,13 @@ def test_mixed_sandbox_responses_cannot_combine_into_a_pass() -> None:
     }
     evidence = deepcopy(_passing_evidence())
     evidence["sandbox"] = _sandbox_analysis_evidence(
-        {"data": [_tool_response("sandbox-call", matching), _tool_response("other-call", unrelated)]}, "sandbox-call"
+        {
+            "data": [
+                _tool_response("sandbox-call", matching),
+                _tool_response("other-call", unrelated),
+            ]
+        },
+        "sandbox-call",
     )
 
     gates, all_pass = evaluate_phase0_gates(evidence)
@@ -200,10 +276,17 @@ def test_approval_from_another_tool_call_cannot_satisfy_publish_gate() -> None:
             {
                 "event": {
                     "type": "model.message",
-                    "tool_calls": [{"id": "publish-call", "function": {"name": "publish_revision"}}],
+                    "tool_calls": [
+                        {"id": "publish-call", "function": {"name": "publish_revision"}}
+                    ],
                 }
             },
-            {"event": {"type": "tool.approval_required", "tool_calls": [{"id": "inspect-call"}]}},
+            {
+                "event": {
+                    "type": "tool.approval_required",
+                    "tool_calls": [{"id": "inspect-call"}],
+                }
+            },
         ]
     }
     evidence = deepcopy(_passing_evidence())
@@ -219,10 +302,17 @@ def test_protected_path_in_raw_event_blocks_before_sanitization(tmp_path) -> Non
     protected_path = tmp_path / "private-runtime" / "sentinel"
     raw = {"data": [{"event": {"type": "sandbox.exec", "path": str(protected_path)}}]}
     assert _contains_prohibited_boundary_data(raw, [protected_path], []) is True
-    assert _contains_prohibited_boundary_data(_sanitized_events_payload(raw), [protected_path], []) is False
+    assert (
+        _contains_prohibited_boundary_data(
+            _sanitized_events_payload(raw), [protected_path], []
+        )
+        is False
+    )
 
     evidence = deepcopy(_passing_evidence())
-    evidence["sandbox"]["private_data_clear"] = not _contains_prohibited_boundary_data(raw, [protected_path], [])
+    evidence["sandbox"]["private_data_clear"] = not _contains_prohibited_boundary_data(
+        raw, [protected_path], []
+    )
 
     gates, all_pass = evaluate_phase0_gates(evidence)
 
@@ -232,7 +322,12 @@ def test_protected_path_in_raw_event_blocks_before_sanitization(tmp_path) -> Non
 
 @pytest.mark.parametrize(
     "field",
-    ["checkout_metadata", "checkout_content", "private_runtime_metadata", "private_runtime_content"],
+    [
+        "checkout_metadata",
+        "checkout_content",
+        "private_runtime_metadata",
+        "private_runtime_content",
+    ],
 )
 @pytest.mark.parametrize("status", ["missing", "readable", "error"])
 def test_each_original_sentinel_access_failure_blocks(field: str, status: str) -> None:
@@ -250,7 +345,9 @@ def test_each_original_sentinel_access_failure_blocks(field: str, status: str) -
     analysis[field] = status
     evidence = deepcopy(_passing_evidence())
     evidence["sandbox"].update(
-        _sandbox_analysis_evidence({"data": [_tool_response("sandbox-call", analysis)]}, "sandbox-call")
+        _sandbox_analysis_evidence(
+            {"data": [_tool_response("sandbox-call", analysis)]}, "sandbox-call"
+        )
     )
 
     gates, all_pass = evaluate_phase0_gates(evidence)
@@ -308,7 +405,9 @@ def test_helper_failure_is_bounded_without_traceback(tmp_path: Path) -> None:
     assert result.stderr == ""
 
 
-def test_helper_invalid_utf8_failure_is_bounded_without_traceback(tmp_path: Path) -> None:
+def test_helper_invalid_utf8_failure_is_bounded_without_traceback(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "invalid-ltr.json").write_bytes(b"\xff")
     helper = tmp_path / ".phase0-boundary-probe.py"
     helper.write_text(
@@ -332,7 +431,9 @@ def test_helper_invalid_utf8_failure_is_bounded_without_traceback(tmp_path: Path
     assert result.stderr == ""
 
 
-def test_partial_start_cleanup_removes_owned_tmpdir_and_home_alias(tmp_path: Path) -> None:
+def test_partial_start_cleanup_removes_owned_tmpdir_and_home_alias(
+    tmp_path: Path,
+) -> None:
     runtime_root = tmp_path / "runtime"
     runtime_root.mkdir()
     home = runtime_root / "home"

@@ -144,7 +144,9 @@ def test_patch_and_basis_experiment_are_single_objects() -> None:
                 "rationale": "The experiment separates the proposed change.",
                 "expected_effect": {
                     "scenario_id": "public_center",
-                    "predicates": [{"metric": "hold_error_p95_m", "op": "lte", "value": 0.03}],
+                    "predicates": [
+                        {"metric": "hold_error_p95_m", "op": "lte", "value": 0.03}
+                    ],
                 },
             }
         )
@@ -167,7 +169,9 @@ def test_patch_and_basis_experiment_are_single_objects() -> None:
                 "rationale": "The experiment separates the proposed change.",
                 "expected_effect": {
                     "scenario_id": "public_center",
-                    "predicates": [{"metric": "hold_error_p95_m", "op": "lte", "value": 0.03}],
+                    "predicates": [
+                        {"metric": "hold_error_p95_m", "op": "lte", "value": 0.03}
+                    ],
                 },
             }
         )
@@ -308,7 +312,9 @@ def test_run_experiment_output_supplies_revision_basis_identifiers() -> None:
             "rationale": "The experiment separates the proposed change.",
             "expected_effect": {
                 "scenario_id": "public_center",
-                "predicates": [{"metric": "hold_error_p95_m", "op": "lte", "value": 0.03}],
+                "predicates": [
+                    {"metric": "hold_error_p95_m", "op": "lte", "value": 0.03}
+                ],
             },
         }
     )
@@ -414,8 +420,7 @@ def test_run_experiment_enforces_collection_bounds_and_finite_positions() -> Non
 
     too_many_observables = _run_experiment_input_payload()
     too_many_observables["observables"] = [
-        {"kind": "body_position", "body_name": f"body_{index}"}
-        for index in range(9)
+        {"kind": "body_position", "body_name": f"body_{index}"} for index in range(9)
     ]
     with pytest.raises(ValidationError):
         RunExperimentInput.model_validate(too_many_observables)
@@ -937,12 +942,16 @@ def test_behavior_diff_represents_nullable_settling_time_transitions() -> None:
                 "magnitude": 0.002,
             },
             "metric_deltas": _metric_deltas(hold_after=0.04, settling_before=None),
-            "clause_outcomes": _clause_outcomes(reach_error="unchanged", settling="improved"),
+            "clause_outcomes": _clause_outcomes(
+                reach_error="unchanged", settling="improved"
+            ),
             "verdict": "improved",
         }
     )
     settling_delta = next(
-        delta for delta in behavior_diff.metric_deltas if delta.metric == "settling_time_s"
+        delta
+        for delta in behavior_diff.metric_deltas
+        if delta.metric == "settling_time_s"
     )
     assert settling_delta.before is None
     assert settling_delta.delta is None
@@ -1147,9 +1156,11 @@ def test_run_task_output_requires_each_fixed_metric_exactly_once() -> None:
 def test_verify_revision_rejects_violated_clauses_as_successful_qualification() -> None:
     for result_name in ("public_result", "holdout_result"):
         payload = _verify_revision_payload()
-        payload[result_name] = {"passed": 1 if result_name == "public_result" else 3,
-                                "total": 1 if result_name == "public_result" else 3,
-                                "violated_clause_ids": ["hold_error"]}
+        payload[result_name] = {
+            "passed": 1 if result_name == "public_result" else 3,
+            "total": 1 if result_name == "public_result" else 3,
+            "violated_clause_ids": ["hold_error"],
+        }
         ticket = _promotion_ticket_payload()
         ticket[result_name] = payload[result_name]
         payload["promotion_ticket"] = ticket
@@ -1175,7 +1186,10 @@ def test_run_task_output_rejects_nonuniform_trace_timestamps() -> None:
         "result": "fail",
         "observations": _run_task_observations(),
     }
-    valid = {**base, "trace": [{"time_s": float(index), "values": (0.0,)} for index in range(3)]}
+    valid = {
+        **base,
+        "trace": [{"time_s": float(index), "values": (0.0,)} for index in range(3)],
+    }
     RunTaskOutput.model_validate(valid)
 
     for timestamps in ((0.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 1.0, 3.0)):
@@ -1251,7 +1265,9 @@ def test_run_task_output_rejects_passes_that_violate_fixed_clauses(
     metric: str, value: float | None
 ) -> None:
     observations = [
-        {**observation, "value": value} if observation["metric"] == metric else observation
+        {**observation, "value": value}
+        if observation["metric"] == metric
+        else observation
         for observation in _run_task_observations(hold_error_p95_m=0.02)
     ]
     with pytest.raises(ValidationError):
@@ -1294,8 +1310,18 @@ def _promotion_ticket_payload() -> dict[str, object]:
         "revision_id": "r002",
         "asset_sha256": "1" * 64,
         "canonical_diff": [
-            {"target": "elbow", "attribute": "axis", "before": "1 0 0", "after": "0 1 0"},
-            {"target": "elbow", "attribute": "damping", "before": "0.3", "after": "0.5"},
+            {
+                "target": "elbow",
+                "attribute": "axis",
+                "before": "1 0 0",
+                "after": "0 1 0",
+            },
+            {
+                "target": "elbow",
+                "attribute": "damping",
+                "before": "0.3",
+                "after": "0.5",
+            },
         ],
         "public_result": {"passed": 1, "total": 1},
         "holdout_result": {"passed": 3, "total": 3},
@@ -1426,7 +1452,11 @@ def test_verify_revision_rejects_promotion_ticket_count_mismatches() -> None:
 
 def test_verify_revision_rejects_promotion_ticket_clause_mismatches() -> None:
     payload = _verify_revision_payload()
-    payload["public_result"] = {"passed": 1, "total": 1, "violated_clause_ids": ["hold_error"]}
+    payload["public_result"] = {
+        "passed": 1,
+        "total": 1,
+        "violated_clause_ids": ["hold_error"],
+    }
     payload["promotion_ticket"] = _promotion_ticket_payload()
     with pytest.raises(ValidationError):
         VerifyRevisionOutput.model_validate(payload)
@@ -1434,7 +1464,11 @@ def test_verify_revision_rejects_promotion_ticket_clause_mismatches() -> None:
 
 def test_public_event_tail_accepts_hypothesis_preregistration() -> None:
     event = PublicEventSummary.model_validate(
-        {"event_id": "evt_demo", "kind": "HYPOTHESIS_RECORDED", "summary": "Hypothesis recorded."}
+        {
+            "event_id": "evt_demo",
+            "kind": "HYPOTHESIS_RECORDED",
+            "summary": "Hypothesis recorded.",
+        }
     )
     assert event.kind == "HYPOTHESIS_RECORDED"
 
@@ -1536,9 +1570,7 @@ def _open_case_payload() -> dict[str, object]:
             "revisions_remaining": 2,
             "qualification_remaining": 1,
         },
-        "revision_history": [
-            {"revision_id": "r000", "asset_sha256": "1" * 64}
-        ],
+        "revision_history": [{"revision_id": "r000", "asset_sha256": "1" * 64}],
     }
 
 
@@ -1595,7 +1627,9 @@ def test_run_task_count_observations_are_nonnegative_integers(value: float) -> N
 )
 def test_run_task_physical_observations_are_nonnegative(metric: str) -> None:
     observations = [
-        {**observation, "value": -1.0} if observation["metric"] == metric else observation
+        {**observation, "value": -1.0}
+        if observation["metric"] == metric
+        else observation
         for observation in _run_task_observations()
     ]
     with pytest.raises(ValidationError):
@@ -1668,7 +1702,9 @@ def test_axis_is_normalized_and_family_ranges_are_enforced() -> None:
         )
 
 
-def test_aggregate_result_rejects_passed_above_total_regardless_of_field_order() -> None:
+def test_aggregate_result_rejects_passed_above_total_regardless_of_field_order() -> (
+    None
+):
     with pytest.raises(ValidationError):
         AggregateResult.model_validate({"passed": 4, "total": 3})
 

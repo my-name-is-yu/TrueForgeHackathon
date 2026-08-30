@@ -40,7 +40,9 @@ class TrueForgeError(RuntimeError):
         self.path = path
 
 
-Transport = Callable[[str, str, Mapping[str, Any] | None], tuple[int, Mapping[str, Any]]]
+Transport = Callable[
+    [str, str, Mapping[str, Any] | None], tuple[int, Mapping[str, Any]]
+]
 
 _TOOL_INPUT_BY_NAME = dict(zip(TOOL_NAMES, TOOL_INPUT_MODELS, strict=True))
 _TOOL_ANNOTATIONS = {
@@ -62,7 +64,9 @@ _TOOL_ANNOTATIONS = {
 
 
 def _canonical_bytes(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
 
 
 def canonical_sha256(value: Any) -> str:
@@ -127,7 +131,9 @@ class TrueForgeClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         if self.base_url not in {"http://127.0.0.1:8790", "http://localhost:8790"}:
-            raise ValueError("SC1 TrueForge must use the normal loopback standalone runtime")
+            raise ValueError(
+                "SC1 TrueForge must use the normal loopback standalone runtime"
+            )
         self.timeout_seconds = timeout_seconds
         self._transport = transport or self._urllib_transport
 
@@ -149,7 +155,9 @@ class TrueForgeClient:
             raw = error.read()
             status = error.code
         except (URLError, TimeoutError, OSError) as error:
-            raise TrueForgeError("TrueForge is unavailable on the loopback runtime.", path=path) from error
+            raise TrueForgeError(
+                "TrueForge is unavailable on the loopback runtime.", path=path
+            ) from error
         try:
             decoded = json.loads(raw) if raw else {}
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -171,19 +179,25 @@ class TrueForgeClient:
         status, response = self._transport(method, path, payload)
         if status not in set(expected):
             raise TrueForgeError(
-                f"TrueForge request failed with HTTP {status}.", status=status, path=path
+                f"TrueForge request failed with HTTP {status}.",
+                status=status,
+                path=path,
             )
         return response
 
     @staticmethod
     def _agents(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         data = _data(payload)
-        if not isinstance(data, list) or any(not isinstance(item, Mapping) for item in data):
+        if not isinstance(data, list) or any(
+            not isinstance(item, Mapping) for item in data
+        ):
             raise TrueForgeError("TrueForge returned an invalid agent list.")
         return list(data)
 
     @staticmethod
-    def _named_agent(agents: list[Mapping[str, Any]], name: str) -> Mapping[str, Any] | None:
+    def _named_agent(
+        agents: list[Mapping[str, Any]], name: str
+    ) -> Mapping[str, Any] | None:
         matches = [agent for agent in agents if agent.get("name") == name]
         if len(matches) > 1:
             raise TrueForgeError("TrueForge contains duplicate saved agent names.")
@@ -194,7 +208,9 @@ class TrueForgeClient:
 
     def list_models(self) -> list[Mapping[str, Any]]:
         data = _data(self._request("GET", "/api/v1/models"))
-        if not isinstance(data, list) or any(not isinstance(item, Mapping) for item in data):
+        if not isinstance(data, list) or any(
+            not isinstance(item, Mapping) for item in data
+        ):
             raise TrueForgeError("TrueForge returned an invalid model list.")
         return list(data)
 
@@ -228,11 +244,15 @@ class TrueForgeClient:
     def _tool_schema_gate(self) -> str:
         payload = self._request("GET", f"/api/v1/mcp-servers/{MCP_SERVER_NAME}/tools")
         tools = _data(payload)
-        if not isinstance(tools, list) or any(not isinstance(tool, Mapping) for tool in tools):
+        if not isinstance(tools, list) or any(
+            not isinstance(tool, Mapping) for tool in tools
+        ):
             raise TrueForgeError("TrueForge returned an invalid MCP tool list.")
         names = [tool.get("name") for tool in tools]
         if names != list(TOOL_NAMES):
-            raise TrueForgeError("The saved MCP connector does not expose the exact SC1 tools.")
+            raise TrueForgeError(
+                "The saved MCP connector does not expose the exact SC1 tools."
+            )
         for tool in tools:
             name = tool["name"]
             schema = tool.get("inputSchema")
@@ -243,12 +263,18 @@ class TrueForgeClient:
             expected_schema = _TOOL_INPUT_BY_NAME[name].model_json_schema(by_alias=True)
             expected_schema.pop("title", None)
             if actual_schema != expected_schema:
-                raise TrueForgeError("An MCP tool input schema differs from the SC1 contract.")
+                raise TrueForgeError(
+                    "An MCP tool input schema differs from the SC1 contract."
+                )
             annotations = tool.get("annotations")
-            if not isinstance(annotations, Mapping) or {
-                key: annotations.get(key) for key in _TOOL_ANNOTATIONS[name]
-            } != _TOOL_ANNOTATIONS[name]:
-                raise TrueForgeError("An MCP tool annotation differs from the SC1 contract.")
+            if (
+                not isinstance(annotations, Mapping)
+                or {key: annotations.get(key) for key in _TOOL_ANNOTATIONS[name]}
+                != _TOOL_ANNOTATIONS[name]
+            ):
+                raise TrueForgeError(
+                    "An MCP tool annotation differs from the SC1 contract."
+                )
         return canonical_sha256(tools)
 
     def provision_sc1(
@@ -316,7 +342,9 @@ class TrueForgeClient:
         if not isinstance(agent_id, str) or not agent_id:
             raise TrueForgeError("TrueForge returned an invalid SC1 agent id.")
         if agent.get("manifest") != desired:
-            raise TrueForgeError("The resolved SC1 AgentSpec differs from the required spec.")
+            raise TrueForgeError(
+                "The resolved SC1 AgentSpec differs from the required spec."
+            )
 
         agents_after = self.list_agents()
         persisted = self._named_agent(agents_after, AGENT_NAME)
@@ -327,9 +355,16 @@ class TrueForgeClient:
         ):
             raise TrueForgeError("The dedicated SC1 agent was not persisted exactly.")
         starter_after = self._named_agent(agents_after, "hackathon-starter")
-        if starter_after is None or canonical_sha256(
-            {"id": starter_after.get("id"), "manifest": starter_after.get("manifest")}
-        ) != starter_sha:
+        if (
+            starter_after is None
+            or canonical_sha256(
+                {
+                    "id": starter_after.get("id"),
+                    "manifest": starter_after.get("manifest"),
+                }
+            )
+            != starter_sha
+        ):
             raise TrueForgeError("Provisioning changed hackathon-starter.")
         if canonical_sha256(self.list_models()) != models_sha:
             raise TrueForgeError("Provisioning changed the saved model projection.")
@@ -355,9 +390,13 @@ class TrueForgeClient:
             raise TrueForgeError("TrueForge returned an invalid SC1 session.")
         return session
 
-    def create_turn(self, session_id: str, prompt: str = EXACT_PROMPT) -> Mapping[str, Any]:
+    def create_turn(
+        self, session_id: str, prompt: str = EXACT_PROMPT
+    ) -> Mapping[str, Any]:
         if prompt != EXACT_PROMPT:
-            raise ValueError("SC1 evidence runs accept only the fixed one-prompt request")
+            raise ValueError(
+                "SC1 evidence runs accept only the fixed one-prompt request"
+            )
         payload = self._request(
             "POST",
             f"/api/v1/sessions/{quote(session_id, safe='')}/turns",
@@ -401,12 +440,20 @@ class TrueForgeClient:
         turn: Mapping[str, Any] = {}
         while time.monotonic() < deadline:
             turn = self.get_turn(session_id, turn_id)
-            if self.turn_status(turn) in {"done", "error", "failed", "cancelled", "canceled"}:
+            if self.turn_status(turn) in {
+                "done",
+                "error",
+                "failed",
+                "cancelled",
+                "canceled",
+            }:
                 return turn
             time.sleep(0.5)
         raise TrueForgeError("The SC1 turn exceeded the bounded evidence timeout.")
 
-    def list_turn_events(self, session_id: str, turn_id: str) -> list[Mapping[str, Any]]:
+    def list_turn_events(
+        self, session_id: str, turn_id: str
+    ) -> list[Mapping[str, Any]]:
         events: list[Mapping[str, Any]] = []
         page_token: str | None = None
         seen_tokens: set[str] = set()
@@ -421,7 +468,9 @@ class TrueForgeClient:
             payload = self._request("GET", path)
             data = payload.get("data")
             pagination = payload.get("pagination", {})
-            if not isinstance(data, list) or any(not isinstance(event, Mapping) for event in data):
+            if not isinstance(data, list) or any(
+                not isinstance(event, Mapping) for event in data
+            ):
                 raise TrueForgeError("TrueForge returned invalid turn events.")
             events.extend(data)
             if not isinstance(pagination, Mapping):
@@ -429,7 +478,11 @@ class TrueForgeClient:
             next_token = pagination.get("next_page_token")
             if next_token is None:
                 return events
-            if not isinstance(next_token, str) or not next_token or next_token in seen_tokens:
+            if (
+                not isinstance(next_token, str)
+                or not next_token
+                or next_token in seen_tokens
+            ):
                 raise TrueForgeError("TrueForge returned an invalid event cursor.")
             seen_tokens.add(next_token)
             page_token = next_token
@@ -514,7 +567,9 @@ def _response_records(events: list[Mapping[str, Any]]) -> dict[str, dict[str, An
     records: dict[str, dict[str, Any]] = {}
     for event_index, item in enumerate(events):
         event = unwrap_event(item)
-        if event.get("type") != "tool.response" or not isinstance(event.get("tool_call_id"), str):
+        if event.get("type") != "tool.response" or not isinstance(
+            event.get("tool_call_id"), str
+        ):
             continue
         records[event["tool_call_id"]] = {"event_index": event_index, "event": event}
     return records
@@ -550,7 +605,11 @@ def _response_payload(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
         return None
     candidates = _json_objects(event.get("content"))
     for candidate in candidates:
-        if "schema_version" in candidate or "rows" in candidate or "public_result" in candidate:
+        if (
+            "schema_version" in candidate
+            or "rows" in candidate
+            or "public_result" in candidate
+        ):
             return candidate
     return candidates[-1] if candidates else None
 
@@ -594,9 +653,7 @@ def _large_tool_response_path(record: Mapping[str, Any]) -> str | None:
     return match.group(1).rstrip(".\"')") if match is not None else None
 
 
-def _exec_arguments_reference_path(
-    value: Any, path: str, *, depth: int = 0
-) -> bool:
+def _exec_arguments_reference_path(value: Any, path: str, *, depth: int = 0) -> bool:
     if depth > 8:
         return False
     if isinstance(value, str):
@@ -656,11 +713,19 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         else:
             public_calls.append(record)
 
-    experiments = [record for record in public_calls if record["name"] == "run_experiment"]
-    revisions = [record for record in public_calls if record["name"] == "create_revision"]
+    experiments = [
+        record for record in public_calls if record["name"] == "run_experiment"
+    ]
+    revisions = [
+        record for record in public_calls if record["name"] == "create_revision"
+    ]
     task_calls = [record for record in public_calls if record["name"] == "run_task"]
-    verify_calls = [record for record in public_calls if record["name"] == "verify_revision"]
-    publish_calls = [record for record in public_calls if record["name"] == "publish_revision"]
+    verify_calls = [
+        record for record in public_calls if record["name"] == "verify_revision"
+    ]
+    publish_calls = [
+        record for record in public_calls if record["name"] == "publish_revision"
+    ]
     exec_calls = [record for record in calls if record["name"] == "exec"]
 
     failures: list[str] = []
@@ -675,14 +740,18 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         try:
             model.model_validate(_call_arguments(record["call"]))
         except ValueError:
-            failures.append(f"{record['name']} has arguments outside its exact public schema")
+            failures.append(
+                f"{record['name']} has arguments outside its exact public schema"
+            )
         if record["name"] == "publish_revision":
             continue
         response = responses.get(record["id"])
         if response is None or response["event_index"] <= record["event_index"]:
             failures.append(f"{record['name']} lacks an ordered tool response")
 
-    experiment_indexes = {record["id"]: index for index, record in enumerate(experiments)}
+    experiment_indexes = {
+        record["id"]: index for index, record in enumerate(experiments)
+    }
     offloaded_experiments = sum(
         1
         for experiment in experiments
@@ -697,7 +766,9 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         base_revision_id = arguments.get("base_revision_id")
         basis_hypothesis_id = arguments.get("basis_hypothesis_id")
         basis_run_id = arguments.get("basis_experiment_run_id")
-        matching_evidence: tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None = None
+        matching_evidence: (
+            tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None
+        ) = None
         for experiment in reversed(experiments):
             if experiment["id"] in selected_experiments:
                 continue
@@ -761,11 +832,15 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         target_name = target.get("name") if isinstance(target, Mapping) else None
         attribute = patch.get("attribute") if isinstance(patch, Mapping) else None
         if not isinstance(target_name, str) or not isinstance(attribute, str):
-            failures.append("a revision call does not contain one public attribute patch")
+            failures.append(
+                "a revision call does not contain one public attribute patch"
+            )
             continue
         response = responses.get(revision["id"])
         payload = _response_payload(response) if response is not None else None
-        canonical_diff = payload.get("canonical_diff") if isinstance(payload, Mapping) else None
+        canonical_diff = (
+            payload.get("canonical_diff") if isinstance(payload, Mapping) else None
+        )
         if not isinstance(canonical_diff, list) or len(canonical_diff) != 1:
             failures.append("a revision response does not prove one changed attribute")
             continue
@@ -775,13 +850,13 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             or diff.get("target") != target_name
             or diff.get("attribute") != attribute
         ):
-            failures.append("a revision response does not match the requested attribute")
+            failures.append(
+                "a revision response does not match the requested attribute"
+            )
             continue
         revision_attributes.append(f"{target_name}.{attribute}")
 
-    task_results: list[
-        tuple[dict[str, Any], dict[str, Any], Mapping[str, Any]]
-    ] = []
+    task_results: list[tuple[dict[str, Any], dict[str, Any], Mapping[str, Any]]] = []
     for record in task_calls:
         response = responses.get(record["id"])
         payload = _response_payload(response) if response is not None else None
@@ -835,8 +910,12 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
     for verify in verify_calls:
         response = responses.get(verify["id"])
         payload = _response_payload(response) if response is not None else None
-        public_result = payload.get("public_result") if isinstance(payload, Mapping) else None
-        holdout_result = payload.get("holdout_result") if isinstance(payload, Mapping) else None
+        public_result = (
+            payload.get("public_result") if isinstance(payload, Mapping) else None
+        )
+        holdout_result = (
+            payload.get("holdout_result") if isinstance(payload, Mapping) else None
+        )
         passed = (
             isinstance(public_result, Mapping)
             and public_result.get("passed") == 1
@@ -851,8 +930,7 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             and len(publish_calls) == 1
             and response is not None
             and response["event_index"] < publish_calls[0]["event_index"]
-            and verify["event_index"]
-            > final_task_response.get("event_index", -1)
+            and verify["event_index"] > final_task_response.get("event_index", -1)
             and isinstance(payload.get("promotion_ticket"), Mapping)
             and payload.get("promotion_ticket") == published_ticket
         ):

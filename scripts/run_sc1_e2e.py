@@ -133,7 +133,9 @@ def _commit_sha() -> str:
         timeout=10,
     )
     value = result.stdout.strip()
-    if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
+    if len(value) != 40 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
         raise RuntimeError("the checkout commit SHA is invalid")
     return value
 
@@ -166,8 +168,7 @@ def _raw_events_are_clear(
     def contains_hidden_key(value: Any) -> bool:
         if isinstance(value, Mapping):
             return any(
-                key in hidden_keys
-                or contains_hidden_key(item)
+                key in hidden_keys or contains_hidden_key(item)
                 for key, item in value.items()
             )
         if isinstance(value, list):
@@ -205,12 +206,20 @@ def _raw_events_are_clear(
         for value in private_values
         if isinstance(value, (list, tuple))
         and len(value) > 1
-        and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
+        and all(
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+            for item in value
+        )
     }
-    private_float_sentinels = {
-        float(value)
+    private_numeric_sentinels = {
+        value
         for value in private_values
-        if isinstance(value, float) and not value.is_integer()
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            or isinstance(value, float)
+            and not value.is_integer()
+        )
     }
     event_values = expanded_values(events)
     leaked_vector = any(
@@ -218,12 +227,15 @@ def _raw_events_are_clear(
         for value in event_values
         if isinstance(value, (list, tuple))
         and len(value) > 1
-        and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
+        and all(
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+            for item in value
+        )
     )
     leaked_scalar = any(
-        float(value) in private_float_sentinels
+        value in private_numeric_sentinels
         for value in event_values
-        if isinstance(value, float)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
     )
 
     raw = json.dumps(events, sort_keys=True, ensure_ascii=True)
@@ -247,7 +259,7 @@ def _raw_events_are_clear(
             raw,
         )
         is not None
-        for value in private_float_sentinels
+        for value in private_numeric_sentinels
     )
     return (
         not contains_hidden_key(events)
@@ -344,8 +356,7 @@ def _runtime_state_gates(
             or item.get("run_id_hash") != _sha256_text(run_id)[:12]
             or item.get("hypothesis_id_hash") != _sha256_text(hypothesis_id)[:12]
             or revision.probe_run_id != run_id
-            or revision.hypothesis_event_id
-            != event.payload.get("hypothesis_event_id")
+            or revision.hypothesis_event_id != event.payload.get("hypothesis_event_id")
         ):
             return False
         try:
@@ -389,7 +400,9 @@ def _runtime_state_gates(
     }
 
 
-def _safe_blocker(stage: str, error: Exception, commit_sha: str) -> dict[str, Any]:
+def _safe_blocker(
+    stage: str, error: Exception, commit_sha: str | None
+) -> dict[str, Any]:
     if isinstance(error, TrueForgeError):
         reason = str(error)
         details = {"http_status": error.status, "api_path": error.path}
@@ -420,10 +433,11 @@ def _safe_blocker(stage: str, error: Exception, commit_sha: str) -> dict[str, An
 
 
 def run() -> dict[str, Any]:
-    commit_sha = _commit_sha()
     stage = "startup"
-    bearer = secrets.token_urlsafe(32)
+    commit_sha: str | None = None
     try:
+        commit_sha = _commit_sha()
+        bearer = secrets.token_urlsafe(32)
         with tempfile.TemporaryDirectory(prefix="asset-autopsy-sc1-") as temporary:
             data_root = Path(temporary)
             service = AssetAutopsyService(data_root)
@@ -511,9 +525,17 @@ def run() -> dict[str, Any]:
             BLOCKER_PATH.unlink(missing_ok=True)
             return payload
     except Exception as error:
+        try:
+            EVIDENCE_PATH.unlink(missing_ok=True)
+        except OSError:
+            raise RuntimeError(
+                "The SC1 evidence run could not invalidate stale evidence."
+            ) from None
         blocker = _safe_blocker(stage, error, commit_sha)
-        _write_json(BLOCKER_PATH, blocker)
-        EVIDENCE_PATH.unlink(missing_ok=True)
+        try:
+            _write_json(BLOCKER_PATH, blocker)
+        except Exception:
+            raise RuntimeError(blocker["reason"]) from None
         raise RuntimeError(blocker["reason"]) from None
 
 

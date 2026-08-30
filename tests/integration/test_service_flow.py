@@ -405,14 +405,19 @@ def test_valid_compile_creates_one_revision_and_committed_retry_skips_validation
     assert created.status == "created"
     assert created.revision_id == "r001"
     assert runner.validated_xml == [expected_xml]
-    assert [revision.revision_id for revision in service.store.list_revisions(CASE_ID)] == [
+    assert [
+        revision.revision_id for revision in service.store.list_revisions(CASE_ID)
+    ] == [
         "r000",
         "r001",
     ]
-    assert sum(
-        event.event_type == "REVISION_CREATED"
-        for event in service.store.ledger_events(CASE_ID)
-    ) == 1
+    assert (
+        sum(
+            event.event_type == "REVISION_CREATED"
+            for event in service.store.ledger_events(CASE_ID)
+        )
+        == 1
+    )
 
     runner.validation_error = AssertionError("committed retry revalidated upstream")
     retried = run(service.create_revision(request))
@@ -553,13 +558,18 @@ def test_current_evidence_backed_public_passing_head_qualifies_within_budget(
         )
     )
     assert repeated.promotion_ticket == verified.promotion_ticket
-    assert sum(
-        event.event_type == "QUALIFICATION_RESERVED"
-        for event in service.store.ledger_events(CASE_ID)
-    ) == 1
+    assert (
+        sum(
+            event.event_type == "QUALIFICATION_RESERVED"
+            for event in service.store.ledger_events(CASE_ID)
+        )
+        == 1
+    )
 
 
-def test_qualification_rejects_the_root_without_consuming_hidden_budget(tmp_path) -> None:
+def test_qualification_rejects_the_root_without_consuming_hidden_budget(
+    tmp_path,
+) -> None:
     service = AssetAutopsyService(
         tmp_path, runner=DeterministicFakeRunner(require_damping=False)
     )
@@ -783,8 +793,8 @@ def test_full_two_revision_service_flow_qualifies_and_publication_is_deferred_wi
         service.run_experiment(
             experiment(
                 "r000",
-                    hypothesis("joint_b", "axis", "joint_b", "axis").model_copy(
-                        update={
+                hypothesis("joint_b", "axis", "joint_b", "axis").model_copy(
+                    update={
                         "suspected_elements": [
                             ElementReference(
                                 kind="body", name="end_effector", attributes=["axis"]
@@ -794,11 +804,13 @@ def test_full_two_revision_service_flow_qualifies_and_publication_is_deferred_wi
                             claim="The response instead comes from body end_effector axis.",
                             suspected_elements=[
                                 ElementReference(
-                                    kind="body", name="end_effector", attributes=["axis"]
+                                    kind="body",
+                                    name="end_effector",
+                                    attributes=["axis"],
                                 )
                             ],
                             discriminating_reason="The element kind distinguishes the explanations.",
-                        )
+                        ),
                     }
                 ),
             )
@@ -1024,9 +1036,7 @@ def test_service_rejects_trace_fields_unbound_from_the_accepted_experiment(
         if violation == "swapped_controls":
             columns[-2], columns[-1] = columns[-1], columns[-2]
         elif violation == "missing_observable":
-            columns[:] = [
-                column for column in columns if column.get("kind") != "qvel"
-            ]
+            columns[:] = [column for column in columns if column.get("kind") != "qvel"]
             for row in rows:
                 row["values"] = {
                     key: item
@@ -1223,9 +1233,7 @@ def test_partial_experiment_failure_persists_bounded_evidence_and_budget_after_r
                     expected_effect=ExpectedEffect(
                         scenario_id="public_center",
                         predicates=[
-                            Predicate(
-                                metric="hold_error_p95_m", op="lt", value=0.03
-                            )
+                            Predicate(metric="hold_error_p95_m", op="lt", value=0.03)
                         ],
                     ),
                 )
@@ -1239,13 +1247,16 @@ def test_partial_experiment_failure_persists_bounded_evidence_and_budget_after_r
     assert reopened.remaining_budgets.runs_remaining == 8
     assert reopened.remaining_budgets.experiments_remaining == 4
     assert restarted.store.get_run(failed.payload["run_id"]) == stored_run
-    assert len(
-        [
-            event
-            for event in restarted.store.verify_ledger()
-            if event.event_type == "EXPERIMENT_FAILED"
-        ]
-    ) == 1
+    assert (
+        len(
+            [
+                event
+                for event in restarted.store.verify_ledger()
+                if event.event_type == "EXPERIMENT_FAILED"
+            ]
+        )
+        == 1
+    )
 
 
 def test_service_rejects_incomplete_named_topology_before_physics(tmp_path) -> None:

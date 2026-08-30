@@ -139,7 +139,9 @@ def test_runtime_config_rejects_header_unsafe_values_without_echoing(
             "UPSTREAM_SCHEMA_DRIFT",
         ),
         (
-            RuntimeError("smoke process failed at /private/smoke with raw-secret-value"),
+            RuntimeError(
+                "smoke process failed at /private/smoke with raw-secret-value"
+            ),
             "MCP_STARTUP_PREFLIGHT_FAILED",
         ),
     ),
@@ -335,9 +337,7 @@ def test_validation_feedback_names_only_public_paths_and_safe_error_types() -> N
                     "segments": [
                         {
                             "n_steps": 256,
-                            "controls": [
-                                {"actuator_name": "motor_a", "value": 0.0}
-                            ],
+                            "controls": [{"actuator_name": "motor_a", "value": 0.0}],
                         }
                     ],
                     "observables": [
@@ -353,10 +353,7 @@ def test_validation_feedback_names_only_public_paths_and_safe_error_types() -> N
         assert '"path":"$.observables[0].body_name"' in message
         assert '"type":"string_pattern_mismatch"' in message
         assert '"path":"$.observables[0].<unknown>"' in message
-        assert (
-            '"path":"$.hypothesis.competing_explanation.prediction"'
-            in message
-        )
+        assert '"path":"$.hypothesis.competing_explanation.prediction"' in message
         assert '"type":"extra_forbidden"' in message
         for prohibited in (
             "example.invalid",
@@ -463,7 +460,9 @@ async def _asgi_status(app: Any, headers: list[tuple[bytes, bytes]]) -> int:
         receive,
         send,
     )
-    starts = [message for message in messages if message["type"] == "http.response.start"]
+    starts = [
+        message for message in messages if message["type"] == "http.response.start"
+    ]
     assert len(starts) == 1
     return int(starts[0]["status"])
 

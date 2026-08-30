@@ -92,7 +92,9 @@ RunId: TypeAlias = Annotated[
 ]
 AssetHash: TypeAlias = Annotated[
     str,
-    StringConstraints(strict=True, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    StringConstraints(
+        strict=True, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    ),
 ]
 ElementName: TypeAlias = Annotated[
     str,
@@ -103,10 +105,14 @@ ElementName: TypeAlias = Annotated[
         pattern=r"^[A-Za-z][A-Za-z0-9_.-]*$",
     ),
 ]
-SafeText: TypeAlias = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=2000)]
+SafeText: TypeAlias = Annotated[
+    str, StringConstraints(strict=True, min_length=1, max_length=2000)
+]
 MetricName: TypeAlias = Annotated[
     str,
-    StringConstraints(strict=True, min_length=1, max_length=96, pattern=r"^[A-Za-z][A-Za-z0-9_.-]*$"),
+    StringConstraints(
+        strict=True, min_length=1, max_length=96, pattern=r"^[A-Za-z][A-Za-z0-9_.-]*$"
+    ),
 ]
 StrictFiniteFloat: TypeAlias = Annotated[float, Strict(), AllowInfNan(False)]
 AxisVector: TypeAlias = tuple[StrictFiniteFloat, StrictFiniteFloat, StrictFiniteFloat]
@@ -180,7 +186,9 @@ class ScalarPatch(StrictModel):
         return value
 
 
-AttributePatch: TypeAlias = Annotated[AxisPatch | ScalarPatch, Field(discriminator="attribute")]
+AttributePatch: TypeAlias = Annotated[
+    AxisPatch | ScalarPatch, Field(discriminator="attribute")
+]
 
 
 class ElementReference(StrictModel):
@@ -355,7 +363,9 @@ class PromotionTicket(StrictModel):
     holdout_result: "AggregateResult"
     export_name: Annotated[
         str,
-        StringConstraints(strict=True, min_length=1, max_length=96, pattern=r"^[a-z0-9][a-z0-9-]*$"),
+        StringConstraints(
+            strict=True, min_length=1, max_length=96, pattern=r"^[a-z0-9][a-z0-9-]*$"
+        ),
     ]
     qualified_core_sha256: AssetHash
     ticket_digest: AssetHash
@@ -370,7 +380,9 @@ class PromotionTicket(StrictModel):
             or self.holdout_result.total != 3
             or self.holdout_result.violated_clause_ids
         ):
-            raise ValueError("promotion ticket requires successful fixed-suite qualification")
+            raise ValueError(
+                "promotion ticket requires successful fixed-suite qualification"
+            )
         return self
 
 
@@ -394,11 +406,21 @@ class ArtifactRef(StrictModel):
     ]
     uri: Annotated[
         str,
-        StringConstraints(strict=True, min_length=10, max_length=160, pattern=r"^autopsy://[A-Za-z0-9_./-]+$"),
+        StringConstraints(
+            strict=True,
+            min_length=10,
+            max_length=160,
+            pattern=r"^autopsy://[A-Za-z0-9_./-]+$",
+        ),
     ]
     media_type: Annotated[
         str,
-        StringConstraints(strict=True, min_length=3, max_length=96, pattern=r"^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$"),
+        StringConstraints(
+            strict=True,
+            min_length=3,
+            max_length=96,
+            pattern=r"^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$",
+        ),
     ]
     sha256: AssetHash
     bytes: StrictInt = Field(ge=0)
@@ -427,7 +449,9 @@ class Range(StrictModel):
 
 
 class PatchPolicy(StrictModel):
-    editable_attributes: tuple[AllowedAttribute, ...] = Field(min_length=4, max_length=4)
+    editable_attributes: tuple[AllowedAttribute, ...] = Field(
+        min_length=4, max_length=4
+    )
     axis_unit_vector: StrictBool
     damping: Range
     armature: Range
@@ -435,9 +459,13 @@ class PatchPolicy(StrictModel):
 
     @field_validator("editable_attributes")
     @classmethod
-    def validate_allowlist(cls, value: tuple[AllowedAttribute, ...]) -> tuple[AllowedAttribute, ...]:
+    def validate_allowlist(
+        cls, value: tuple[AllowedAttribute, ...]
+    ) -> tuple[AllowedAttribute, ...]:
         if set(value) != {"axis", "damping", "armature", "frictionloss"}:
-            raise ValueError("patch allowlist must contain exactly the four editable attributes")
+            raise ValueError(
+                "patch allowlist must contain exactly the four editable attributes"
+            )
         return value
 
     @model_validator(mode="after")
@@ -453,7 +481,9 @@ class PatchPolicy(StrictModel):
         for attribute, (minimum, maximum) in enforced_ranges.items():
             advertised = getattr(self, attribute)
             if (advertised.minimum, advertised.maximum) != (minimum, maximum):
-                raise ValueError(f"{attribute} range must match the enforced safety range")
+                raise ValueError(
+                    f"{attribute} range must match the enforced safety range"
+                )
         return self
 
 
@@ -522,7 +552,9 @@ class ScenarioSummary(StrictModel):
         cls, value: list[RunTaskMetricName]
     ) -> list[RunTaskMetricName]:
         if set(value) != _RUN_TASK_METRICS:
-            raise ValueError("public scenario must advertise each fixed metric exactly once")
+            raise ValueError(
+                "public scenario must advertise each fixed metric exactly once"
+            )
         return value
 
 
@@ -535,7 +567,9 @@ class RevisionSummary(StrictModel):
     revision_id: RevisionId
     asset_sha256: AssetHash
     parent_revision_id: RevisionId | None = None
-    canonical_diff: list["CanonicalDiffEntry"] = Field(default_factory=list, max_length=1)
+    canonical_diff: list["CanonicalDiffEntry"] = Field(
+        default_factory=list, max_length=1
+    )
 
     @model_validator(mode="after")
     def validate_lineage(self) -> RevisionSummary:
@@ -544,7 +578,9 @@ class RevisionSummary(StrictModel):
                 raise ValueError("root revision cannot have parent or diff provenance")
             return self
         if self.parent_revision_id is None or len(self.canonical_diff) != 1:
-            raise ValueError("child revision requires one parent and one canonical diff")
+            raise ValueError(
+                "child revision requires one parent and one canonical diff"
+            )
         if self.parent_revision_id == self.revision_id:
             raise ValueError("revision cannot be its own parent")
         return self
@@ -591,14 +627,22 @@ class OpenCaseOutput(CommonOutput):
         if len(self.public_scenarios) != 1:
             raise ValueError("open case must advertise the one fixed public scenario")
         clause_ids = [clause.clause_id for clause in self.contract_clauses]
-        if len(clause_ids) != len(_CONTRACT_CLAUSE_IDS) or set(clause_ids) != _CONTRACT_CLAUSE_IDS:
-            raise ValueError("open case must advertise each fixed contract clause exactly once")
+        if (
+            len(clause_ids) != len(_CONTRACT_CLAUSE_IDS)
+            or set(clause_ids) != _CONTRACT_CLAUSE_IDS
+        ):
+            raise ValueError(
+                "open case must advertise each fixed contract clause exactly once"
+            )
         if len(self.observable_metric_names) != len(set(self.observable_metric_names)):
             raise ValueError("observable metric names must be unique")
         if not _RUN_TASK_METRICS.issubset(self.observable_metric_names):
             raise ValueError("observable metrics must include every fixed task metric")
         expected_qualification_budget = 1 if self.qualification_state == "unused" else 0
-        if self.remaining_budgets.qualification_remaining != expected_qualification_budget:
+        if (
+            self.remaining_budgets.qualification_remaining
+            != expected_qualification_budget
+        ):
             raise ValueError("qualification budget must match qualification lifecycle")
         if self.original_revision_id != "r000":
             raise ValueError("original revision must be r000")
@@ -645,7 +689,9 @@ class FirstDivergence(StrictModel):
     @model_validator(mode="after")
     def validate_threshold(self) -> FirstDivergence:
         if self.magnitude <= TRACE_DIVERGENCE_LIMITS[self.signal]:
-            raise ValueError("first divergence magnitude must exceed the signal threshold")
+            raise ValueError(
+                "first divergence magnitude must exceed the signal threshold"
+            )
         return self
 
 
@@ -669,7 +715,9 @@ class MetricDelta(StrictModel):
             if self.metric != "settling_time_s":
                 raise ValueError("only settling_time_s may have null metric endpoints")
             if self.delta is not None:
-                raise ValueError("a null settling-time transition must have a null delta")
+                raise ValueError(
+                    "a null settling-time transition must have a null delta"
+                )
             return self
         if self.delta is None:
             raise ValueError("finite metric endpoints require a finite delta")
@@ -702,19 +750,26 @@ class BehaviorDiff(StrictModel):
     def validate_evidence_state(self) -> BehaviorDiff:
         metrics = [delta.metric for delta in self.metric_deltas]
         if len(metrics) != len(_RUN_TASK_METRICS) or set(metrics) != _RUN_TASK_METRICS:
-            raise ValueError("behavior diff must contain each fixed metric exactly once")
+            raise ValueError(
+                "behavior diff must contain each fixed metric exactly once"
+            )
         clauses = [result.clause_id for result in self.clause_outcomes]
-        if len(clauses) != len(_CONTRACT_CLAUSE_IDS) or set(clauses) != _CONTRACT_CLAUSE_IDS:
-            raise ValueError("behavior diff must contain each fixed contract clause exactly once")
+        if (
+            len(clauses) != len(_CONTRACT_CLAUSE_IDS)
+            or set(clauses) != _CONTRACT_CLAUSE_IDS
+        ):
+            raise ValueError(
+                "behavior diff must contain each fixed contract clause exactly once"
+            )
         deltas = {delta.metric: delta for delta in self.metric_deltas}
         before_values = {metric: delta.before for metric, delta in deltas.items()}
         after_values = {metric: delta.after for metric, delta in deltas.items()}
-        expected_outcomes = dict(
-            compare_clause_outcomes(before_values, after_values)
-        )
+        expected_outcomes = dict(compare_clause_outcomes(before_values, after_values))
         for result in self.clause_outcomes:
             if result.outcome != expected_outcomes[result.clause_id]:
-                raise ValueError("clause outcome must match its contract-state transition")
+                raise ValueError(
+                    "clause outcome must match its contract-state transition"
+                )
         expected_verdict = behavior_verdict(
             after_passed=task_passed(after_values),
             clause_outcomes=[result.outcome for result in self.clause_outcomes],
@@ -782,7 +837,9 @@ class RunTaskOutput(CommonOutput):
     def validate_observation_set(self) -> RunTaskOutput:
         metrics = [observation.metric for observation in self.observations]
         if len(metrics) != len(_RUN_TASK_METRICS) or len(set(metrics)) != len(metrics):
-            raise ValueError("run task observations must contain each fixed metric exactly once")
+            raise ValueError(
+                "run task observations must contain each fixed metric exactly once"
+            )
         if set(metrics) != _RUN_TASK_METRICS:
             raise ValueError("run task observations must contain the fixed metric set")
         return self
@@ -799,7 +856,9 @@ class RunTaskOutput(CommonOutput):
 
     @model_validator(mode="after")
     def validate_result_against_contract(self) -> RunTaskOutput:
-        values = {observation.metric: observation.value for observation in self.observations}
+        values = {
+            observation.metric: observation.value for observation in self.observations
+        }
         contract_passed = task_passed(values)
         if (self.result == "pass") != contract_passed:
             raise ValueError("task result must match the fixed contract clauses")
@@ -809,10 +868,14 @@ class RunTaskOutput(CommonOutput):
     def validate_behavior_diff_observations(self) -> RunTaskOutput:
         if self.behavior_diff is None:
             return self
-        observed = {observation.metric: observation.value for observation in self.observations}
+        observed = {
+            observation.metric: observation.value for observation in self.observations
+        }
         for delta in self.behavior_diff.metric_deltas:
             if delta.after != observed[delta.metric]:
-                raise ValueError("behavior diff after values must match task observations")
+                raise ValueError(
+                    "behavior diff after values must match task observations"
+                )
         return self
 
     @model_validator(mode="after")
@@ -960,9 +1023,7 @@ def experiment_trace_columns(
 
 class ExperimentTraceRow(StrictModel):
     time_s: StrictFiniteFloat = Field(ge=0.0)
-    values: dict[TraceValueKey, StrictFiniteFloat] = Field(
-        min_length=2, max_length=192
-    )
+    values: dict[TraceValueKey, StrictFiniteFloat] = Field(min_length=2, max_length=192)
 
 
 class ExperimentTrace(StrictModel):
@@ -975,7 +1036,9 @@ class ExperimentTrace(StrictModel):
             raise ValueError("the first experiment trace column must be time")
         if any(isinstance(column, TimeTraceColumn) for column in self.columns[1:]):
             raise ValueError("experiment trace must contain exactly one time column")
-        if not any(isinstance(column, ActuatorControlTraceColumn) for column in self.columns):
+        if not any(
+            isinstance(column, ActuatorControlTraceColumn) for column in self.columns
+        ):
             raise ValueError("experiment trace must contain actuator control columns")
         if not any(
             not isinstance(column, (TimeTraceColumn, ActuatorControlTraceColumn))
@@ -985,18 +1048,21 @@ class ExperimentTrace(StrictModel):
 
         time_s = [row.time_s for row in self.rows]
         intervals = [
-            current - previous
-            for previous, current in zip(time_s, time_s[1:])
+            current - previous for previous, current in zip(time_s, time_s[1:])
         ]
-        if time_s[0] < 0.0 or intervals[0] <= 0.0 or any(
-            interval <= 0.0
-            or not math.isclose(
-                interval,
-                intervals[0],
-                rel_tol=_METRIC_DELTA_REL_TOLERANCE,
-                abs_tol=_METRIC_DELTA_ABS_TOLERANCE,
+        if (
+            time_s[0] < 0.0
+            or intervals[0] <= 0.0
+            or any(
+                interval <= 0.0
+                or not math.isclose(
+                    interval,
+                    intervals[0],
+                    rel_tol=_METRIC_DELTA_REL_TOLERANCE,
+                    abs_tol=_METRIC_DELTA_ABS_TOLERANCE,
+                )
+                for interval in intervals[1:]
             )
-            for interval in intervals[1:]
         ):
             raise ValueError("experiment trace timestamps must be uniformly sampled")
 
@@ -1024,9 +1090,7 @@ class ExperimentTrace(StrictModel):
             or set(row.values) != expected_value_key_set
             for row in self.rows
         ):
-            raise ValueError(
-                "experiment trace row values must match the named columns"
-            )
+            raise ValueError("experiment trace row values must match the named columns")
         return self
 
 
@@ -1105,27 +1169,37 @@ class RunExperimentOutput(CommonOutput):
             raise ValueError("completed steps cannot exceed requested steps")
         if self.outcome.kind == "completed":
             if self.completed_steps != self.requested_steps:
-                raise ValueError("completed experiments must execute every requested step")
+                raise ValueError(
+                    "completed experiments must execute every requested step"
+                )
             if self.outcome.first_bad_step is not None:
                 raise ValueError("completed experiments cannot report a bad step")
             if self.trace_sha256 is None or self.trace is None:
-                raise ValueError("completed experiments require a finite trace and hash")
+                raise ValueError(
+                    "completed experiments require a finite trace and hash"
+                )
             if (
                 self.final_snapshot is not None
                 and self.final_snapshot.step >= self.completed_steps
             ):
-                raise ValueError("final snapshot step must remain inside experiment boundaries")
+                raise ValueError(
+                    "final snapshot step must remain inside experiment boundaries"
+                )
         else:
             if self.outcome.first_bad_step is None:
                 raise ValueError("non-finite outcomes require the first bad step")
             if self.outcome.first_bad_step != self.completed_steps:
-                raise ValueError("the first bad step must follow the completed finite steps")
+                raise ValueError(
+                    "the first bad step must follow the completed finite steps"
+                )
             if (
                 self.trace_sha256 is not None
                 or self.trace is not None
                 or self.final_snapshot is not None
             ):
-                raise ValueError("non-finite outcomes cannot expose a trace or snapshot")
+                raise ValueError(
+                    "non-finite outcomes cannot expose a trace or snapshot"
+                )
         return self
 
 
@@ -1163,7 +1237,9 @@ class IntegrityChecks(StrictModel):
 class AggregateResult(StrictModel):
     passed: StrictInt = Field(ge=0)
     total: StrictInt = Field(ge=0)
-    violated_clause_ids: list[ContractClauseId] = Field(default_factory=list, max_length=5)
+    violated_clause_ids: list[ContractClauseId] = Field(
+        default_factory=list, max_length=5
+    )
 
     @model_validator(mode="after")
     def validate_passed(self) -> AggregateResult:
@@ -1171,7 +1247,9 @@ class AggregateResult(StrictModel):
             raise ValueError("passed must not exceed total")
         if len(self.violated_clause_ids) != len(set(self.violated_clause_ids)):
             raise ValueError("violated clause IDs must be unique")
-        if self.total > 0 and (self.passed < self.total) != bool(self.violated_clause_ids):
+        if self.total > 0 and (self.passed < self.total) != bool(
+            self.violated_clause_ids
+        ):
             raise ValueError("aggregate counts and violated clauses must agree")
         return self
 
@@ -1202,7 +1280,9 @@ class VerifyRevisionOutput(CommonOutput):
     @classmethod
     def validate_holdout_result_count(cls, value: AggregateResult) -> AggregateResult:
         if value.total != 3:
-            raise ValueError("holdout qualification must contain exactly three scenarios")
+            raise ValueError(
+                "holdout qualification must contain exactly three scenarios"
+            )
         return value
 
     @model_validator(mode="after")
@@ -1235,9 +1315,13 @@ class VerifyRevisionOutput(CommonOutput):
         if ticket.case_id != self.case_id:
             raise ValueError("promotion ticket case must match verification case")
         if ticket.revision_id != self.revision_id:
-            raise ValueError("promotion ticket revision must match verification revision")
+            raise ValueError(
+                "promotion ticket revision must match verification revision"
+            )
         if ticket.asset_sha256 != self.asset_sha256:
-            raise ValueError("promotion ticket asset hash must match verification asset hash")
+            raise ValueError(
+                "promotion ticket asset hash must match verification asset hash"
+            )
         if (
             ticket.public_result.passed,
             ticket.public_result.total,
@@ -1245,7 +1329,9 @@ class VerifyRevisionOutput(CommonOutput):
             self.public_result.passed,
             self.public_result.total,
         ):
-            raise ValueError("promotion ticket public counts must match verification counts")
+            raise ValueError(
+                "promotion ticket public counts must match verification counts"
+            )
         if (
             ticket.holdout_result.passed,
             ticket.holdout_result.total,
@@ -1253,11 +1339,23 @@ class VerifyRevisionOutput(CommonOutput):
             self.holdout_result.passed,
             self.holdout_result.total,
         ):
-            raise ValueError("promotion ticket holdout counts must match verification counts")
-        if ticket.public_result.violated_clause_ids != self.public_result.violated_clause_ids:
-            raise ValueError("promotion ticket public clauses must match verification clauses")
-        if ticket.holdout_result.violated_clause_ids != self.holdout_result.violated_clause_ids:
-            raise ValueError("promotion ticket holdout clauses must match verification clauses")
+            raise ValueError(
+                "promotion ticket holdout counts must match verification counts"
+            )
+        if (
+            ticket.public_result.violated_clause_ids
+            != self.public_result.violated_clause_ids
+        ):
+            raise ValueError(
+                "promotion ticket public clauses must match verification clauses"
+            )
+        if (
+            ticket.holdout_result.violated_clause_ids
+            != self.holdout_result.violated_clause_ids
+        ):
+            raise ValueError(
+                "promotion ticket holdout clauses must match verification clauses"
+            )
         return self
 
 

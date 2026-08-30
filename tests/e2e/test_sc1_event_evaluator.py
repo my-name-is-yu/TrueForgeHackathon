@@ -101,9 +101,7 @@ def _revision_arguments(
         "rationale": "The public experiment evidence supports this change.",
         "expected_effect": {
             "scenario_id": "public_center",
-            "predicates": [
-                {"metric": "hold_error_p95_m", "op": "lt", "value": 0.03}
-            ],
+            "predicates": [{"metric": "hold_error_p95_m", "op": "lt", "value": 0.03}],
         },
     }
 
@@ -158,7 +156,9 @@ def _tool_response(call_id: str, content: Any) -> dict[str, Any]:
         "event": {
             "type": "tool.response",
             "tool_call_id": call_id,
-            "content": content if isinstance(content, str) else json.dumps(content, sort_keys=True),
+            "content": content
+            if isinstance(content, str)
+            else json.dumps(content, sort_keys=True),
         }
     }
 
@@ -188,10 +188,10 @@ def _analysis_arguments(style: str, path: str, signal: str) -> dict[str, Any]:
     return {
         "intent": "Analyze the offloaded public experiment trace.",
         "command": (
-            "python -c \"import json,statistics; "
+            'python -c "import json,statistics; '
             f"p=json.load(open('{path}')); "
             f"v=[r['values']['{signal}'] for r in p['trace']['rows']]; "
-            "print(statistics.fmean(v))\""
+            'print(statistics.fmean(v))"'
         ),
     }
 
@@ -383,15 +383,15 @@ def _call_event(events: list[dict[str, Any]], call_id: str) -> dict[str, Any]:
     return next(
         item["event"]
         for item in events
-        if any(call.get("id") == call_id for call in item["event"].get("tool_calls", []))
+        if any(
+            call.get("id") == call_id for call in item["event"].get("tool_calls", [])
+        )
     )
 
 
 def _response_event(events: list[dict[str, Any]], call_id: str) -> dict[str, Any]:
     return next(
-        item["event"]
-        for item in events
-        if item["event"].get("tool_call_id") == call_id
+        item["event"] for item in events if item["event"].get("tool_call_id") == call_id
     )
 
 
@@ -521,9 +521,7 @@ def test_rejects_revision_without_successful_sandbox_outcome(violation: str) -> 
     events = _successful_events()
     if violation == "missing":
         events[:] = [
-            item
-            for item in events
-            if item["event"].get("tool_call_id") != "sandbox-1"
+            item for item in events if item["event"].get("tool_call_id") != "sandbox-1"
         ]
     else:
         _response_event(events, "sandbox-1")["content"] = json.dumps(
@@ -563,7 +561,10 @@ def test_rejects_revision_without_cited_run_identity() -> None:
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "create_revision has arguments outside its exact public schema" in evidence["failures"]
+    assert (
+        "create_revision has arguments outside its exact public schema"
+        in evidence["failures"]
+    )
     assert "a revision lacks cited experiment provenance" in evidence["failures"]
 
 
@@ -576,7 +577,10 @@ def test_rejects_revision_without_matching_single_attribute_outcome() -> None:
     evidence = evaluate_sc1_events(events)
 
     assert evidence["passed"] is False
-    assert "a revision response does not prove one changed attribute" in evidence["failures"]
+    assert (
+        "a revision response does not prove one changed attribute"
+        in evidence["failures"]
+    )
 
 
 @pytest.mark.parametrize("violation", ["baseline", "behavior_diff", "qualification"])
@@ -600,7 +604,9 @@ def test_rejects_missing_required_outcome(violation: str) -> None:
     assert evidence["passed"] is False
 
 
-@pytest.mark.parametrize("violation", ["wrong_ticket", "publish_response", "later_call"])
+@pytest.mark.parametrize(
+    "violation", ["wrong_ticket", "publish_response", "later_call"]
+)
 def test_rejects_publication_that_does_not_pause_at_qualified_approval(
     violation: str,
 ) -> None:

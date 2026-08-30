@@ -56,10 +56,7 @@ def _text_blocks(result: Any) -> list[str]:
 
 
 def _is_error_result(result: Any) -> bool:
-    return bool(
-        getattr(result, "isError", False)
-        or getattr(result, "is_error", False)
-    )
+    return bool(getattr(result, "isError", False) or getattr(result, "is_error", False))
 
 
 def normalize_json_result(

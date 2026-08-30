@@ -13,7 +13,9 @@ async def inspect_server() -> dict[str, object]:
         by_name = {tool.name: tool for tool in result.tools}
         return {
             "tool_count": len(result.tools),
-            "missing_tools": [name for name in REQUIRED_TOOL_NAMES if name not in by_name],
+            "missing_tools": [
+                name for name in REQUIRED_TOOL_NAMES if name not in by_name
+            ],
             "required_tools": [
                 {"name": name, "input_schema": by_name[name].inputSchema}
                 for name in REQUIRED_TOOL_NAMES
