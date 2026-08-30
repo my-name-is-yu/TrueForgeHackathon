@@ -6,8 +6,8 @@ unit test, or manually assembled screen sequence is not substitute evidence.
 
 The [accepted SC1 contract](decisions/sc1-approval-request-endpoint.md) ends at the real
 `tool.approval_required` event. The recording never clicks approval or claims publication
-materialization. A post-approval materializer remains in the repository only until a separate
-implementation pull request removes it; it is not part of this demonstration.
+materialization. Post-approval materialization and promotion persistence have been removed; a
+direct approved server call fails closed with `PUBLICATION_DEFERRED` and no storage mutation.
 
 ## Before recording
 
@@ -35,7 +35,7 @@ Say:
 
 > TrueForge is the general harness. Asset Autopsy adds seven bounded 3D repair tools over a
 > loopback Streamable HTTP MCP. Its Python domain service owns the fixture, evidence, patching,
-> metrics, hidden verifier, and publisher; only physics runs in a private pinned stdio MuJoCo
+> metrics, and hidden verifier; only physics runs in a private pinned stdio MuJoCo
 > child. There is no product CLI, Skill, or TrueForge fork.
 
 Point out that `publish_revision` is the only destructive tool and the only tool requiring
@@ -120,10 +120,8 @@ Show the single `publish_revision` request and the matching `tool.approval_requi
 that there is no tool response after it. Finish on the sanitized evidence counters:
 
 ```text
-publish MCP invocations: 0
-publication receipts: 0
-published bundles: 0
-public artifacts: 0
+facade publish invocations: 0
+domain publish invocations: 0
 ```
 
 Also show the sanitized cited run and hypothesis hashes, observed tool sequence, Sandbox execution
@@ -131,9 +129,9 @@ count, approval event, and Git commit SHA.
 
 Say:
 
-> TrueForge stops before the destructive server call. No publication code ran and no public
-> artifact exists. This approval request is the SC1 and hackathon endpoint; the submission never
-> approves it and makes no publication-materialization claim.
+> TrueForge stops before the destructive server call. No domain publication call ran, and
+> post-approval materialization is not implemented. This approval request is the SC1 and hackathon
+> endpoint; the submission never approves it and makes no publication-materialization claim.
 
 End the recording without approving, publishing, merging a pull request, or opening a submission
 form.
@@ -152,7 +150,7 @@ The final frame or linked sanitized evidence must prove, for one fresh real-mode
 - final public `BehaviorDiff` was changed and `public_pass`;
 - qualification was public `1/1` and hidden `3/3`, aggregate only;
 - the qualified publish request matched its approval-required event and had no tool response;
-- facade/domain publish invocations, receipts, bundles, and public artifacts were all zero;
+- facade and domain publish invocations were both zero;
 - the evidence records the exact Git SHA and contains no secret or private-boundary leakage.
 
 ## If the live run does not pass

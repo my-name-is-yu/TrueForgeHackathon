@@ -21,11 +21,9 @@ from .metrics import (
 )
 from .mujoco_client import MAX_TRACE_SCALARS, UPSTREAM_COMMIT, UpstreamToolError
 from .patcher import PatcherError, apply_one_attribute_patch
-from .publisher import PublicationError, Publisher
 from .qualification import (
     HiddenVerifier,
     build_promotion_ticket,
-    validate_promotion_ticket,
 )
 from .runner import (
     ConstantSegment,
@@ -60,7 +58,6 @@ from .schemas import (
     PromotionTicket,
     PublicEventSummary,
     PublishRevisionInput,
-    PublishRevisionOutput,
     Range,
     RevisionSummary,
     RunExperimentInput,
@@ -137,7 +134,6 @@ class AssetAutopsyService:
         fixture: CompoundArmFixture | None = None,
         evidence_store: EvidenceStore | None = None,
         hidden_verifier: HiddenVerifier | None = None,
-        publication_root: str | Path | None = None,
     ) -> None:
         self.data_root = Path(data_root)
         self.data_root.mkdir(parents=True, exist_ok=True)
@@ -149,14 +145,8 @@ class AssetAutopsyService:
         self.hidden_verifier = hidden_verifier or HiddenVerifier(
             runner=self.runner, fixture=self.fixture
         )
-        self.publisher = Publisher(
-            Path(publication_root)
-            if publication_root is not None
-            else self.data_root / "publications"
-        )
         self._lock = asyncio.Lock()
         self._invocations = {name: 0 for name in self.tool_names}
-        self._publication_receipt_count = 0
         self._provision_demo_case()
 
     @property
@@ -179,18 +169,6 @@ class AssetAutopsyService:
     def publish_invocation_count(self) -> int:
         return self._invocations["publish_revision"]
 
-    @property
-    def publication_receipt_count(self) -> int:
-        return self._publication_receipt_count
-
-    @property
-    def published_bundle_count(self) -> int:
-        return self.publisher.publication_count
-
-    @property
-    def public_artifact_count(self) -> int:
-        return self.publisher.public_artifact_count
-
     async def open_case(self, value: OpenCaseInput) -> OpenCaseOutput:
         request_id = self._begin("open_case", value, OpenCaseInput)
         async with self._lock:
@@ -204,7 +182,6 @@ class AssetAutopsyService:
                 schema_version=SCHEMA_VERSION,
                 request_id=request_id,
                 case_id=case.case_id,
-                promotion_state=case.promotion_state,
                 qualification_state=case.qualification_state,
                 original_revision_id=case.root_revision_id,
                 original_asset_sha256=case.source_asset_sha256,
@@ -1035,167 +1012,15 @@ class AssetAutopsyService:
                 promotion_ticket=ticket,
             )
 
-    async def publish_revision(
-        self, value: PublishRevisionInput
-    ) -> PublishRevisionOutput:
+    async def publish_revision(self, value: PublishRevisionInput) -> None:
         request_id = self._begin("publish_revision", value, PublishRevisionInput)
-        async with self._lock:
-            case = self._case(value.case_id, request_id)
-            ticket = value.promotion_ticket
-            qualification = self.store.get_qualification(case.case_id)
-            if (
-                qualification is None
-                or qualification.state != "PASSED"
-                or not isinstance(qualification.result, Mapping)
-            ):
-                raise self._error(
-                    request_id,
-                    "QUALIFICATION_REQUIRED",
-                    "Publication requires a stored successful qualification.",
-                    False,
-                    "Verify the final revision before requesting publication.",
-                )
-            stored_ticket = qualification.result.get("ticket")
-            if stored_ticket != ticket.model_dump(mode="json"):
-                raise self._error(
-                    request_id,
-                    "TICKET_MISMATCH",
-                    "The promotion ticket does not match stored qualification evidence.",
-                    False,
-                    "Use the exact ticket returned by verify_revision.",
-                )
-            revision = self._revision(case.case_id, ticket.revision_id, request_id)
-            revisions = self.store.list_revisions(case.case_id)
-            if (
-                revision.revision_id != case.head_revision_id
-                or revision.asset_sha256 != ticket.asset_sha256
-            ):
-                raise self._error(
-                    request_id,
-                    "TICKET_STALE",
-                    "The promotion ticket is not bound to the current qualified head.",
-                    False,
-                    "Open the case and use its current qualification ticket.",
-                )
-            commitments = self._commitments(case)
-            if not validate_promotion_ticket(ticket, commitment_hashes=commitments):
-                raise self._error(
-                    request_id,
-                    "TICKET_INVALID",
-                    "The promotion ticket failed its digest binding.",
-                    False,
-                    "Use the unmodified ticket returned by verify_revision.",
-                )
-            cumulative_diff = [
-                entry
-                for item in revisions[1:]
-                for entry in self._revision_summary(item).canonical_diff
-            ]
-            if [item.model_dump(mode="json") for item in cumulative_diff] != [
-                item.model_dump(mode="json") for item in ticket.canonical_diff
-            ]:
-                raise self._error(
-                    request_id,
-                    "TICKET_LINEAGE_MISMATCH",
-                    "The promotion ticket does not match the stored qualified lineage.",
-                    False,
-                    "Use the exact ticket returned by verify_revision.",
-                )
-            if case.promoted_revision_id is not None:
-                if case.promoted_revision_id != revision.revision_id:
-                    raise self._error(
-                        request_id,
-                        "PUBLICATION_CONFLICT",
-                        "This case is already published at another revision.",
-                        False,
-                        "Do not retry publication for this case.",
-                    )
-                try:
-                    bundle = self.publisher.load_existing(
-                        case.case_id, revision.revision_id
-                    )
-                except PublicationError:
-                    raise self._integrity_error(request_id) from None
-                promoted = [
-                    event
-                    for event in self.store.ledger_events(case.case_id)
-                    if event.event_type == "PROMOTED"
-                ]
-                if (
-                    len(promoted) != 1
-                    or promoted[0].payload.get("ticket_id") != ticket.ticket_id
-                    or promoted[0].payload.get("manifest_sha256")
-                    != bundle.manifest_sha256
-                ):
-                    raise self._integrity_error(request_id)
-                return PublishRevisionOutput(
-                    schema_version=SCHEMA_VERSION,
-                    request_id=request_id,
-                    case_id=case.case_id,
-                    event_ids=[promoted[0].event_id],
-                    artifacts=list(bundle.artifacts),
-                    revision_id=revision.revision_id,
-                    status="already_published",
-                )
-            asset_xml = self._asset_bytes(revision.asset_sha256, request_id)
-            ledger = [_ledger_payload(event) for event in self.store.verify_ledger()]
-            patch_manifest = {
-                "case_id": case.case_id,
-                "revision_id": revision.revision_id,
-                "asset_sha256": revision.asset_sha256,
-                "canonical_diff": [
-                    entry.model_dump(mode="json") for entry in cumulative_diff
-                ],
-            }
-            try:
-                bundle = self.publisher.publish(
-                    case_id=case.case_id,
-                    revision_id=revision.revision_id,
-                    repaired_mjcf=asset_xml,
-                    patch_manifest=patch_manifest,
-                    qualification=qualification.result,
-                    evidence_ledger=ledger,
-                )
-            except PublicationError:
-                raise self._error(
-                    request_id,
-                    "PUBLICATION_FAILED",
-                    "The qualified publication bundle could not be materialized.",
-                    True,
-                    "Retry once with the same stored promotion ticket.",
-                ) from None
-            for artifact in bundle.artifacts:
-                data = self.publisher.read_artifact(
-                    case.case_id, revision.revision_id, artifact.uri.rsplit("/", 1)[-1]
-                )
-                self.store.objects.put_bytes(data, expected_sha256=artifact.sha256)
-            try:
-                self.store.record_promotion_receipt(
-                    case_id=case.case_id,
-                    revision_id=revision.revision_id,
-                    ticket_id=ticket.ticket_id,
-                    manifest_sha256=bundle.manifest_sha256,
-                    receipt={
-                        "ticket_digest": ticket.ticket_digest,
-                        "artifacts": [
-                            item.model_dump(mode="json") for item in bundle.artifacts
-                        ],
-                    },
-                )
-            except StorageError:
-                raise self._integrity_error(request_id) from None
-            if bundle.created:
-                self._publication_receipt_count += 1
-            event_id = self.store.ledger_events(case.case_id)[-1].event_id
-            return PublishRevisionOutput(
-                schema_version=SCHEMA_VERSION,
-                request_id=request_id,
-                case_id=case.case_id,
-                event_ids=[event_id],
-                artifacts=list(bundle.artifacts),
-                revision_id=revision.revision_id,
-                status="published" if bundle.created else "already_published",
-            )
+        raise self._error(
+            request_id,
+            "PUBLICATION_DEFERRED",
+            "Post-approval publication materialization is deferred for SC1.",
+            False,
+            "Do not retry publication; treat the approval request as the SC1 endpoint.",
+        )
 
     def _provision_demo_case(self) -> None:
         source = self.store.objects.put_bytes(
@@ -1743,7 +1568,6 @@ class AssetAutopsyService:
                 "QUALIFICATION_FAILED",
                 "The fixed qualification suite did not pass.",
             ),
-            "PROMOTED": ("PROMOTED", "The qualified revision was published."),
         }
         public = []
         for event in events:
@@ -2025,22 +1849,6 @@ def _patch_policy() -> PatchPolicy:
         armature=Range(minimum=0.0, maximum=10.0),
         frictionloss=Range(minimum=0.0, maximum=100.0),
     )
-
-
-def _ledger_payload(event: LedgerEvent) -> dict[str, object]:
-    return {
-        "seq": event.seq,
-        "event_id": event.event_id,
-        "request_id": event.request_id,
-        "case_id": event.case_id,
-        "revision_id": event.revision_id,
-        "event_type": event.event_type,
-        "payload": dict(event.payload),
-        "artifact_refs": [dict(item) for item in event.artifact_refs],
-        "prev_hash": event.prev_hash,
-        "event_hash": event.event_hash,
-        "created_at": event.created_at,
-    }
 
 
 __all__ = ["AssetAutopsyService", "DomainError"]

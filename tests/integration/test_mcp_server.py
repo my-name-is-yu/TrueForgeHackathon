@@ -242,6 +242,13 @@ def test_exact_strict_tool_schemas_and_annotations() -> None:
         for tool in tools
         if tool.annotations is not None and tool.annotations.readOnlyHint is True
     } == {"open_case", "inspect_asset"}
+    publish = next(tool for tool in tools if tool.name == "publish_revision")
+    assert publish.description == (
+        "Request approval for the exact qualified revision; SC1 defers "
+        "post-approval materialization."
+    )
+    assert set(publish.inputSchema["required"]) == {"case_id", "promotion_ticket"}
+    assert publish.outputSchema is None
 
     experiment_schema = next(
         tool.inputSchema for tool in tools if tool.name == "run_experiment"

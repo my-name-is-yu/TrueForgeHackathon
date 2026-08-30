@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 
@@ -223,6 +224,16 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
+def files(root: Path) -> dict[str, bytes]:
+    if not root.exists():
+        return {}
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def prepare_axis_revision(service: AssetAutopsyService) -> CreateRevisionInput:
     opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
     run(
@@ -316,15 +327,6 @@ def create_evidence_backed_revision_chain(
 
 
 def service_state(service: AssetAutopsyService) -> dict[str, object]:
-    def files(root) -> dict[str, bytes]:
-        if not root.exists():
-            return {}
-        return {
-            str(path.relative_to(root)): path.read_bytes()
-            for path in root.rglob("*")
-            if path.is_file()
-        }
-
     opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
     case = service.store.get_case(CASE_ID)
     return {
@@ -333,10 +335,6 @@ def service_state(service: AssetAutopsyService) -> dict[str, object]:
         "ledger": service.store.ledger_events(CASE_ID),
         "budgets": opened.remaining_budgets.model_dump(),
         "objects": files(service.store.objects.root),
-        "publication_receipts": service.publication_receipt_count,
-        "published_bundles": service.published_bundle_count,
-        "public_artifacts": service.public_artifact_count,
-        "publication_files": files(service.publisher.root),
     }
 
 
@@ -632,7 +630,7 @@ def test_third_child_revision_is_rejected_at_the_budget_boundary(tmp_path) -> No
     assert len(runner.validated_xml) == 2
 
 
-def test_full_two_revision_service_flow_qualifies_and_direct_publication_emits_one_bundle(
+def test_full_two_revision_service_flow_qualifies_and_publication_is_deferred_without_side_effects(
     tmp_path,
 ) -> None:
     service = AssetAutopsyService(tmp_path, runner=DeterministicFakeRunner())
@@ -846,8 +844,6 @@ def test_full_two_revision_service_flow_qualifies_and_direct_publication_emits_o
     assert "-0.553127" not in ledger_text
     assert b"-0.553127" not in qualification_bytes
     assert service.publish_invocation_count == 0
-    assert service.publication_receipt_count == 0
-    assert service.public_artifact_count == 0
     verified_retry = run(
         service.verify_revision(
             VerifyRevisionInput(
@@ -869,37 +865,33 @@ def test_full_two_revision_service_flow_qualifies_and_direct_publication_emits_o
         == 1
     )
 
-    published = run(
-        service.publish_revision(
-            PublishRevisionInput(
-                case_id=CASE_ID,
-                promotion_ticket=verified.promotion_ticket,
+    before_state = service_state(service)
+    before_files = files(Path(tmp_path))
+    with pytest.raises(DomainError) as deferred:
+        run(
+            service.publish_revision(
+                PublishRevisionInput(
+                    case_id=CASE_ID,
+                    promotion_ticket=verified.promotion_ticket,
+                )
             )
         )
+    assert deferred.value.code == "PUBLICATION_DEFERRED"
+    assert deferred.value.safe_message == (
+        "Post-approval publication materialization is deferred for SC1."
     )
-    assert published.status == "published"
-    assert len(published.artifacts) == 4
+    assert deferred.value.retryable is False
+    assert deferred.value.next_action == (
+        "Do not retry publication; treat the approval request as the SC1 endpoint."
+    )
     assert service.publish_invocation_count == 1
-    assert service.publication_receipt_count == 1
-    assert service.published_bundle_count == 1
-    assert service.public_artifact_count == 4
-    assert service.store.get_case(CASE_ID).promoted_revision_id == "r002"
+    assert files(Path(tmp_path)) == before_files
+    assert service_state(service) == before_state
     assert service.store.verify_ledger()
     for event in service.store.ledger_events(CASE_ID):
         for artifact in event.artifact_refs:
             data = service.store.objects.read_bytes(artifact["sha256"])
             assert len(data) == artifact["size"]
-    repeated = run(
-        service.publish_revision(
-            PublishRevisionInput(
-                case_id=CASE_ID,
-                promotion_ticket=verified.promotion_ticket,
-            )
-        )
-    )
-    assert repeated.status == "already_published"
-    assert service.publication_receipt_count == 1
-    assert service.published_bundle_count == 1
     inspected = run(
         service.inspect_asset(
             InspectAssetInput(case_id=CASE_ID, revision_id="r002", view="both")

@@ -54,7 +54,6 @@ TRANSACTIONAL_EVENT_TYPES = {
     "QUALIFICATION_RECOVERED",
     "QUALIFICATION_PASSED",
     "QUALIFICATION_FAILED",
-    "PROMOTED",
 }
 
 
@@ -93,10 +92,6 @@ class QualificationConflictError(StorageError):
     """Raised when a qualification attempt identity or state conflicts."""
 
 
-class PromotionConflictError(StorageError):
-    """Raised when a promotion receipt conflicts with stored state."""
-
-
 class ObjectIntegrityError(IntegrityError):
     """Raised when an object cannot be verified by its content hash."""
 
@@ -109,7 +104,6 @@ class CaseRecord:
     qualification_revision_id: str | None
     qualification_attempt_id: str | None
     qualification_result: str | None
-    promoted_revision_id: str | None
     source_asset_sha256: str
     controller_sha256: str
     public_contract_sha256: str
@@ -126,10 +120,6 @@ class CaseRecord:
             "PASSED": "passed",
             "FAILED": "failed",
         }[self.qualification_result]
-
-    @property
-    def promotion_state(self) -> str:
-        return "promoted" if self.promoted_revision_id is not None else "open"
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,18 +211,6 @@ class QualificationAttempt:
     scenario_hashes: tuple[str, ...]
     state: str
     result: Mapping[str, Any] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class PromotionReceipt:
-    case_id: str
-    revision_id: str
-    ticket_id: str
-    manifest_sha256: str
-    receipt: Mapping[str, Any]
-
-
-PublicationRecord = PromotionReceipt
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,7 +441,6 @@ class EvidenceStore:
                 qualification_revision_id TEXT,
                 qualification_attempt_id TEXT,
                 qualification_result TEXT,
-                promoted_revision_id TEXT,
                 source_asset_sha256 TEXT NOT NULL,
                 public_contract_sha256 TEXT NOT NULL,
                 controller_sha256 TEXT NOT NULL,
@@ -895,11 +872,11 @@ class EvidenceStore:
                     INSERT INTO cases (
                         case_id, root_revision_id, head_revision_id,
                         qualification_revision_id, qualification_attempt_id,
-                        qualification_result, promoted_revision_id,
+                        qualification_result,
                         source_asset_sha256, public_contract_sha256,
                         controller_sha256, runner_sha256,
                         holdout_commitment_sha256, created_at
-                    ) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         case_id,
@@ -1005,7 +982,6 @@ class EvidenceStore:
             qualification_revision_id,
             qualification_attempt_id,
             qualification_result,
-            promoted_revision_id,
         ) = self._replay_case_lifecycle(case, case_events, case_commitments)
         for event in case_events:
             if event.event_type == "REVISION_CREATED":
@@ -1050,7 +1026,6 @@ class EvidenceStore:
             or case.qualification_revision_id != qualification_revision_id
             or case.qualification_attempt_id != qualification_attempt_id
             or case.qualification_result != qualification_result
-            or case.promoted_revision_id != promoted_revision_id
         ):
             raise IntegrityError("materialized case state does not match the ledger")
         return case
@@ -1221,7 +1196,7 @@ class EvidenceStore:
                         return self._revision_from_row(existing)
                     raise IntegrityError("revision retry event does not match")
                 raise RevisionConflictError("revision identity already exists")
-            if case["qualification_result"] is not None or case["promoted_revision_id"] is not None:
+            if case["qualification_result"] is not None:
                 raise RevisionConflictError("case head is sealed")
             if case["head_revision_id"] != expected_head_revision_id:
                 raise RevisionConflictError("expected head is stale")
@@ -1520,7 +1495,7 @@ class EvidenceStore:
         case: CaseRecord,
         events: Sequence[LedgerEvent],
         commitments: Mapping[str, str],
-    ) -> tuple[str | None, str | None, str | None, str | None]:
+    ) -> tuple[str | None, str | None, str | None]:
         created = tuple(event for event in events if event.event_type == "CASE_CREATED")
         if (
             len(created) != 1
@@ -1537,7 +1512,6 @@ class EvidenceStore:
         qualification_revision_id: str | None = None
         qualification_attempt_id: str | None = None
         qualification_result: str | None = None
-        promoted_revision_id: str | None = None
         qualification_identity: tuple[str, str] | None = None
         current_revision_id = case.root_revision_id
         for event in events:
@@ -1590,27 +1564,17 @@ class EvidenceStore:
                 if qualification_identity != (attempt.revision_id, attempt.attempt_id):
                     raise IntegrityError("qualification event identity is invalid")
                 qualification_result = state
-            elif event.event_type == "PROMOTED":
-                if qualification_result != "PASSED" or promoted_revision_id is not None:
-                    raise IntegrityError("promotion lifecycle transition is invalid")
-                promoted_revision_id = cls._promotion_from_event(
-                    case.case_id, event
-                ).revision_id
-                if promoted_revision_id != qualification_revision_id:
-                    raise IntegrityError("promotion revision is not qualified")
         if (
             case.head_revision_id != current_revision_id
             or case.qualification_revision_id != qualification_revision_id
             or case.qualification_attempt_id != qualification_attempt_id
             or case.qualification_result != qualification_result
-            or case.promoted_revision_id != promoted_revision_id
         ):
             raise IntegrityError("materialized case state does not match the ledger")
         return (
             qualification_revision_id,
             qualification_attempt_id,
             qualification_result,
-            promoted_revision_id,
         )
 
     def _validate_case_lifecycle_from_connection(
@@ -2198,157 +2162,6 @@ class EvidenceStore:
                 )
             return attempt
 
-    def record_promotion_receipt(
-        self,
-        *,
-        case_id: str,
-        revision_id: str,
-        ticket_id: str,
-        manifest_sha256: str,
-        receipt: Mapping[str, Any] | None = None,
-    ) -> PromotionReceipt:
-        _id(case_id, "case_id")
-        _id(revision_id, "revision_id")
-        _id(ticket_id, "ticket_id")
-        _sha256(manifest_sha256, "manifest_sha256")
-        if receipt is not None and not isinstance(receipt, Mapping):
-            raise ValidationError("receipt must be an object")
-        receipt_payload = (
-            json.loads(_json_text(dict(receipt))) if receipt is not None else {}
-        )
-        with self._transaction() as connection:
-            case = connection.execute(
-                "SELECT * FROM cases WHERE case_id = ?", (case_id,)
-            ).fetchone()
-            if case is None:
-                raise CaseNotFoundError("case was not found")
-            self._validate_case_lifecycle_from_connection(connection, case_id)
-            if case["qualification_result"] != "PASSED":
-                raise PromotionConflictError("promotion requires a passed qualification")
-            if case["qualification_revision_id"] != revision_id:
-                raise PromotionConflictError("promotion revision is not qualified")
-            existing = self._promotion_from_connection(connection, case_id, revision_id)
-            if existing is not None:
-                if (
-                    existing.ticket_id == ticket_id
-                    and existing.manifest_sha256 == manifest_sha256
-                    and existing.receipt == receipt_payload
-                ):
-                    return existing
-                raise PromotionConflictError("promotion receipt is immutable")
-            payload = {
-                "ticket_id": ticket_id,
-                "revision_id": revision_id,
-                "manifest_sha256": manifest_sha256,
-                "receipt": receipt_payload,
-            }
-            connection.execute(
-                "UPDATE cases SET promoted_revision_id = ? WHERE case_id = ?",
-                (revision_id, case_id),
-            )
-            self._append_event_record(
-                connection,
-                LedgerEventRecord(
-                    event_id=_new_id("evt"),
-                    case_id=case_id,
-                    revision_id=revision_id,
-                    event_type="PROMOTED",
-                    payload=payload,
-                    request_id=_new_id("req"),
-                ),
-            )
-            return PromotionReceipt(
-                case_id=case_id,
-                revision_id=revision_id,
-                ticket_id=ticket_id,
-                manifest_sha256=manifest_sha256,
-                receipt=receipt_payload,
-            )
-
-    record_promotion = record_promotion_receipt
-
-    @staticmethod
-    def _promotion_from_event(
-        case_id: str,
-        event: LedgerEvent,
-    ) -> PromotionReceipt:
-        try:
-            ticket_id = event.payload["ticket_id"]
-            stored_revision = event.payload["revision_id"]
-            manifest_sha256 = event.payload["manifest_sha256"]
-            receipt = event.payload["receipt"]
-        except (KeyError, TypeError) as exc:
-            raise IntegrityError("promotion receipt is incomplete") from exc
-        if stored_revision != event.revision_id or not isinstance(receipt, Mapping):
-            raise IntegrityError("promotion receipt identity is invalid")
-        try:
-            _id(ticket_id, "ticket_id")
-            _id(stored_revision, "revision_id")
-            _sha256(manifest_sha256, "manifest_sha256")
-        except ValidationError as exc:
-            raise IntegrityError("promotion receipt identity is invalid") from exc
-        return PromotionReceipt(
-            case_id=case_id,
-            revision_id=stored_revision,
-            ticket_id=ticket_id,
-            manifest_sha256=manifest_sha256,
-            receipt=receipt,
-        )
-
-    def _promotion_from_connection(
-        self,
-        connection: sqlite3.Connection,
-        case_id: str,
-        revision_id: str | None = None,
-    ) -> PromotionReceipt | None:
-        self._validate_case_lifecycle_from_connection(connection, case_id)
-        if revision_id is None:
-            row = connection.execute(
-                """
-                SELECT * FROM ledger_events
-                WHERE case_id = ? AND event_type = 'PROMOTED'
-                ORDER BY seq DESC LIMIT 1
-                """,
-                (case_id,),
-            ).fetchone()
-        else:
-            row = connection.execute(
-                """
-                SELECT * FROM ledger_events
-                WHERE case_id = ? AND revision_id = ? AND event_type = 'PROMOTED'
-                ORDER BY seq DESC LIMIT 1
-                """,
-                (case_id, revision_id),
-            ).fetchone()
-        if row is None:
-            return None
-        return self._promotion_from_event(case_id, self._event_from_row(row))
-
-    def reconcile_promotion(
-        self,
-        *,
-        case_id: str,
-        revision_id: str | None = None,
-    ) -> PromotionReceipt | None:
-        _id(case_id, "case_id")
-        if revision_id is not None:
-            _id(revision_id, "revision_id")
-        with self._read_transaction() as connection:
-            case = connection.execute(
-                "SELECT * FROM cases WHERE case_id = ?", (case_id,)
-            ).fetchone()
-            if case is None:
-                raise CaseNotFoundError("case was not found")
-            receipt = self._promotion_from_connection(connection, case_id, revision_id)
-            if case["promoted_revision_id"] is None:
-                if receipt is not None:
-                    raise IntegrityError("promotion event exists without promoted state")
-                return None
-            if receipt is None or receipt.revision_id != case["promoted_revision_id"]:
-                raise IntegrityError("promoted state has no matching receipt")
-            return receipt
-
-    get_promotion_receipt = reconcile_promotion
 
     def ledger_events(self, case_id: str | None = None) -> tuple[LedgerEvent, ...]:
         if case_id is not None:

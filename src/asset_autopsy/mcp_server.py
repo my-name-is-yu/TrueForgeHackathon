@@ -33,7 +33,6 @@ from .schemas import (
     OpenCaseOutput,
     PromotionTicket,
     PublishRevisionInput,
-    PublishRevisionOutput,
     RevisionId,
     RunId,
     RunExperimentInput,
@@ -184,7 +183,7 @@ class AssetAutopsyServiceProtocol(Protocol):
 
     async def verify_revision(self, request: VerifyRevisionInput) -> VerifyRevisionOutput: ...
 
-    async def publish_revision(self, request: PublishRevisionInput) -> PublishRevisionOutput: ...
+    async def publish_revision(self, request: PublishRevisionInput) -> None: ...
 
 
 class _SanitizedToolError(ToolError):
@@ -647,21 +646,18 @@ async def create_mcp_facade(
 
     @mcp.tool(
         name="publish_revision",
-        description="Publish the exact qualified revision bound to a stored promotion ticket.",
+        description="Request approval for the exact qualified revision; SC1 defers post-approval materialization.",
         annotations=_annotations(read_only=False, destructive=True, idempotent=True),
-        structured_output=True,
+        structured_output=False,
     )
     async def publish_revision(
         case_id: CaseId,
         promotion_ticket: PromotionTicket,
-    ) -> PublishRevisionOutput:
+    ) -> None:
         request = PublishRevisionInput.model_validate(
             {"case_id": case_id, "promotion_ticket": promotion_ticket}
         )
-        return cast(
-            PublishRevisionOutput,
-            await invoke("publish_revision", request, service.publish_revision),
-        )
+        await invoke("publish_revision", request, service.publish_revision)
 
     _enforce_strict_tool_arguments(mcp)
     app = _AuthOriginMiddleware(

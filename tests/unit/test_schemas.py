@@ -4,7 +4,6 @@ import pytest
 from pydantic import ValidationError
 
 from asset_autopsy.schemas import (
-    ArtifactRef,
     AxisPatch,
     AggregateResult,
     BehaviorDiff,
@@ -16,7 +15,6 @@ from asset_autopsy.schemas import (
     OpenCaseInput,
     PatchPolicy,
     PublishRevisionInput,
-    PublishRevisionOutput,
     PublicEventSummary,
     RunExperimentInput,
     RunExperimentOutput,
@@ -29,9 +27,9 @@ from asset_autopsy.schemas import (
 )
 
 
-def test_the_public_surface_has_exactly_seven_input_and_output_models() -> None:
+def test_public_surface_has_seven_inputs_and_six_success_outputs() -> None:
     assert len(TOOL_INPUT_MODELS) == 7
-    assert len(TOOL_OUTPUT_MODELS) == 7
+    assert len(TOOL_OUTPUT_MODELS) == 6
     assert [model.__name__ for model in TOOL_INPUT_MODELS] == [
         "OpenCaseInput",
         "InspectAssetInput",
@@ -40,6 +38,14 @@ def test_the_public_surface_has_exactly_seven_input_and_output_models() -> None:
         "CreateRevisionInput",
         "VerifyRevisionInput",
         "PublishRevisionInput",
+    ]
+    assert [model.__name__ for model in TOOL_OUTPUT_MODELS] == [
+        "OpenCaseOutput",
+        "InspectAssetOutput",
+        "RunTaskOutput",
+        "RunExperimentOutput",
+        "CreateRevisionOutput",
+        "VerifyRevisionOutput",
     ]
 
 
@@ -1450,7 +1456,7 @@ def test_public_event_tail_accepts_hypothesis_preregistration() -> None:
         )
 
 
-def test_public_outputs_cover_case_commitments_and_evidence_ledger() -> None:
+def test_open_case_output_covers_case_commitments() -> None:
     required = set(OpenCaseOutput.model_json_schema()["required"])
     assert {
         "original_asset_sha256",
@@ -1459,18 +1465,6 @@ def test_public_outputs_cover_case_commitments_and_evidence_ledger() -> None:
         "runner_sha256",
         "holdout_commitment_sha256",
     } <= required
-
-    artifact = ArtifactRef.model_validate(
-        {
-            "artifact_id": "art_ledger",
-            "kind": "evidence_ledger",
-            "uri": "autopsy://case_demo/art_ledger",
-            "media_type": "application/jsonl",
-            "sha256": "1" * 64,
-            "bytes": 42,
-        }
-    )
-    assert artifact.kind == "evidence_ledger"
 
 
 def _open_case_payload() -> dict[str, object]:
@@ -1487,7 +1481,6 @@ def _open_case_payload() -> dict[str, object]:
         "schema_version": "asset-autopsy/v1",
         "request_id": "req_demo",
         "case_id": "case_demo",
-        "promotion_state": "open",
         "qualification_state": "unused",
         "original_revision_id": "r000",
         "original_asset_sha256": "1" * 64,
@@ -1551,11 +1544,6 @@ def _open_case_payload() -> dict[str, object]:
 def test_open_case_output_binds_fixed_contract_and_lifecycle() -> None:
     OpenCaseOutput.model_validate(_open_case_payload())
 
-    promoted_unused = _open_case_payload()
-    promoted_unused["promotion_state"] = "promoted"
-    with pytest.raises(ValidationError):
-        OpenCaseOutput.model_validate(promoted_unused)
-
     missing_clause = _open_case_payload()
     missing_clause["contract_clauses"] = missing_clause["contract_clauses"][:-1]
     with pytest.raises(ValidationError):
@@ -1565,50 +1553,6 @@ def test_open_case_output_binds_fixed_contract_and_lifecycle() -> None:
     inconsistent_budget["qualification_state"] = "failed"
     with pytest.raises(ValidationError):
         OpenCaseOutput.model_validate(inconsistent_budget)
-
-
-def _publication_artifact(kind: str, index: int) -> dict[str, object]:
-    return {
-        "artifact_id": f"art_{index}",
-        "kind": kind,
-        "uri": f"autopsy://case_demo/art_{index}",
-        "media_type": "application/json",
-        "sha256": str(index) * 64,
-        "bytes": 42,
-    }
-
-
-def test_publish_revision_requires_the_complete_artifact_set() -> None:
-    base = {
-        "schema_version": "asset-autopsy/v1",
-        "request_id": "req_demo",
-        "case_id": "case_demo",
-        "revision_id": "r001",
-        "status": "published",
-    }
-    artifacts = [
-        _publication_artifact(kind, index)
-        for index, kind in enumerate(
-            ("repaired_mjcf", "patch_manifest", "evidence_ledger", "qualification"),
-            start=1,
-        )
-    ]
-    PublishRevisionOutput.model_validate({**base, "artifacts": artifacts})
-
-    with pytest.raises(ValidationError):
-        PublishRevisionOutput.model_validate({**base, "artifacts": artifacts[:-1]})
-    with pytest.raises(ValidationError):
-        PublishRevisionOutput.model_validate(
-            {**base, "artifacts": [*artifacts[:-1], artifacts[0]]}
-        )
-
-    for duplicate_field in ("artifact_id", "uri"):
-        duplicate_artifacts = [artifact.copy() for artifact in artifacts]
-        duplicate_artifacts[1][duplicate_field] = duplicate_artifacts[0][duplicate_field]
-        with pytest.raises(ValidationError):
-            PublishRevisionOutput.model_validate(
-                {**base, "artifacts": duplicate_artifacts}
-            )
 
 
 @pytest.mark.parametrize("value", [-1.0, 0.5])

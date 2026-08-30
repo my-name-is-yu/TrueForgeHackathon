@@ -258,8 +258,8 @@ def _raw_events_are_clear(
     )
 
 
-def _case_is_qualified_and_unpublished(case: CaseRecord) -> bool:
-    return case.qualification_state == "passed" and case.promotion_state == "open"
+def _case_is_qualified(case: CaseRecord) -> bool:
+    return case.qualification_state == "passed"
 
 
 def _terminal_failure_category(turn: Mapping[str, Any]) -> str:
@@ -473,10 +473,7 @@ def run() -> dict[str, Any]:
                 ),
                 "facade_publish_calls": facade.recorder.counts["publish_revision"] == 0,
                 "service_publish_calls": service.publish_invocation_count == 0,
-                "publication_receipts": service.publication_receipt_count == 0,
-                "published_bundles": service.published_bundle_count == 0,
-                "public_artifacts": service.public_artifact_count == 0,
-                "qualified_not_published": _case_is_qualified_and_unpublished(case),
+                "qualification_passed": _case_is_qualified(case),
                 "ledger_verified": True,
                 **_runtime_state_gates(evidence, facade=facade, service=service),
             }
@@ -510,8 +507,6 @@ def run() -> dict[str, Any]:
                 "server": {
                     "tool_invocations": dict(service.invocation_counts),
                     "publish_invocations": service.publish_invocation_count,
-                    "publication_receipts": service.publication_receipt_count,
-                    "public_artifacts": service.public_artifact_count,
                 },
             }
             _write_json(EVIDENCE_PATH, payload)
