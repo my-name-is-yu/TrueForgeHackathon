@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import asyncio
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 
 import pytest
 
@@ -49,6 +50,24 @@ def test_clean_target_kinematics_are_deterministic() -> None:
     assert clean_end_effector_position(fixture.public_scenario.target_qpos) == (
         fixture.public_scenario.target_body_position
     )
+
+
+def test_public_contract_hash_changes_when_target_qpos_changes() -> None:
+    fixture = load_compound_arm_fixture()
+    changed_scenario = replace(
+        fixture.public_scenario,
+        target_qpos=(0.36, -0.45, 0.25),
+    )
+    changed_fixture = replace(fixture, public_scenario=changed_scenario)
+
+    assert changed_fixture.public_contract_sha256 != fixture.public_contract_sha256
+
+
+def test_public_contract_hash_is_stable_for_identical_contracts() -> None:
+    first = load_compound_arm_fixture()
+    second = load_compound_arm_fixture()
+
+    assert first.public_contract_sha256 == second.public_contract_sha256
 
 
 def test_loading_rejects_a_disk_fixture_that_differs_from_the_embedded_asset(
