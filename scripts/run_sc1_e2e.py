@@ -100,7 +100,12 @@ def _commit_sha() -> str:
     changed_paths = []
     for line in status.stdout.splitlines():
         path = line[3:].split(" -> ")[-1]
-        if path not in allowed_outputs:
+        generated_bytecode = (
+            line.startswith("?? ")
+            and Path(path).suffix == ".pyc"
+            and "__pycache__" in Path(path).parts
+        )
+        if path not in allowed_outputs and not generated_bytecode:
             changed_paths.append(path)
     if changed_paths:
         raise RuntimeError("the SC1 evidence source is not clean at HEAD")

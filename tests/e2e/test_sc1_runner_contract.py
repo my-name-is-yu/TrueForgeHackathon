@@ -102,6 +102,7 @@ def test_commit_sha_allows_only_generated_evidence_outputs(monkeypatch) -> None:
                 stdout=(
                     " M evidence/sc1-evidence.json\n"
                     "?? evidence/sc1-blocker.json\n"
+                    "?? src/asset_autopsy/__pycache__/service.cpython-312.pyc\n"
                 )
             ),
             SimpleNamespace(stdout="a" * 40 + "\n"),
