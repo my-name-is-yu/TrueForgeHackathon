@@ -452,6 +452,15 @@ def _matches_run(
         for row in timeseries
     ):
         return False
+    if not timeseries:
+        return False
+    last_row = timeseries[-1]
+    if (
+        final_state["qpos"] != last_row["qpos"]
+        or final_state["qvel"] != last_row["qvel"]
+        or final_state["energy"] != [last_row["E_pot"], last_row["E_kin"]]
+    ):
+        return False
     timestamps = [row["t"] for row in timeseries]
     if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
         return False
@@ -815,7 +824,10 @@ class PinnedMujocoClient:
     async def reset(self, slot: SimulationSlot) -> None:
         result = await self._invoke(slot, "sim_reset", {"sim_name": slot._name})
         try:
-            normalize_json_result(result, lambda payload: _matches_status(payload, "reset"))
+            normalize_json_result(
+                result,
+                lambda payload: _matches_status(payload, "reset") and payload["time"] == 0.0,
+            )
         except UpstreamToolError:
             slot.state = SlotState.POISONED
             raise

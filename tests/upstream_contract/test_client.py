@@ -97,6 +97,8 @@ class _FakeSession:
         invalid_load_metadata: str | None = None,
         negative_contacts: bool = False,
         nested_final_energy: bool = False,
+        reset_time: float = 0.0,
+        final_state_mismatch: str | None = None,
         nq: int = 0,
         nv: int = 0,
         nu: int = 0,
@@ -118,6 +120,8 @@ class _FakeSession:
         self.invalid_load_metadata = invalid_load_metadata
         self.negative_contacts = negative_contacts
         self.nested_final_energy = nested_final_energy
+        self.reset_time = reset_time
+        self.final_state_mismatch = final_state_mismatch
         self.nq = nq
         self.nv = nv
         self.nu = nu
@@ -184,7 +188,7 @@ class _FakeSession:
         if name == "sim_reset":
             if self.timeout_on_reset:
                 await asyncio.sleep(1)
-            return _text_result({"status": "reset", "time": 0.0})
+            return _text_result({"status": "reset", "time": self.reset_time})
         if name == "sim_set_state":
             return _text_result({"status": "ok", "time": 0.0})
         if name == "run_and_analyze":
@@ -230,15 +234,22 @@ class _FakeSession:
             self.current_times[sim_name] = timestamps[-1]
             if self.timestamp_mode == "inconsistent":
                 sim_time[1] += 0.002
+            final_qpos = [1.0] * self.nq if self.final_state_mismatch == "qpos" else qpos
+            final_qvel = [1.0] * self.nv if self.final_state_mismatch == "qvel" else qvel
+            final_energy = (
+                [1.0, 0.0]
+                if self.final_state_mismatch == "energy"
+                else ([[0.0], [0.0]] if self.nested_final_energy else [0.0, 0.0])
+            )
             return _text_result(
                 {
                     "n_steps": steps,
                     "sim_time": sim_time,
                     "final_state": {
-                        "qpos": qpos,
-                        "qvel": qvel,
+                        "qpos": final_qpos,
+                        "qvel": final_qvel,
                         "n_contacts": -1 if self.negative_contacts else 0,
-                        "energy": [[0.0], [0.0]] if self.nested_final_energy else [0.0, 0.0],
+                        "energy": final_energy,
                     },
                     "timeseries": rows,
                 }
@@ -279,6 +290,8 @@ def _fake_client(
     invalid_load_metadata: str | None = None,
     negative_contacts: bool = False,
     nested_final_energy: bool = False,
+    reset_time: float = 0.0,
+    final_state_mismatch: str | None = None,
     nq: int = 0,
     nv: int = 0,
     nu: int = 0,
@@ -306,6 +319,8 @@ def _fake_client(
             invalid_load_metadata=invalid_load_metadata,
             negative_contacts=negative_contacts,
             nested_final_energy=nested_final_energy,
+            reset_time=reset_time,
+            final_state_mismatch=final_state_mismatch,
             nq=nq,
             nv=nv,
             nu=nu,
@@ -493,6 +508,24 @@ def test_timeout_terminates_child_and_poisoned_slot() -> None:
     asyncio.run(check())
 
 
+def test_reset_rejects_nonzero_upstream_clock() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(reset_time=1.0)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.reset(slot)
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
 def test_run_response_requires_requested_signals_and_model_widths() -> None:
     async def check() -> None:
         from asset_autopsy.mujoco_client import PinnedMujocoClient
@@ -519,6 +552,29 @@ def test_run_response_requires_requested_signals_and_model_widths() -> None:
                 assert caught.value.code == UPSTREAM_BAD_RESPONSE
                 assert slot.state is SlotState.POISONED
             assert get_session().closed is True
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("mismatch", ("qpos", "qvel", "energy"))
+def test_run_response_requires_final_state_to_match_last_sample(mismatch: str) -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(
+            final_state_mismatch=mismatch,
+            nq=1,
+            nv=1,
+        )
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.run_segment(slot, ctrl=[], n_steps=1)
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert slot.state is SlotState.POISONED
 
     asyncio.run(check())
 
