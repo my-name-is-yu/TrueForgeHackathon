@@ -568,7 +568,25 @@ class ActuatorSummary(StrictModel):
 
 class ScenarioSummary(StrictModel):
     scenario_id: Literal["public_center"]
+    initial_joint_positions: list[JointPosition] = Field(min_length=1, max_length=64)
+    target_joint_positions: list[JointPosition] = Field(min_length=1, max_length=64)
+    target_body_name: Literal["end_effector"]
+    target_body_position_m: tuple[
+        StrictFiniteFloat, StrictFiniteFloat, StrictFiniteFloat
+    ]
     observable_metrics: list[RunTaskMetricName] = Field(min_length=7, max_length=7)
+
+    @model_validator(mode="after")
+    def validate_joint_positions(self) -> ScenarioSummary:
+        initial_names = [item.joint_name for item in self.initial_joint_positions]
+        target_names = [item.joint_name for item in self.target_joint_positions]
+        if len(initial_names) != len(set(initial_names)) or len(target_names) != len(
+            set(target_names)
+        ):
+            raise ValueError("public scenario joint positions must be unique")
+        if set(initial_names) != set(target_names):
+            raise ValueError("public scenario joint position sets must match")
+        return self
 
     @field_validator("observable_metrics")
     @classmethod

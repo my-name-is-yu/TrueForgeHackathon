@@ -1524,7 +1524,18 @@ def _open_case_payload() -> dict[str, object]:
         "runner_sha256": "4" * 64,
         "holdout_commitment_sha256": "5" * 64,
         "public_scenarios": [
-            {"scenario_id": "public_center", "observable_metrics": metrics}
+            {
+                "scenario_id": "public_center",
+                "initial_joint_positions": [
+                    {"joint_name": "elbow", "position_rad": 0.1}
+                ],
+                "target_joint_positions": [
+                    {"joint_name": "elbow", "position_rad": 0.2}
+                ],
+                "target_body_name": "end_effector",
+                "target_body_position_m": [0.4, 0.2, 0.0],
+                "observable_metrics": metrics,
+            }
         ],
         "contract_clauses": [
             {"clause_id": clause_id, "description": f"Fixed clause {clause_id}."}

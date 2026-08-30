@@ -132,6 +132,7 @@ def test_agent_spec_is_the_exact_serial_approval_contract() -> None:
     for required_boundary in (
         "Use only public tool responses and public offloaded artifacts.",
         "remaining budgets",
+        "public scenario",
         "allowed patch attributes",
         "exit-0 Sandbox analysis",
         "Evidence must distinguish the patch target from another element",

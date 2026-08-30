@@ -53,7 +53,7 @@ The saved agent can resolve exactly these seven Asset Autopsy tools:
 
 | Tool | Contract |
 | --- | --- |
-| `open_case` | Return the pre-provisioned case contract, budgets, topology, current head, and patch policy. |
+| `open_case` | Return the pre-provisioned public scenario targets, contract, budgets, topology, current head, and patch policy. |
 | `inspect_asset` | Return authored and compiled public values without fault labels, repair advice, hidden values, XML, or host paths. |
 | `run_task` | Execute the fixed public scenario. A child revision also returns a same-condition parent `BehaviorDiff`. |
 | `run_experiment` | Preregister a claim, competing explanation, prediction, and falsifier, then run one bounded agent-defined experiment. |

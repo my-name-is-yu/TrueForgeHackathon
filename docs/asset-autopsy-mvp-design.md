@@ -93,7 +93,7 @@ The resolved AgentSpec exposes exactly these seven tools:
 
 | Tool | Implemented contract |
 | --- | --- |
-| `open_case` | Read the pre-provisioned case, topology, public contract, head, lineage, patch policy, and budgets. |
+| `open_case` | Read the pre-provisioned public scenario targets, topology, contract, head, lineage, patch policy, and budgets. |
 | `inspect_asset` | Read sanitized authored and compiled values without XML, host paths, fault labels, or hidden values. |
 | `run_task` | Execute only `public_center`; a child result includes a same-condition parent `BehaviorDiff`. |
 | `run_experiment` | Register a hypothesis and run one bounded model-defined experiment after a public baseline. |
