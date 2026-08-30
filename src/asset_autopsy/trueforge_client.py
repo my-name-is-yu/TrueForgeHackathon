@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import re
+import shlex
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
@@ -24,11 +25,13 @@ EXACT_PROMPT = (
 )
 
 AGENT_INSTRUCTIONS = """You are operating the pre-provisioned Asset Autopsy asset compound-arm-01. Its public case_id is case_compound-arm-01.
-First open the case and run the fixed public task to establish the failing baseline. Inspect only the public authored and compiled values. Before every experiment, register a concrete causal claim, suspected elements, a competing explanation, a prediction, and a falsifier. Choose bounded initial joint positions, constant actuator-control segments, and observables that discriminate those explanations.
+Follow this mandatory evidence loop in the same turn: open_case; failing run_task baseline on r000; inspect_asset; run_experiment; Sandbox exec analysis; create_revision; run_task; a second run_experiment; Sandbox exec analysis; a second create_revision; final run_task; verify_revision; one publish_revision request. A run_task is only the fixed public check: it is never an experiment and its run ID or artifact cannot support create_revision.
 
-After every run_experiment response, use the TrueForge Sandbox exec tool with Python and json.load(open(exact_path)) to read the exact Large Tool Response JSON file. Print one compact JSON object with exactly these keys: {"rows":256,"run_id":"...","metric":"...","finding":"...","candidate_attribute":"joint_name.attribute"}. Use that analysis in the next decision. Do not infer a cause from a tool label, and do not skip the sandbox analysis.
+Before every run_experiment, register a concrete causal claim, suspected elements, a competing explanation, a prediction, and a falsifier. Isolate a suspected joint from neutral positions and choose controls and qpos, qvel, energy, contact_count, or body_position observations that discriminate the explanations. Name joint_a, joint_b, and joint_c exactly once in initial_joint_positions. Name motor_a, motor_b, and motor_c exactly once in every segment, and use at least 256 total steps.
 
-Create only one-attribute revisions, each citing the completed experiment that supports it. Re-run the public task after each revision. Continue until two different causes have been repaired in two immutable child revisions and the public BehaviorDiff is improved. Only after the public task passes may you call verify_revision. If qualification returns 3/3, request publish_revision exactly once with the returned promotion ticket. Do not ask the user questions, do not change the controller or tests, and do not use or request XML, paths, URLs, seeds, timesteps, hidden targets, or hidden traces."""
+After every run_experiment response, copy the exact `Result saved to:` path into a TrueForge Sandbox exec command using `python - <<'PY'` and `json.load(open(exact_path))`. Actually analyze that JSON; do not merely mention the path or fabricate a result. Print one compact JSON object with exactly these keys: {"rows":256,"run_id":"...","metric":"...","finding":"...","candidate_attribute":"joint_name.attribute"}. Use the exact hypothesis_id and run_id returned by that experiment in the next create_revision. A revision patch has target {"kind":"joint","name":"..."}, one attribute, expected_old_value, and new_value; expected_effect has scenario_id `public_center` and one or more metric predicates.
+
+Create one attribute per revision and re-run the public task after each. Continue until two different causes have been repaired in two immutable child revisions and the public BehaviorDiff passes. Only then call verify_revision. If qualification returns 3/3, request publish_revision exactly once with the returned promotion ticket. If a bounded tool call returns INVALID_REQUEST, correct its arguments from the exact tool schema and continue; never stop and offer to continue later. Do not ask the user questions, do not change the controller or tests, and do not use or request XML, host paths, URLs, seeds, timesteps, hidden targets, or hidden traces."""
 
 
 class TrueForgeError(RuntimeError):
@@ -570,8 +573,35 @@ def _short_hash(value: str) -> str:
 def _sandbox_python_reads_json(arguments: Mapping[str, Any], path: str) -> bool:
     language = arguments.get("language")
     code = arguments.get("code")
-    if not isinstance(language, str) or language.lower() != "python" or not isinstance(code, str):
-        return False
+    sources: list[str] = []
+    if isinstance(language, str) and language.lower() == "python" and isinstance(code, str):
+        sources.append(code)
+    command = arguments.get("command")
+    if isinstance(command, str):
+        heredoc = re.compile(
+            r"(?ms)(?:^|\n)\s*python(?:3(?:\.\d+)?)?\s+-\s+"
+            r"<<['\"]?(?P<tag>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*\n"
+            r"(?P<source>.*?)\n(?P=tag)\s*(?:\n|$)"
+        )
+        sources.extend(match.group("source") for match in heredoc.finditer(command))
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = []
+        for index, token in enumerate(tokens[:-2]):
+            if (
+                re.fullmatch(r"python(?:3(?:\.\d+)?)?", token)
+                and tokens[index + 1] == "-c"
+            ):
+                sources.append(tokens[index + 2])
+
+    for source in sources:
+        if _python_source_reads_json(source, path):
+            return True
+    return False
+
+
+def _python_source_reads_json(code: str, path: str) -> bool:
     try:
         tree = ast.parse(code)
     except SyntaxError:
@@ -671,7 +701,7 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             failures.append("an experiment has no tool response")
             continue
         content = str(response["event"].get("content", ""))
-        match = re.search(r"Content too large\. Result saved to:\s*([^\s]+)", content)
+        match = re.search(r"Result saved to:\s*([^\s]+)", content)
         if match is None:
             failures.append("an experiment response was not moved by Large Tool Response")
             continue

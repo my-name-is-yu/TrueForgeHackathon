@@ -216,11 +216,13 @@ def _successful_events() -> list[dict[str, Any]]:
             "sandbox-1",
             "exec",
             {
-                "language": "python",
-                "code": (
+                "intent": "Analyze the first offloaded experiment trace.",
+                "command": (
+                    "python - <<'PY'\n"
                     "import json\n"
                     f"trace = json.load(open('{trace_one}'))\n"
-                    "print(json.dumps({'rows': len(trace['rows'])}))"
+                    "print(json.dumps({'rows': len(trace['rows'])}))\n"
+                    "PY"
                 ),
             },
         ),
@@ -297,11 +299,13 @@ def _successful_events() -> list[dict[str, Any]]:
             "sandbox-2",
             "exec",
             {
-                "language": "python",
-                "code": (
+                "intent": "Analyze the second offloaded experiment trace.",
+                "command": (
+                    "python - <<'PY'\n"
                     "import json\n"
                     f"trace = json.load(open('{trace_two}'))\n"
-                    "print(json.dumps({'rows': len(trace['rows'])}))"
+                    "print(json.dumps({'rows': len(trace['rows'])}))\n"
+                    "PY"
                 ),
             },
         ),
@@ -475,10 +479,12 @@ def test_rejects_sandbox_code_that_only_mentions_the_trace_path() -> None:
         if call.get("id") == "sandbox-1"
     )
     arguments = json.loads(call["function"]["arguments"])
-    arguments["code"] = (
+    arguments["command"] = (
+        "python - <<'PY'\n"
         "# /sandbox/large_tool_responses/experiment-axis.json\n"
         "import json\n"
-        "print(json.dumps({'rows': 256}))"
+        "print(json.dumps({'rows': 256}))\n"
+        "PY"
     )
     call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
 
