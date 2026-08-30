@@ -306,6 +306,21 @@ def _metric_deltas(
     ]
 
 
+def _clause_outcomes(**overrides: str) -> list[dict[str, str]]:
+    outcomes = {
+        "reach_error": "improved",
+        "stable_hold": "unchanged",
+        "settling": "unchanged",
+        "finite_state": "unchanged",
+        "joint_limits": "unchanged",
+    }
+    outcomes.update(overrides)
+    return [
+        {"clause_id": clause_id, "outcome": outcome}
+        for clause_id, outcome in outcomes.items()
+    ]
+
+
 def test_behavior_diff_encodes_frozen_comparison_evidence() -> None:
     behavior_diff = BehaviorDiff.model_validate(
         {
@@ -317,7 +332,7 @@ def test_behavior_diff_encodes_frozen_comparison_evidence() -> None:
                 "magnitude": 0.002,
             },
             "metric_deltas": _metric_deltas(),
-            "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
+            "clause_outcomes": _clause_outcomes(),
             "verdict": "improved",
         }
     )
@@ -333,7 +348,7 @@ def test_behavior_diff_encodes_frozen_comparison_evidence() -> None:
             {
                 "changed": True,
                 "metric_deltas": _metric_deltas(),
-                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
+                "clause_outcomes": _clause_outcomes(),
                 "verdict": "improved",
             }
         )
@@ -353,7 +368,7 @@ def test_behavior_diff_rejects_false_metric_deltas_and_contradictory_state() -> 
                     "magnitude": 0.002,
                 },
                 "metric_deltas": false_deltas,
-                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
+                "clause_outcomes": _clause_outcomes(),
                 "verdict": "improved",
             }
         )
@@ -369,7 +384,7 @@ def test_behavior_diff_rejects_false_metric_deltas_and_contradictory_state() -> 
                     "magnitude": 0.002,
                 },
                 "metric_deltas": _metric_deltas(),
-                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
+                "clause_outcomes": _clause_outcomes(),
                 "verdict": "unchanged_failure",
             }
         )
@@ -396,7 +411,69 @@ def test_behavior_diff_requires_each_fixed_metric_exactly_once(
                     "magnitude": 0.002,
                 },
                 "metric_deltas": metric_deltas,
-                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
+                "clause_outcomes": _clause_outcomes(),
+                "verdict": "improved",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "clause_outcomes",
+    [
+        _clause_outcomes()[:-1],
+        [*_clause_outcomes()[:-1], _clause_outcomes()[0]],
+        [
+            *_clause_outcomes()[:-1],
+            {"clause_id": "not_a_contract_clause", "outcome": "regressed"},
+        ],
+    ],
+)
+def test_behavior_diff_requires_each_fixed_clause_exactly_once(
+    clause_outcomes: list[dict[str, str]],
+) -> None:
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(
+            {
+                "changed": True,
+                "first_divergence": {
+                    "step": 12,
+                    "time_s": 0.12,
+                    "signal": "qpos",
+                    "magnitude": 0.002,
+                },
+                "metric_deltas": _metric_deltas(),
+                "clause_outcomes": clause_outcomes,
+                "verdict": "improved",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("metric", "before", "after"),
+    [
+        ("final_target_error_m", -1.0, -1.0),
+        ("joint_limit_violation_count", 0.5, 0.0),
+    ],
+)
+def test_behavior_diff_endpoints_obey_metric_domains(
+    metric: str, before: float, after: float
+) -> None:
+    metric_deltas = _metric_deltas()
+    for delta in metric_deltas:
+        if delta["metric"] == metric:
+            delta.update({"before": before, "after": after, "delta": after - before})
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(
+            {
+                "changed": True,
+                "first_divergence": {
+                    "step": 12,
+                    "time_s": 0.12,
+                    "signal": "qpos",
+                    "magnitude": 0.002,
+                },
+                "metric_deltas": metric_deltas,
+                "clause_outcomes": _clause_outcomes(),
                 "verdict": "improved",
             }
         )
@@ -413,7 +490,7 @@ def test_behavior_diff_represents_nullable_settling_time_transitions() -> None:
                 "magnitude": 0.002,
             },
             "metric_deltas": _metric_deltas(settling_before=None),
-            "clause_outcomes": [{"clause_id": "settling", "outcome": "improved"}],
+            "clause_outcomes": _clause_outcomes(reach_error="unchanged", settling="improved"),
             "verdict": "improved",
         }
     )
@@ -440,7 +517,7 @@ def test_behavior_diff_represents_nullable_settling_time_transitions() -> None:
             {
                 "changed": False,
                 "metric_deltas": _metric_deltas(hold_after=0.04),
-                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                "clause_outcomes": _clause_outcomes(reach_error="unchanged"),
                 "verdict": "changed",
             }
         )
@@ -456,7 +533,7 @@ def test_behavior_diff_represents_nullable_settling_time_transitions() -> None:
                     "magnitude": 0.002,
                 },
                 "metric_deltas": _metric_deltas(hold_after=0.04),
-                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                "clause_outcomes": _clause_outcomes(reach_error="unchanged"),
                 "verdict": "public_pass",
             }
         )
@@ -466,7 +543,7 @@ def test_behavior_diff_represents_nullable_settling_time_transitions() -> None:
             {
                 "changed": False,
                 "metric_deltas": _metric_deltas(hold_after=0.04),
-                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                "clause_outcomes": _clause_outcomes(reach_error="unchanged"),
                 "verdict": "improved",
             }
         )
@@ -488,7 +565,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
             "behavior_diff": {
                 "changed": False,
                 "metric_deltas": _metric_deltas(hold_before=0.02),
-                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                "clause_outcomes": _clause_outcomes(reach_error="unchanged"),
                 "verdict": "public_pass",
             },
         }
@@ -507,7 +584,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
                 "behavior_diff": {
                     "changed": False,
                     "metric_deltas": _metric_deltas(hold_before=0.02),
-                    "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                    "clause_outcomes": _clause_outcomes(reach_error="unchanged"),
                     "verdict": "public_pass",
                 },
             }
@@ -524,8 +601,8 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
             "observations": _run_task_observations(),
             "behavior_diff": {
                 "changed": False,
-                "metric_deltas": _metric_deltas(hold_before=0.02),
-                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                "metric_deltas": _metric_deltas(hold_after=0.04),
+                "clause_outcomes": _clause_outcomes(reach_error="unchanged"),
                 "verdict": "unchanged_failure",
             },
         }
@@ -547,8 +624,8 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
         **child_without_diff,
         "behavior_diff": {
             "changed": False,
-            "metric_deltas": _metric_deltas(hold_before=0.02),
-            "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+            "metric_deltas": _metric_deltas(hold_after=0.04),
+            "clause_outcomes": _clause_outcomes(reach_error="unchanged"),
             "verdict": "unchanged_failure",
         },
     }
@@ -577,12 +654,39 @@ def test_run_task_output_rejects_changed_public_pass_verdict_on_failure() -> Non
                 "magnitude": 0.002,
             },
             "metric_deltas": _metric_deltas(),
-            "clause_outcomes": [{"clause_id": "hold_error", "outcome": "improved"}],
+            "clause_outcomes": _clause_outcomes(),
             "verdict": "public_pass",
         },
     }
     with pytest.raises(ValidationError):
         RunTaskOutput.model_validate(payload)
+
+
+def test_run_task_output_binds_behavior_diff_after_values_to_observations() -> None:
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(
+            {
+                "schema_version": "asset-autopsy/v1",
+                "request_id": "req_demo",
+                "case_id": "case_demo",
+                "revision_id": "r001",
+                "scenario_id": "public_center",
+                "result": "pass",
+                "observations": _run_task_observations(hold_error_p95_m=0.02),
+                "behavior_diff": {
+                    "changed": True,
+                    "first_divergence": {
+                        "step": 12,
+                        "time_s": 0.12,
+                        "signal": "qpos",
+                        "magnitude": 0.002,
+                    },
+                    "metric_deltas": _metric_deltas(hold_after=0.99),
+                    "clause_outcomes": _clause_outcomes(),
+                    "verdict": "public_pass",
+                },
+            }
+        )
 
 
 def _run_task_observations(
