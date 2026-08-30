@@ -301,9 +301,6 @@ class ObjectStore:
         except OSError as exc:
             raise ObjectIntegrityError("object directory cannot be synchronized") from exc
 
-    def _ensure_directory(self, path: Path) -> None:
-        path.mkdir(parents=True, exist_ok=True)
-
     def _fsync_to_root(self, path: Path) -> None:
         while True:
             self._fsync_directory(path)
@@ -329,7 +326,7 @@ class ObjectStore:
         digest = hashlib.sha256()
         size = 0
         try:
-            self._ensure_directory(self.root.parent)
+            self.root.parent.mkdir(parents=True, exist_ok=True)
             self.root.mkdir(exist_ok=True)
             self.hash_root.mkdir(exist_ok=True)
             with tempfile.NamedTemporaryFile(
@@ -1419,14 +1416,14 @@ class EvidenceStore:
             and attempt.scenario_hashes == normalized
         )
 
-    @classmethod
     def _latest_attempt_from_connection(
-        cls,
+        self,
         connection: sqlite3.Connection,
         case_id: str,
         state: str,
         commitments: Mapping[str, str],
     ) -> QualificationAttempt:
+        self._verified_ledger_from_connection(connection)
         row = connection.execute(
             """
             SELECT * FROM ledger_events
@@ -1437,14 +1434,13 @@ class EvidenceStore:
         ).fetchone()
         if row is None:
             raise IntegrityError("qualification reservation is missing")
-        event = cls._event_from_row(row)
-        return cls._attempt_from_payload(
+        event = self._event_from_row(row)
+        return self._attempt_from_payload(
             case_id, state, event.payload, commitments=commitments
         )
 
-    @classmethod
     def _require_attempt(
-        cls,
+        self,
         connection: sqlite3.Connection,
         *,
         case_id: str,
@@ -1455,10 +1451,10 @@ class EvidenceStore:
         state: str,
         commitments: Mapping[str, str],
     ) -> QualificationAttempt:
-        attempt = cls._latest_attempt_from_connection(
+        attempt = self._latest_attempt_from_connection(
             connection, case_id, state, commitments
         )
-        if not cls._identity_matches(
+        if not self._identity_matches(
             attempt,
             case_id=case_id,
             attempt_id=attempt_id,
@@ -1734,7 +1730,6 @@ class EvidenceStore:
                 raise CaseNotFoundError("case was not found")
             case_commitments = self._stored_commitment_payload(case)
             if case["qualification_result"] in {"PASSED", "FAILED"}:
-                self._verified_ledger_from_connection(connection)
                 existing = self._latest_attempt_from_connection(
                     connection,
                     case_id,
@@ -1853,8 +1848,6 @@ class EvidenceStore:
                 return None
             state = case["qualification_result"]
             case_commitments = self._stored_commitment_payload(case)
-            if state in {"PASSED", "FAILED"}:
-                self._verified_ledger_from_connection(connection)
             attempt = self._latest_attempt_from_connection(
                 connection, case_id, state, case_commitments
             )
@@ -1962,13 +1955,13 @@ class EvidenceStore:
 
     record_promotion = record_promotion_receipt
 
-    @classmethod
     def _promotion_from_connection(
-        cls,
+        self,
         connection: sqlite3.Connection,
         case_id: str,
         revision_id: str | None = None,
     ) -> PromotionReceipt | None:
+        self._verified_ledger_from_connection(connection)
         if revision_id is None:
             row = connection.execute(
                 """
@@ -1989,7 +1982,7 @@ class EvidenceStore:
             ).fetchone()
         if row is None:
             return None
-        event = cls._event_from_row(row)
+        event = self._event_from_row(row)
         try:
             ticket_id = event.payload["ticket_id"]
             stored_revision = event.payload["revision_id"]
@@ -2018,7 +2011,7 @@ class EvidenceStore:
         _id(case_id, "case_id")
         if revision_id is not None:
             _id(revision_id, "revision_id")
-        with self._read_connection() as connection:
+        with self._read_transaction() as connection:
             case = connection.execute(
                 "SELECT * FROM cases WHERE case_id = ?", (case_id,)
             ).fetchone()

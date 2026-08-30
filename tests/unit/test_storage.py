@@ -985,6 +985,36 @@ def test_get_qualification_reports_corrupt_case_commitment_as_integrity_error(
         store.get_qualification("case-1")
 
 
+def test_qualification_reads_verify_the_reservation_event(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            """
+            UPDATE ledger_events SET payload_json = ?
+            WHERE event_type = 'QUALIFICATION_RESERVED'
+            """,
+            (
+                json.dumps(
+                    {
+                        "attempt_id": "forged-attempt",
+                        "revision_id": "r001",
+                        "suite_commitment_sha256": "4" * 64,
+                        "scenario_hashes": ["5" * 64, "6" * 64, "7" * 64],
+                        **COMMITMENTS,
+                    }
+                ),
+            ),
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="ledger event hash mismatch"):
+        store.get_qualification("case-1")
+
+
 def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
@@ -1149,6 +1179,49 @@ def test_promotion_receipt_is_atomic_and_reconcilable(tmp_path: Path) -> None:
             ticket_id="ticket-2",
             manifest_sha256="8" * 64,
         )
+
+
+def test_promotion_reads_verify_the_ledger_chain(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    identity = {
+        "case_id": "case-1",
+        "attempt_id": "attempt-1",
+        "revision_id": "r001",
+        "suite_commitment_sha256": "4" * 64,
+        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
+    }
+    store.record_qualification_terminal(**identity, state="PASSED")
+    store.record_promotion_receipt(
+        case_id="case-1",
+        revision_id="r001",
+        ticket_id="ticket-1",
+        manifest_sha256="8" * 64,
+    )
+
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            """
+            UPDATE ledger_events SET payload_json = ?
+            WHERE event_type = 'PROMOTED'
+            """,
+            (
+                json.dumps(
+                    {
+                        "ticket_id": "forged-ticket",
+                        "revision_id": "r001",
+                        "manifest_sha256": "8" * 64,
+                        "receipt": {},
+                    }
+                ),
+            ),
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="ledger event hash mismatch"):
+        store.reconcile_promotion(case_id="case-1", revision_id="r001")
 
 
 def test_unqualified_promotion_does_not_mutate_case_or_ledger(tmp_path: Path) -> None:
