@@ -53,6 +53,7 @@ from .schemas import (
     InspectAssetInput,
     InspectAssetOutput,
     IntegrityChecks,
+    JointPosition,
     JointSummary,
     OpenCaseInput,
     OpenCaseOutput,
@@ -182,6 +183,7 @@ class AssetAutopsyService:
                 case.case_id, case.head_revision_id, request_id
             )
             events = self.store.ledger_events(case.case_id)
+            scenario = self.fixture.public_scenario
             return OpenCaseOutput(
                 schema_version=SCHEMA_VERSION,
                 request_id=request_id,
@@ -195,7 +197,25 @@ class AssetAutopsyService:
                 holdout_commitment_sha256=case.holdout_commitment_sha256,
                 public_scenarios=[
                     ScenarioSummary(
-                        scenario_id="public_center",
+                        scenario_id=scenario.scenario_id,
+                        initial_joint_positions=[
+                            JointPosition(joint_name=name, position_rad=position)
+                            for name, position in zip(
+                                self.fixture.joint_names,
+                                scenario.initial_qpos,
+                                strict=True,
+                            )
+                        ],
+                        target_joint_positions=[
+                            JointPosition(joint_name=name, position_rad=position)
+                            for name, position in zip(
+                                self.fixture.joint_names,
+                                scenario.target_qpos,
+                                strict=True,
+                            )
+                        ],
+                        target_body_name="end_effector",
+                        target_body_position_m=scenario.target_body_position,
                         observable_metrics=list(TASK_METRIC_ORDER),
                     )
                 ],

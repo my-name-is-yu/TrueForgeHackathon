@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from asset_autopsy.fixture import CASE_ID
+from asset_autopsy.fixture import CASE_ID, load_compound_arm_fixture
 from asset_autopsy.schemas import InspectAssetInput, OpenCaseInput, RunExperimentInput
 from asset_autopsy.service import AssetAutopsyService, DomainError
 
@@ -39,6 +39,16 @@ def test_service_preprovisions_the_demo_case_idempotently_and_exposes_no_diagnos
         "revisions_remaining": 2,
         "qualification_remaining": 1,
     }
+    scenario = opened.public_scenarios[0]
+    fixture_scenario = load_compound_arm_fixture().public_scenario
+    assert [item.position_rad for item in scenario.initial_joint_positions] == list(
+        fixture_scenario.initial_qpos
+    )
+    assert [item.position_rad for item in scenario.target_joint_positions] == list(
+        fixture_scenario.target_qpos
+    )
+    assert scenario.target_body_name == "end_effector"
+    assert scenario.target_body_position_m == fixture_scenario.target_body_position
     assert inspected.joints[1].name == "joint_b"
     assert inspected.joints[1].axis == (0.0, 0.0, 1.0)
     serialized = inspected.model_dump_json()
