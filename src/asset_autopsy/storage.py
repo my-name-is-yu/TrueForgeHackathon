@@ -1413,7 +1413,10 @@ class EvidenceStore:
         *,
         commitments: Mapping[str, str],
     ) -> QualificationAttempt:
-        if state not in {"PASSED", "FAILED"} and "result" in event.payload:
+        if event.event_type not in {
+            "QUALIFICATION_PASSED",
+            "QUALIFICATION_FAILED",
+        } and "result" in event.payload:
             raise IntegrityError("nonterminal qualification result is invalid")
         result = event.payload.get("result")
         if result is not None and not isinstance(result, Mapping):

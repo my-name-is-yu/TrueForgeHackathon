@@ -81,31 +81,40 @@ def make_store(tmp_path: Path) -> EvidenceStore:
     return store
 
 
-def replace_tail_event_payload(
+def replace_event_payload(
     database_path: Path, event_type: str, payload: dict[str, object]
 ) -> None:
     with sqlite3.connect(database_path) as connection:
         connection.row_factory = sqlite3.Row
-        connection.execute(
-            "UPDATE ledger_events SET payload_json = ? WHERE event_type = ?",
-            (canonical_json_bytes(payload).decode(), event_type),
-        )
-        row = connection.execute(
-            "SELECT * FROM ledger_events WHERE event_type = ? ORDER BY seq DESC LIMIT 1",
+        target = connection.execute(
+            "SELECT seq, prev_hash FROM ledger_events WHERE event_type = ?",
             (event_type,),
         ).fetchone()
-        assert row is not None
-        assert row["seq"] == connection.execute(
-            "SELECT MAX(seq) FROM ledger_events"
-        ).fetchone()[0]
-        event_hash = hashlib.sha256(
-            bytes.fromhex(row["prev_hash"])
-            + canonical_json_bytes(EvidenceStore._event_without_hash(row))
-        ).hexdigest()
+        assert target is not None
         connection.execute(
-            "UPDATE ledger_events SET event_hash = ? WHERE seq = ?",
-            (event_hash, row["seq"]),
+            "UPDATE ledger_events SET payload_json = ? WHERE seq = ?",
+            (canonical_json_bytes(payload).decode(), target["seq"]),
         )
+        previous_hash = target["prev_hash"]
+        for (seq,) in connection.execute(
+            "SELECT seq FROM ledger_events WHERE seq >= ? ORDER BY seq", (target["seq"],)
+        ):
+            connection.execute(
+                "UPDATE ledger_events SET prev_hash = ? WHERE seq = ?",
+                (previous_hash, seq),
+            )
+            row = connection.execute(
+                "SELECT * FROM ledger_events WHERE seq = ?", (seq,)
+            ).fetchone()
+            assert row is not None
+            previous_hash = hashlib.sha256(
+                bytes.fromhex(previous_hash)
+                + canonical_json_bytes(EvidenceStore._event_without_hash(row))
+            ).hexdigest()
+            connection.execute(
+                "UPDATE ledger_events SET event_hash = ? WHERE seq = ?",
+                (previous_hash, seq),
+            )
         connection.commit()
 
 
@@ -1054,7 +1063,7 @@ def test_malformed_stored_qualification_identity_is_an_integrity_error(
     add_probe_evidence(store)
     add_child(store)
     qualify(store)
-    replace_tail_event_payload(
+    replace_event_payload(
         tmp_path / "ledger.sqlite",
         "QUALIFICATION_RESERVED",
         {
@@ -1083,7 +1092,7 @@ def test_qualification_event_revision_must_match_its_payload(tmp_path: Path) -> 
             """
         )
         connection.commit()
-    replace_tail_event_payload(
+    replace_event_payload(
         tmp_path / "ledger.sqlite",
         "QUALIFICATION_RESERVED",
         {
@@ -1106,7 +1115,7 @@ def test_qualification_reservation_must_match_materialized_case(tmp_path: Path) 
     add_probe_evidence(store)
     add_child(store)
     qualify(store)
-    replace_tail_event_payload(
+    replace_event_payload(
         tmp_path / "ledger.sqlite",
         "QUALIFICATION_RESERVED",
         {
@@ -1127,7 +1136,7 @@ def test_nonterminal_qualification_event_cannot_expose_a_result(tmp_path: Path) 
     add_probe_evidence(store)
     add_child(store)
     qualify(store)
-    replace_tail_event_payload(
+    replace_event_payload(
         tmp_path / "ledger.sqlite",
         "QUALIFICATION_RESERVED",
         {
@@ -1146,6 +1155,36 @@ def test_nonterminal_qualification_event_cannot_expose_a_result(tmp_path: Path) 
         store.restore_state("case-1")
 
 
+def test_terminal_case_still_rejects_result_on_reservation(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    identity = {
+        "case_id": "case-1",
+        "attempt_id": "attempt-1",
+        "revision_id": "r001",
+        "suite_commitment_sha256": "4" * 64,
+        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
+    }
+    store.record_qualification_terminal(**identity, state="PASSED")
+    replace_event_payload(
+        tmp_path / "ledger.sqlite",
+        "QUALIFICATION_RESERVED",
+        {
+            "attempt_id": "attempt-1",
+            "revision_id": "r001",
+            "suite_commitment_sha256": "4" * 64,
+            "scenario_hashes": ["5" * 64, "6" * 64, "7" * 64],
+            "result": {"private_score": 99},
+            **COMMITMENTS,
+        },
+    )
+
+    with pytest.raises(IntegrityError, match="nonterminal qualification result"):
+        store.get_qualification("case-1")
+
+
 def test_restore_rejects_illegal_qualification_transition(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
@@ -1159,7 +1198,7 @@ def test_restore_rejects_illegal_qualification_transition(tmp_path: Path) -> Non
             """
         )
         connection.commit()
-    replace_tail_event_payload(
+    replace_event_payload(
         tmp_path / "ledger.sqlite",
         "QUALIFICATION_RECOVERED",
         {
@@ -1318,7 +1357,7 @@ def test_malformed_stored_terminal_result_is_an_integrity_error(tmp_path: Path) 
     store.record_qualification_terminal(
         **identity, state="PASSED", result={"passed": 3}
     )
-    replace_tail_event_payload(
+    replace_event_payload(
         tmp_path / "ledger.sqlite",
         "QUALIFICATION_PASSED",
         {
@@ -1441,7 +1480,7 @@ def test_malformed_stored_promotion_identity_is_an_integrity_error(
         ticket_id="ticket-1",
         manifest_sha256="8" * 64,
     )
-    replace_tail_event_payload(
+    replace_event_payload(
         tmp_path / "ledger.sqlite",
         "PROMOTED",
         {
@@ -1487,7 +1526,7 @@ def test_malformed_stored_promotion_revision_is_an_integrity_error(
             "UPDATE cases SET promoted_revision_id = '' WHERE case_id = 'case-1'"
         )
         connection.commit()
-    replace_tail_event_payload(
+    replace_event_payload(
         tmp_path / "ledger.sqlite",
         "PROMOTED",
         {
