@@ -97,6 +97,26 @@ MetricName: TypeAlias = Annotated[
 ]
 StrictFiniteFloat: TypeAlias = Annotated[float, Strict(), AllowInfNan(False)]
 AxisVector: TypeAlias = tuple[StrictFiniteFloat, StrictFiniteFloat, StrictFiniteFloat]
+RunTaskMetricName: TypeAlias = Literal[
+    "final_target_error_m",
+    "hold_error_p95_m",
+    "joint_speed_rms_rad_s",
+    "settling_time_s",
+    "peak_energy_j",
+    "joint_limit_violation_count",
+    "non_finite_count",
+]
+_RUN_TASK_METRICS = frozenset(
+    {
+        "final_target_error_m",
+        "hold_error_p95_m",
+        "joint_speed_rms_rad_s",
+        "settling_time_s",
+        "peak_energy_j",
+        "joint_limit_violation_count",
+        "non_finite_count",
+    }
+)
 _METRIC_DELTA_REL_TOLERANCE = 1e-9
 _METRIC_DELTA_ABS_TOLERANCE = 1e-12
 
@@ -456,7 +476,7 @@ class OpenCaseOutput(CommonOutput):
 
 
 class MetricObservation(StrictModel):
-    metric: MetricName
+    metric: RunTaskMetricName
     value: StrictFiniteFloat | None
 
     @model_validator(mode="after")
@@ -538,6 +558,15 @@ class RunTaskOutput(CommonOutput):
     observations: list[MetricObservation] = Field(min_length=1, max_length=64)
     trace: list[TracePoint] = Field(default_factory=list, max_length=51)
     behavior_diff: BehaviorDiff | None = None
+
+    @model_validator(mode="after")
+    def validate_observation_set(self) -> RunTaskOutput:
+        metrics = [observation.metric for observation in self.observations]
+        if len(metrics) != len(_RUN_TASK_METRICS) or len(set(metrics)) != len(metrics):
+            raise ValueError("run task observations must contain each fixed metric exactly once")
+        if set(metrics) != _RUN_TASK_METRICS:
+            raise ValueError("run task observations must contain the fixed metric set")
+        return self
 
     @model_validator(mode="after")
     def validate_behavior_diff_result(self) -> RunTaskOutput:
@@ -662,6 +691,13 @@ class VerifyRevisionOutput(CommonOutput):
     holdout_result: AggregateResult
     promotion_ticket: PromotionTicket | None = None
 
+    @field_validator("public_result")
+    @classmethod
+    def validate_public_result_count(cls, value: AggregateResult) -> AggregateResult:
+        if value.total != 1:
+            raise ValueError("public qualification must contain exactly one scenario")
+        return value
+
     @model_validator(mode="after")
     def validate_promotion_ticket(self) -> VerifyRevisionOutput:
         qualification_passed = (
@@ -674,8 +710,8 @@ class VerifyRevisionOutput(CommonOutput):
                     self.integrity.lineage,
                 )
             )
-            and self.public_result.total > 0
-            and self.public_result.passed == self.public_result.total
+            and self.public_result.passed == 1
+            and self.public_result.total == 1
             and not self.public_result.violated_clause_ids
             and self.holdout_result.passed == 3
             and self.holdout_result.total == 3

@@ -358,7 +358,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
             "revision_id": "r000",
             "scenario_id": "public_center",
             "result": "pass",
-            "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+            "observations": _run_task_observations(),
             "behavior_diff": {
                 "changed": False,
                 "metric_deltas": [
@@ -379,7 +379,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
                 "revision_id": "r000",
                 "scenario_id": "public_center",
                 "result": "fail",
-                "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+                "observations": _run_task_observations(),
                 "behavior_diff": {
                     "changed": False,
                     "metric_deltas": [
@@ -399,7 +399,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
             "revision_id": "r000",
             "scenario_id": "public_center",
             "result": "fail",
-            "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+            "observations": _run_task_observations(),
             "behavior_diff": {
                 "changed": False,
                 "metric_deltas": [
@@ -418,7 +418,7 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
         "revision_id": "r001",
         "scenario_id": "public_center",
         "result": "fail",
-        "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+        "observations": _run_task_observations(),
     }
     with pytest.raises(ValidationError):
         RunTaskOutput.model_validate(child_without_diff)
@@ -437,6 +437,38 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
     RunTaskOutput.model_validate(child_with_unchanged_failure)
 
 
+def _run_task_observations(*, settling_time_s: float | None = 1.5) -> list[dict[str, object]]:
+    return [
+        {"metric": "final_target_error_m", "value": 0.01},
+        {"metric": "hold_error_p95_m", "value": 0.02},
+        {"metric": "joint_speed_rms_rad_s", "value": 0.03},
+        {"metric": "settling_time_s", "value": settling_time_s},
+        {"metric": "peak_energy_j", "value": 0.04},
+        {"metric": "joint_limit_violation_count", "value": 0.0},
+        {"metric": "non_finite_count", "value": 0.0},
+    ]
+
+
+def test_run_task_output_requires_each_fixed_metric_exactly_once() -> None:
+    base = {
+        "schema_version": "asset-autopsy/v1",
+        "request_id": "req_demo",
+        "case_id": "case_demo",
+        "revision_id": "r000",
+        "scenario_id": "public_center",
+        "result": "fail",
+    }
+    observations = _run_task_observations()
+    invalid_observations = (
+        observations[:-1],
+        [*observations, observations[0]],
+        [*observations[:-1], {"metric": "unexpected_metric", "value": 0.0}],
+    )
+    for invalid in invalid_observations:
+        with pytest.raises(ValidationError):
+            RunTaskOutput.model_validate({**base, "observations": invalid})
+
+
 def test_verify_revision_rejects_violated_clauses_as_successful_qualification() -> None:
     for result_name in ("public_result", "holdout_result"):
         payload = _verify_revision_payload()
@@ -450,6 +482,14 @@ def test_verify_revision_rejects_violated_clauses_as_successful_qualification() 
             VerifyRevisionOutput.model_validate(payload)
 
 
+def test_verify_revision_requires_exactly_one_public_scenario() -> None:
+    payload = _verify_revision_payload()
+    payload["public_result"] = {"passed": 2, "total": 2}
+
+    with pytest.raises(ValidationError):
+        VerifyRevisionOutput.model_validate(payload)
+
+
 def test_run_task_output_rejects_nonuniform_trace_timestamps() -> None:
     base = {
         "schema_version": "asset-autopsy/v1",
@@ -458,7 +498,7 @@ def test_run_task_output_rejects_nonuniform_trace_timestamps() -> None:
         "revision_id": "r000",
         "scenario_id": "public_center",
         "result": "fail",
-        "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+        "observations": _run_task_observations(),
     }
     valid = {**base, "trace": [{"time_s": float(index), "values": (0.0,)} for index in range(3)]}
     RunTaskOutput.model_validate(valid)
@@ -481,10 +521,7 @@ def test_metric_observation_allows_only_nullable_settling_time() -> None:
             "revision_id": "r000",
             "scenario_id": "public_center",
             "result": "fail",
-            "observations": [
-                {"metric": "settling_time_s", "value": None},
-                {"metric": "hold_error_p95_m", "value": 0.02},
-            ],
+            "observations": _run_task_observations(settling_time_s=None),
         }
     )
 
@@ -497,7 +534,12 @@ def test_metric_observation_allows_only_nullable_settling_time() -> None:
                 "revision_id": "r000",
                 "scenario_id": "public_center",
                 "result": "fail",
-                "observations": [{"metric": "hold_error_p95_m", "value": None}],
+                "observations": [
+                    {**observation, "value": None}
+                    if observation["metric"] == "hold_error_p95_m"
+                    else observation
+                    for observation in _run_task_observations()
+                ],
             }
         )
     with pytest.raises(ValidationError):
@@ -509,7 +551,12 @@ def test_metric_observation_allows_only_nullable_settling_time() -> None:
                 "revision_id": "r000",
                 "scenario_id": "public_center",
                 "result": "fail",
-                "observations": [{"metric": "settling_time_s", "value": float("nan")}],
+                "observations": [
+                    {**observation, "value": float("nan")}
+                    if observation["metric"] == "settling_time_s"
+                    else observation
+                    for observation in _run_task_observations()
+                ],
             }
         )
 
