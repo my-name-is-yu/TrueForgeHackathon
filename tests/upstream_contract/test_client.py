@@ -680,6 +680,25 @@ def test_run_response_interval_tolerance_scales_to_tiny_timesteps() -> None:
     asyncio.run(check())
 
 
+def test_direct_run_rejects_a_trace_disconnected_from_the_slot_clock() -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(boundary_mode="duplicate")
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            slot = await client.load("<mujoco model=\"synthetic\"/>")
+            await client.run_segment(slot, ctrl=[], n_steps=1)
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.run_segment(slot, ctrl=[], n_steps=1)
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize("boundary_mode", ("duplicate", "backward"))
 def test_runner_rejects_noncontiguous_segment_boundaries(boundary_mode: str) -> None:
     async def check() -> None:

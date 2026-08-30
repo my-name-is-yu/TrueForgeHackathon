@@ -409,7 +409,12 @@ def _numeric_vector(value: Any, width: int) -> bool:
 
 
 def _matches_run(
-    payload: dict[str, Any], *, qpos_width: int, qvel_width: int, timestep: float
+    payload: dict[str, Any],
+    *,
+    qpos_width: int,
+    qvel_width: int,
+    timestep: float,
+    expected_start: float,
 ) -> bool:
     if set(payload) != {"n_steps", "sim_time", "final_state", "timeseries"}:
         return False
@@ -472,6 +477,9 @@ def _matches_run(
     interval_tolerance = timestep * 1e-6
     return bool(
         timestamps
+        and math.isclose(
+            timestamps[0], expected_start, rel_tol=0.0, abs_tol=interval_tolerance
+        )
         and math.isclose(
             timestamps[0], sim_start, rel_tol=0.0, abs_tol=interval_tolerance
         )
@@ -924,6 +932,7 @@ class PinnedMujocoClient:
                     qpos_width=slot.summary["nq"],
                     qvel_width=slot.summary["nv"],
                     timestep=slot.summary["timestep"],
+                    expected_start=slot._time + slot.summary["timestep"],
                 ),
             )
         except UpstreamToolError:
