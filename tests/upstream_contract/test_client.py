@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from io import BytesIO
 import json
-import struct
 from types import SimpleNamespace
 from typing import Any, cast
-import zlib
 
 import pytest
+from PIL import Image
 
 from asset_autopsy.mujoco_client import (
     REQUIRED_TOOL_SCHEMAS,
@@ -37,24 +37,10 @@ def _text_result(payload: object, *, is_error: bool = False) -> SimpleNamespace:
     )
 
 
-def _png_chunk(kind: bytes, payload: bytes) -> bytes:
-    crc = zlib.crc32(kind)
-    crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
-    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", crc)
-
-
-def _synthetic_png(
-    idat: bytes,
-    *,
-    bit_depth: int = 8,
-    color_type: int = 6,
-    palette: bytes | None = None,
-) -> bytes:
-    return b"\x89PNG\r\n\x1a\n" + _png_chunk(
-        b"IHDR", struct.pack(">IIBBBBB", 1, 1, bit_depth, color_type, 0, 0, 0)
-    ) + (b"" if palette is None else _png_chunk(b"PLTE", palette)) + _png_chunk(
-        b"IDAT", idat
-    ) + _png_chunk(b"IEND", b"")
+def _png_bytes(*, mode: str = "RGB", width: int = 160, height: int = 120) -> bytes:
+    output = BytesIO()
+    Image.new(mode, (width, height)).save(output, format="PNG")
+    return output.getvalue()
 
 
 class _FakeTransport:
@@ -82,6 +68,7 @@ class _FakeSession:
         invalid_render_png: bool = False,
         timestamp_mode: str | None = None,
         wrong_load_name: bool = False,
+        invalid_load_metadata: str | None = None,
         nq: int = 0,
         nv: int = 0,
         nu: int = 0,
@@ -96,6 +83,7 @@ class _FakeSession:
         self.invalid_render_png = invalid_render_png
         self.timestamp_mode = timestamp_mode
         self.wrong_load_name = wrong_load_name
+        self.invalid_load_metadata = invalid_load_metadata
         self.nq = nq
         self.nv = nv
         self.nu = nu
@@ -121,20 +109,28 @@ class _FakeSession:
     async def call_tool(self, name: str, *, arguments: dict[str, object]) -> SimpleNamespace:
         self.calls.append((name, arguments))
         if name == "sim_load":
+            nq = self.nq
+            nv = self.nv
+            nu = self.nu
+            timestep = 0.002
+            if self.invalid_load_metadata == "negative_dimension":
+                nu = -1
+            elif self.invalid_load_metadata == "invalid_timestep":
+                timestep = 0.0
             return _text_result(
                 {
                     "name": "unexpected" if self.wrong_load_name else arguments["name"],
                     "mujoco_version": "3.5.0",
-                    "nq": self.nq,
-                    "nv": self.nv,
-                    "nu": self.nu,
+                    "nq": nq,
+                    "nv": nv,
+                    "nu": nu,
                     "nbody": 1,
                     "ngeom": 0,
                     "njnt": 0,
                     "nsite": 0,
                     "nsensor": 0,
                     "ncam": 0,
-                    "timestep": 0.002,
+                    "timestep": timestep,
                     "has_renderer": False,
                     "bodies": ["world"],
                     "joints": [],
@@ -161,6 +157,8 @@ class _FakeSession:
                 timestamps[1] = timestamps[0]
             elif self.timestamp_mode == "reversed":
                 timestamps.reverse()
+            elif self.timestamp_mode == "wrong_interval" and len(timestamps) >= 3:
+                timestamps[2] = timestamps[1] + 0.003
             rows = []
             for timestamp in timestamps:
                 row = {"t": timestamp, "E_pot": 0.0, "E_kin": 0.0, "ncon": 0}
@@ -186,12 +184,7 @@ class _FakeSession:
                         SimpleNamespace(
                             type="image",
                             mimeType="image/png",
-                            data=base64.b64encode(
-                                _synthetic_png(
-                                    zlib.compress(b"\x00\x00"),
-                                    color_type=3,
-                                )
-                            ).decode(),
+                            data="not-base64",
                         ),
                         SimpleNamespace(type="text", text="synthetic"),
                     ],
@@ -213,6 +206,7 @@ def _fake_client(
     invalid_render_png: bool = False,
     timestamp_mode: str | None = None,
     wrong_load_name: bool = False,
+    invalid_load_metadata: str | None = None,
     nq: int = 0,
     nv: int = 0,
     nu: int = 0,
@@ -233,6 +227,7 @@ def _fake_client(
             invalid_render_png=invalid_render_png,
             timestamp_mode=timestamp_mode,
             wrong_load_name=wrong_load_name,
+            invalid_load_metadata=invalid_load_metadata,
             nq=nq,
             nv=nv,
             nu=nu,
@@ -415,7 +410,9 @@ def test_run_response_requires_requested_signals_and_model_widths() -> None:
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("timestamp_mode", ("duplicate", "reversed", "inconsistent"))
+@pytest.mark.parametrize(
+    "timestamp_mode", ("duplicate", "reversed", "inconsistent", "wrong_interval")
+)
 def test_run_response_requires_monotonic_consistent_timestamps(timestamp_mode: str) -> None:
     async def check() -> None:
         transport, make_session, _get_session = _fake_client(timestamp_mode=timestamp_mode)
@@ -430,6 +427,26 @@ def test_run_response_requires_monotonic_consistent_timestamps(timestamp_mode: s
                 await client.run_segment(slot, ctrl=[], n_steps=3)
             assert caught.value.code == UPSTREAM_BAD_RESPONSE
             assert slot.state is SlotState.POISONED
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("invalid_load_metadata", ("negative_dimension", "invalid_timestep"))
+def test_load_rejects_impossible_dimensions_and_timestep(invalid_load_metadata: str) -> None:
+    async def check() -> None:
+        transport, make_session, _get_session = _fake_client(
+            invalid_load_metadata=invalid_load_metadata
+        )
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        async with PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        ) as client:
+            with pytest.raises(UpstreamToolError) as caught:
+                await client.load("<mujoco model=\"synthetic\"/>")
+            assert caught.value.code == UPSTREAM_BAD_RESPONSE
+            assert client._slots[0].state is SlotState.POISONED
 
     asyncio.run(check())
 
@@ -592,63 +609,37 @@ def test_step_mismatch_error_is_typed() -> None:
     assert error.envelope()["code"] == UPSTREAM_STEP_MISMATCH
 
 
-def test_render_payload_requires_complete_png_structure() -> None:
-    png = _synthetic_png(zlib.compress(b"\x00\x00\x00\x00\x00"))
-    encoded = base64.b64encode(png).decode()
-    assert encoded
+def test_render_payload_accepts_only_observed_profile_and_bounds_data(monkeypatch: pytest.MonkeyPatch) -> None:
     from asset_autopsy.mujoco_client import _render_png
 
+    png = _png_bytes()
     result = SimpleNamespace(
         isError=False,
         content=[
-            SimpleNamespace(type="image", mimeType="image/png", data=encoded),
+            SimpleNamespace(
+                type="image", mimeType="image/png", data=base64.b64encode(png).decode()
+            ),
             SimpleNamespace(type="text", text="synthetic"),
         ],
     )
-    assert _render_png(result) == png
+    assert _render_png(result, width=160, height=120) == png
 
-    indexed = _synthetic_png(
-        zlib.compress(b"\x00\x00"),
-        color_type=3,
-        palette=b"\x00\x00\x00",
-    )
-    result.content[0].data = base64.b64encode(indexed).decode()
-    assert _render_png(result) == indexed
-
-    for invalid_palette in (
-        _synthetic_png(zlib.compress(b"\x00\x00"), color_type=3),
-        _synthetic_png(
-            zlib.compress(b"\x00\x00"),
-            color_type=3,
-            palette=b"\x00",
-        ),
-        _synthetic_png(
-            zlib.compress(b"\x00\x00"),
-            bit_depth=1,
-            color_type=3,
-            palette=b"\x00\x00\x00" * 3,
-        ),
+    for invalid_data in (
+        "not-base64",
+        base64.b64encode(b"not an image").decode(),
+        base64.b64encode(_png_bytes(width=1, height=1)).decode(),
+        base64.b64encode(_png_bytes(mode="RGBA")).decode(),
+        base64.b64encode(png[:8] + b"malformed").decode(),
     ):
-        result.content[0].data = base64.b64encode(invalid_palette).decode()
+        result.content[0].data = invalid_data
         with pytest.raises(UpstreamToolError) as caught:
-            _render_png(result)
+            _render_png(result, width=160, height=120)
         assert caught.value.code == UPSTREAM_BAD_RESPONSE
 
-    result.content[0].data = base64.b64encode(_synthetic_png(b"synthetic")).decode()
+    monkeypatch.setattr("asset_autopsy.mujoco_client.MAX_RENDER_BYTES", len(png) - 1)
+    result.content[0].data = base64.b64encode(png).decode()
     with pytest.raises(UpstreamToolError) as caught:
-        _render_png(result)
-    assert caught.value.code == UPSTREAM_BAD_RESPONSE
-
-    result.content[0].data = base64.b64encode(
-        _synthetic_png(zlib.compress(b"\x05\x00\x00\x00\x00"))
-    ).decode()
-    with pytest.raises(UpstreamToolError) as caught:
-        _render_png(result)
-    assert caught.value.code == UPSTREAM_BAD_RESPONSE
-
-    result.content[0].data = base64.b64encode(png[:-1]).decode()
-    with pytest.raises(UpstreamToolError) as caught:
-        _render_png(result)
+        _render_png(result, width=160, height=120)
     assert caught.value.code == UPSTREAM_BAD_RESPONSE
     assert set(REQUIRED_TOOL_NAMES) == {
         "validate_mjcf",

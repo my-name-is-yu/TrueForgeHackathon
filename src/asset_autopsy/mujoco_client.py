@@ -4,11 +4,11 @@ import asyncio
 import base64
 import hashlib
 import importlib.metadata
+from io import BytesIO
 import json
 import math
 import os
 import sys
-import zlib
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -17,6 +17,7 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from PIL import Image
 
 UPSTREAM_COMMIT = "ce9bed80ec3698d7b778230abc21f2228a3ce94b"
 UPSTREAM_PACKAGE = "mujoco-mcp-server"
@@ -359,6 +360,13 @@ def _matches_load(payload: dict[str, Any], *, expected_name: str | None = None) 
         return False
     if expected_name is not None and payload["name"] != expected_name:
         return False
+    if any(
+        payload[name] < 0
+        for name in ("nq", "nv", "nu", "nbody", "ngeom", "njnt", "nsite", "nsensor", "ncam")
+    ):
+        return False
+    if not _strict_float(payload["timestep"]) or payload["timestep"] <= 0:
+        return False
     return all(
         type(payload[name]) is list
         and all(type(item) is str for item in payload[name])
@@ -374,7 +382,9 @@ def _numeric_vector(value: Any, width: int) -> bool:
     return type(value) is list and len(value) == width and all(_strict_float(item) for item in value)
 
 
-def _matches_run(payload: dict[str, Any], *, qpos_width: int, qvel_width: int) -> bool:
+def _matches_run(
+    payload: dict[str, Any], *, qpos_width: int, qvel_width: int, timestep: float
+) -> bool:
     if set(payload) != {"n_steps", "sim_time", "final_state", "timeseries"}:
         return False
     if type(payload["n_steps"]) is not int or payload["n_steps"] < 0:
@@ -423,129 +433,19 @@ def _matches_run(payload: dict[str, Any], *, qpos_width: int, qvel_width: int) -
         timestamps
         and math.isclose(timestamps[0], sim_start, rel_tol=0.0, abs_tol=1e-9)
         and math.isclose(timestamps[-1], sim_end, rel_tol=0.0, abs_tol=1e-9)
+        and all(
+            math.isclose(
+                current - previous,
+                timestep,
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+            for previous, current in zip(timestamps, timestamps[1:])
+        )
     )
 
 
-def _valid_png(data: bytes) -> bool:
-    signature = b"\x89PNG\r\n\x1a\n"
-    if len(data) > MAX_RENDER_BYTES or not data.startswith(signature):
-        return False
-    offset = len(signature)
-    saw_ihdr = False
-    saw_idat = False
-    saw_iend = False
-    expected_scanline_bytes: int | None = None
-    row_stride: int | None = None
-    bit_depth: int | None = None
-    color_type: int | None = None
-    palette_entries: int | None = None
-    idat_data = bytearray()
-    while offset < len(data):
-        if len(data) - offset < 12:
-            return False
-        length = int.from_bytes(data[offset : offset + 4], "big")
-        chunk_type = data[offset + 4 : offset + 8]
-        chunk_start = offset + 8
-        chunk_end = chunk_start + length
-        chunk_record_end = chunk_end + 4
-        if (
-            not all(65 <= byte <= 90 or 97 <= byte <= 122 for byte in chunk_type)
-            or chunk_record_end > len(data)
-        ):
-            return False
-        chunk_data = data[chunk_start:chunk_end]
-        expected_crc = int.from_bytes(data[chunk_end:chunk_record_end], "big")
-        actual_crc = zlib.crc32(chunk_type)
-        actual_crc = zlib.crc32(chunk_data, actual_crc) & 0xFFFFFFFF
-        if actual_crc != expected_crc:
-            return False
-        if not saw_ihdr:
-            if chunk_type != b"IHDR" or length != 13:
-                return False
-            width = int.from_bytes(chunk_data[0:4], "big")
-            height = int.from_bytes(chunk_data[4:8], "big")
-            if not 1 <= width <= MAX_RENDER_DIMENSION or not 1 <= height <= MAX_RENDER_DIMENSION:
-                return False
-            bit_depth = chunk_data[8]
-            color_type = chunk_data[9]
-            if (
-                chunk_data[10] != 0
-                or chunk_data[11] != 0
-                or chunk_data[12] != 0
-                or bit_depth
-                not in {
-                    0: {1, 2, 4, 8, 16},
-                    2: {8, 16},
-                    3: {1, 2, 4, 8},
-                    4: {8, 16},
-                    6: {8, 16},
-                }.get(color_type, set())
-            ):
-                return False
-            bits_per_pixel = {
-                0: bit_depth,
-                2: 3 * bit_depth,
-                3: bit_depth,
-                4: 2 * bit_depth,
-                6: 4 * bit_depth,
-            }[color_type]
-            row_bytes = (width * bits_per_pixel + 7) // 8
-            expected_scanline_bytes = height * (row_bytes + 1)
-            row_stride = row_bytes + 1
-            if expected_scanline_bytes > MAX_RENDER_BYTES:
-                return False
-            saw_ihdr = True
-        elif chunk_type == b"IHDR":
-            return False
-        if chunk_type == b"PLTE":
-            if (
-                saw_idat
-                or palette_entries is not None
-                or length == 0
-                or length % 3 != 0
-                or length > 3 * 256
-            ):
-                return False
-            palette_entries = length // 3
-            if color_type == 3 and bit_depth is not None and palette_entries > 1 << bit_depth:
-                return False
-        if chunk_type == b"IDAT":
-            if color_type == 3 and palette_entries is None:
-                return False
-            saw_idat = True
-            idat_data.extend(chunk_data)
-        if chunk_type == b"IEND":
-            if length != 0 or not saw_idat:
-                return False
-            saw_iend = True
-            offset = chunk_record_end
-            break
-        offset = chunk_record_end
-    if (
-        not saw_ihdr
-        or not saw_idat
-        or not saw_iend
-        or offset != len(data)
-        or expected_scanline_bytes is None
-        or row_stride is None
-    ):
-        return False
-    try:
-        decompressor = zlib.decompressobj()
-        decoded = decompressor.decompress(bytes(idat_data), expected_scanline_bytes + 1)
-        if len(decoded) > expected_scanline_bytes or decompressor.unconsumed_tail:
-            return False
-        if not decompressor.eof or decompressor.unused_data:
-            return False
-        decoded += decompressor.flush(expected_scanline_bytes + 1 - len(decoded))
-    except (TypeError, ValueError, zlib.error):
-        return False
-    if len(decoded) != expected_scanline_bytes:
-        return False
-    return all(decoded[index] <= 4 for index in range(0, len(decoded), row_stride))
-
-
-def _render_png(result: Any) -> bytes:
+def _render_png(result: Any, *, width: int, height: int) -> bytes:
     if _is_error_result(result):
         raise _wrapped_error()
     blocks = getattr(result, "content", None)
@@ -566,8 +466,19 @@ def _render_png(result: Any) -> bytes:
         data = base64.b64decode(image.data, validate=True)
     except (ValueError, base64.binascii.Error):
         raise _bad_response("Upstream render response was invalid.") from None
-    if not _valid_png(data):
+    if len(data) > MAX_RENDER_BYTES:
         raise _bad_response("Upstream render response was invalid.")
+    try:
+        with Image.open(BytesIO(data)) as decoded:
+            if decoded.format != "PNG" or decoded.mode != "RGB" or decoded.size != (width, height):
+                raise _bad_response("Upstream render response was invalid.")
+            if width * height * 3 > MAX_RENDER_BYTES:
+                raise _bad_response("Upstream render response was too large.")
+            decoded.load()
+    except UpstreamToolError:
+        raise
+    except Exception:
+        raise _bad_response("Upstream render response was invalid.") from None
     return data
 
 
@@ -831,6 +742,7 @@ class PinnedMujocoClient:
                     value,
                     qpos_width=slot.summary["nq"],
                     qvel_width=slot.summary["nv"],
+                    timestep=slot.summary["timestep"],
                 ),
             )
         except UpstreamToolError:
@@ -871,7 +783,7 @@ class PinnedMujocoClient:
             timeout=self.render_timeout,
         )
         try:
-            return _render_png(result)
+            return _render_png(result, width=width, height=height)
         except UpstreamToolError:
             slot.state = SlotState.POISONED
             raise
