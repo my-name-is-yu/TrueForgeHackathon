@@ -256,16 +256,18 @@ def _run_experiment_output_payload() -> dict[str, object]:
                 {"kind": "control", "actuator_name": "elbow_motor"},
             ],
             "rows": [
-                [
-                    index * 0.01,
-                    0.0,
-                    0.0,
-                    1.0,
-                    0.0,
-                    0.0,
-                    0.2 if index < 128 else 0.0,
-                    0.3 if index < 128 else 0.1,
-                ]
+                {
+                    "time_s": index * 0.01,
+                    "values": {
+                        "qpos:elbow": 0.0,
+                        "qvel:elbow": 0.0,
+                        "energy:potential": 1.0,
+                        "contact_count": 0.0,
+                        "body_position:hand:x": 0.0,
+                        "control:shoulder_motor": 0.2 if index < 128 else 0.0,
+                        "control:elbow_motor": 0.3 if index < 128 else 0.1,
+                    },
+                }
                 for index in range(256)
             ],
         },
@@ -445,7 +447,7 @@ def test_run_experiment_output_rejects_invalid_columnar_trace() -> None:
         RunExperimentOutput.model_validate(short_trace)
 
     narrow_row = _run_experiment_output_payload()
-    narrow_row["trace"]["rows"][0] = narrow_row["trace"]["rows"][0][:-1]
+    narrow_row["trace"]["rows"][0]["values"].pop("control:elbow_motor")
     with pytest.raises(ValidationError):
         RunExperimentOutput.model_validate(narrow_row)
 
@@ -468,18 +470,20 @@ def test_run_experiment_output_rejects_invalid_columnar_trace() -> None:
         RunExperimentOutput.model_validate(duplicate_control)
 
     nonuniform_time = _run_experiment_output_payload()
-    nonuniform_time["trace"]["rows"][128][0] += 0.001
+    nonuniform_time["trace"]["rows"][128]["time_s"] += 0.001
     with pytest.raises(ValidationError):
         RunExperimentOutput.model_validate(nonuniform_time)
 
     nonfinite_row = _run_experiment_output_payload()
-    nonfinite_row["trace"]["rows"][0][1] = float("nan")
+    nonfinite_row["trace"]["rows"][0]["values"]["qpos:elbow"] = float("nan")
     with pytest.raises(ValidationError):
         RunExperimentOutput.model_validate(nonfinite_row)
 
     no_controls = _run_experiment_output_payload()
     no_controls["trace"]["columns"] = no_controls["trace"]["columns"][:-2]
-    no_controls["trace"]["rows"] = [row[:-2] for row in no_controls["trace"]["rows"]]
+    for row in no_controls["trace"]["rows"]:
+        row["values"].pop("control:shoulder_motor")
+        row["values"].pop("control:elbow_motor")
     with pytest.raises(ValidationError):
         RunExperimentOutput.model_validate(no_controls)
 
@@ -580,7 +584,27 @@ def test_run_experiment_output_exposes_identity_and_typed_selected_signals() -> 
         "control",
     }
     assert len(result.trace.rows) == 256
-    assert all(len(row) == len(result.trace.columns) for row in result.trace.rows)
+    assert all(
+        set(row.values)
+        == {
+            "qpos:elbow",
+            "qvel:elbow",
+            "energy:potential",
+            "contact_count",
+            "body_position:hand:x",
+            "control:shoulder_motor",
+            "control:elbow_motor",
+        }
+        for row in result.trace.rows
+    )
+
+
+def test_named_experiment_trace_crosses_trueforge_ltr_threshold() -> None:
+    result = RunExperimentOutput.model_validate(_run_experiment_output_payload())
+
+    # TrueForge 0.1.4 estimates one token per four characters and offloads an
+    # individual tool response at 6,000 tokens. The MCP envelope only adds size.
+    assert len(result.model_dump_json()) >= 24_000
 
 
 def test_run_experiment_output_rejects_old_run_identifier() -> None:

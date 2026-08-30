@@ -905,10 +905,40 @@ ExperimentTraceColumn: TypeAlias = Annotated[
     Field(discriminator="kind"),
 ]
 
-ExperimentTraceRow: TypeAlias = Annotated[
-    list[StrictFiniteFloat],
-    Field(min_length=3, max_length=193),
+TraceValueKey: TypeAlias = Annotated[
+    str,
+    StringConstraints(
+        strict=True,
+        min_length=3,
+        max_length=96,
+        pattern=(
+            r"^(contact_count|"
+            r"(?:qpos|qvel|energy|body_position|control):"
+            r"[A-Za-z0-9_.:-]+)$"
+        ),
+    ),
 ]
+
+
+def experiment_trace_value_key(column: ExperimentTraceColumn) -> str:
+    if isinstance(column, JointTraceColumn):
+        return f"{column.kind}:{column.joint_name}"
+    if isinstance(column, EnergyTraceColumn):
+        return f"{column.kind}:{column.component}"
+    if isinstance(column, ContactCountTraceColumn):
+        return column.kind
+    if isinstance(column, BodyPositionTraceColumn):
+        return f"{column.kind}:{column.body_name}:{column.axis}"
+    if isinstance(column, ActuatorControlTraceColumn):
+        return f"{column.kind}:{column.actuator_name}"
+    raise ValueError("time is represented by experiment trace row time_s")
+
+
+class ExperimentTraceRow(StrictModel):
+    time_s: StrictFiniteFloat = Field(ge=0.0)
+    values: dict[TraceValueKey, StrictFiniteFloat] = Field(
+        min_length=2, max_length=192
+    )
 
 
 class ExperimentTrace(StrictModel):
@@ -929,11 +959,7 @@ class ExperimentTrace(StrictModel):
         ):
             raise ValueError("experiment trace must contain selected signal columns")
 
-        width = len(self.columns)
-        if any(len(row) != width for row in self.rows):
-            raise ValueError("experiment trace row width must match its columns")
-
-        time_s = [row[0] for row in self.rows]
+        time_s = [row.time_s for row in self.rows]
         intervals = [
             current - previous
             for previous, current in zip(time_s, time_s[1:])
@@ -964,6 +990,19 @@ class ExperimentTrace(StrictModel):
                 column_keys.append((column.kind,))
         if len(column_keys) != len(set(column_keys)):
             raise ValueError("experiment trace columns must be unique")
+
+        expected_value_keys = [
+            experiment_trace_value_key(column) for column in self.columns[1:]
+        ]
+        expected_value_key_set = set(expected_value_keys)
+        if any(
+            len(row.values) != len(expected_value_keys)
+            or set(row.values) != expected_value_key_set
+            for row in self.rows
+        ):
+            raise ValueError(
+                "experiment trace row values must match the named columns"
+            )
         return self
 
 

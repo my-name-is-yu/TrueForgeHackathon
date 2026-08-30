@@ -194,6 +194,7 @@ def test_full_two_revision_service_flow_qualifies_and_direct_publication_emits_o
     )
     assert axis_run.outcome.kind == "completed"
     assert len(axis_run.trace.rows) == 256
+    assert len(axis_run.model_dump_json()) >= 24_000
     assert len(axis_run.segment_boundaries) == 1
     replay = run(
         service.run_experiment(

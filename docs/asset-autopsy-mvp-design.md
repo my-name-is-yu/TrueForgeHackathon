@@ -453,7 +453,7 @@ Input shape:
 
 The generic contract permits 1–16 constant-control segments. Each segment names every position actuator exactly once and each value is bounded by its advertised `control_range`; total execution is 256–100000 steps and remains within the existing 2000000-scalar budget. It permits 1–8 unique observables: `qpos`, `qvel`, `energy`, `contact_count`, and `body_position(name)`. A final 160x120 snapshot is optional. Site timeseries are not supported.
 
-`hypothesis.prediction` and `hypothesis.falsifier` are SafeText interpreted by the TrueForge sandbox. The tool returns no predicate-matched booleans. It returns condition and execution hashes, segment boundaries, and exactly 256 uniformly resampled rows. qpos, qvel, energy, and body position use linear interpolation; control and contact count use zero-order hold.
+`hypothesis.prediction` and `hypothesis.falsifier` are SafeText interpreted by the TrueForge sandbox. The tool returns no predicate-matched booleans. It returns condition and execution hashes, segment boundaries, and exactly 256 uniformly resampled rows. Each row has `time_s` plus a named `values` mapping. Canonical keys are `qpos:<joint>`, `qvel:<joint>`, `energy:potential`, `energy:kinetic`, `contact_count`, `body_position:<body>:<axis>`, and `control:<actuator>`. qpos, qvel, energy, and body position use linear interpolation; control and contact count use zero-order hold. Repeating names makes the offloaded JSON self-describing for Sandbox Python without relying on column offsets.
 
 The server first commits HYPOTHESIS_RECORDED, then calls the engine. If execution fails, the preregistration remains and an EXPERIMENT_FAILED event follows.
 
@@ -576,10 +576,10 @@ The configured tool allowlist and approval policy are exact:
 {
   "model":{
     "name":"<configured model>",
-    "params":{"parallel_tool_calls":false}
+    "params":{"parallel_tool_calls":false,"reasoning_effort":"high"}
   },
   "mcp_servers":[{
-    "name":"asset-autopsy",
+    "name":"asset-autopsy-sc1",
     "enable_tools":[
       "open_case",
       "inspect_asset",

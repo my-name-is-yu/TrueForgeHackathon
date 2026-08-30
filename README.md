@@ -61,8 +61,10 @@ The saved agent can resolve exactly these seven Asset Autopsy tools:
 The demo fixture has budgets of 10 total runs, 5 experiments, 2 child revisions, and 1 hidden
 qualification. `run_experiment` accepts named joint positions, one to sixteen constant-control
 segments, and one to eight public observables. It returns a deterministic, evenly sampled
-256-row trace for Sandbox analysis. The tool does not decide whether the agent's prediction or
-falsifier was satisfied.
+256-row trace for Sandbox analysis. Every row is a named object with `time_s` and a `values`
+mapping, using canonical keys such as `qpos:<joint>`, `energy:potential`,
+`body_position:<body>:x`, and `control:<actuator>`. The tool does not decide whether the agent's
+prediction or falsifier was satisfied.
 
 ## Safety and approval boundary
 
@@ -74,9 +76,9 @@ falsifier was satisfied.
   and upstream exceptions are not tool results.
 - `verify_revision` exposes public `1/1`, hidden `n/3`, violated public clause IDs, and the bound
   ticket. It does not expose hidden targets or individual hidden traces.
-- The AgentSpec disables parallel tool calls, limits the run to 30 iterations, enables Sandbox
-  file downloads and Large Tool Response, preloads the MCP, and requires approval only for
-  `publish_revision`.
+- The AgentSpec uses high reasoning effort, disables parallel tool calls, limits the run to 30
+  iterations, enables Sandbox file downloads and Large Tool Response, preloads the MCP, and
+  requires approval only for `publish_revision`.
 - The accepted demonstration stops at `tool.approval_required`. No `publish_revision` response,
   domain invocation, publication receipt, bundle, or public artifact may exist at that point.
   Do not approve the call during the submission run.

@@ -101,7 +101,10 @@ def test_agent_spec_is_the_exact_serial_approval_contract() -> None:
     spec = build_agent_spec()
     assert spec["model"] == {
         "name": DEFAULT_MODEL,
-        "params": {"parallel_tool_calls": False},
+        "params": {
+            "parallel_tool_calls": False,
+            "reasoning_effort": "high",
+        },
     }
     assert spec["mcp_servers"] == [
         {
@@ -118,6 +121,17 @@ def test_agent_spec_is_the_exact_serial_approval_contract() -> None:
     assert config["sandbox"] == {"enabled": True, "file_downloads": True}
     assert config["context_management"]["large_tool_response"]["enabled"] is True
     assert "skills" not in spec
+    instructions = spec["instructions"]
+    assert '"revision_id":"REVISION_ID"' in instructions
+    assert "after create_revision use that latest child revision" in instructions
+    for prohibited_hint in (
+        "lone outlier",
+        "base rotation",
+        "downstream bend",
+        "geometry-consistent normalized axis",
+        "repeated peer values",
+    ):
+        assert prohibited_hint not in instructions
 
 
 def test_provision_creates_only_dedicated_connector_and_agent() -> None:

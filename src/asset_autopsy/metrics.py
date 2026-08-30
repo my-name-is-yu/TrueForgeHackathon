@@ -27,6 +27,7 @@ from .schemas import (
     QvelObservable,
     TimeTraceColumn,
     TracePoint,
+    experiment_trace_value_key,
 )
 
 
@@ -382,17 +383,19 @@ def resample_experiment_trace(
         columns.append(ActuatorControlTraceColumn(kind="control", actuator_name=name))
         extractors.append(("zoh", lambda row, i=index: (row["ctrl"][i],)))
 
-    output_rows: list[list[float]] = []
+    output_rows: list[dict[str, Any]] = []
     for target in sample_times:
-        values = [target]
+        values: dict[str, float] = {}
         for interpolation, getter in extractors:
             if interpolation == "linear":
-                values.extend(_linear_value(rows, source_times, target, getter))
+                sampled = _linear_value(rows, source_times, target, getter)
             else:
-                values.extend(
+                sampled = tuple(
                     float(item) for item in getter(_zoh_row(rows, source_times, target))
                 )
-        output_rows.append(values)
+            column = columns[len(values) + 1]
+            values[experiment_trace_value_key(column)] = sampled[0]
+        output_rows.append({"time_s": target, "values": values})
     return ExperimentTrace(columns=columns, rows=output_rows)
 
 

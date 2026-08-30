@@ -29,12 +29,14 @@ Follow this mandatory evidence loop in the same turn: open_case; failing run_tas
 
 Before every run_experiment, register a concrete causal claim, suspected elements, a competing explanation, a prediction, and a falsifier. Isolate a suspected joint from neutral positions and choose controls and qpos, qvel, energy, contact_count, or body_position observations that discriminate the explanations. Name joint_a, joint_b, and joint_c exactly once in initial_joint_positions. Name motor_a, motor_b, and motor_c exactly once in every segment, and use at least 256 total steps.
 
-Use this exact run_experiment shape, replacing only the experimental text, selected values, and revision_id:
-{"case_id":"case_compound-arm-01","revision_id":"r000","hypothesis":{"claim":"...","suspected_elements":[{"kind":"joint","name":"joint_a","attributes":["damping"]}],"competing_explanation":{"claim":"...","suspected_elements":[{"kind":"joint","name":"joint_b","attributes":["axis"]}],"discriminating_reason":"..."},"prediction":"...","falsifier":"..."},"initial_joint_positions":[{"joint_name":"joint_a","position_rad":0.0},{"joint_name":"joint_b","position_rad":0.0},{"joint_name":"joint_c","position_rad":0.0}],"segments":[{"label":"isolate","n_steps":512,"controls":[{"actuator_name":"motor_a","value":0.0},{"actuator_name":"motor_b","value":0.0},{"actuator_name":"motor_c","value":0.0}]}],"observables":[{"kind":"qpos"},{"kind":"qvel"},{"kind":"energy"},{"kind":"body_position","body_name":"end_effector"}],"capture_final_snapshot":false}
+Before choosing each experiment, use only public inspect and task evidence to rank at least two competing causal hypotheses. Choose an input and named observation whose measured outcome can falsify one explanation while supporting the other. Treat authored patterns as hypotheses, not diagnoses, until the trace discriminates them.
 
-After every run_experiment response, copy the exact `Result saved to:` path into a TrueForge Sandbox exec command using `python - <<'PY'` and `json.load(open(exact_path))`. Actually analyze that JSON; do not merely mention the path or fabricate a result. Print one compact JSON object with exactly these keys: {"rows":256,"run_id":"...","metric":"...","finding":"...","candidate_attribute":"joint_name.attribute"}. Use the exact hypothesis_id and run_id returned by that experiment in the next create_revision. A revision patch has target {"kind":"joint","name":"..."}, one attribute, expected_old_value, and new_value; expected_effect has scenario_id `public_center` and one or more metric predicates.
+Use this exact run_experiment structure. REVISION_ID, SUSPECTED_JOINT, SUSPECTED_ATTRIBUTE, COMPETING_JOINT, and COMPETING_ATTRIBUTE are metavariables, not literal values: replace every one from the current head, inspect_asset, and your ranking before calling the tool. The first REVISION_ID is r000; after create_revision use that latest child revision. Replace neutral numeric examples with an informative isolated excitation; all-zero controls are useful only for a decay experiment with a nonzero initial displacement.
+{"case_id":"case_compound-arm-01","revision_id":"REVISION_ID","hypothesis":{"claim":"...","suspected_elements":[{"kind":"joint","name":"SUSPECTED_JOINT","attributes":["SUSPECTED_ATTRIBUTE"]}],"competing_explanation":{"claim":"...","suspected_elements":[{"kind":"joint","name":"COMPETING_JOINT","attributes":["COMPETING_ATTRIBUTE"]}],"discriminating_reason":"..."},"prediction":"...","falsifier":"..."},"initial_joint_positions":[{"joint_name":"joint_a","position_rad":0.0},{"joint_name":"joint_b","position_rad":0.0},{"joint_name":"joint_c","position_rad":0.0}],"segments":[{"label":"isolate","n_steps":512,"controls":[{"actuator_name":"motor_a","value":0.0},{"actuator_name":"motor_b","value":0.0},{"actuator_name":"motor_c","value":0.0}]}],"observables":[{"kind":"qpos"},{"kind":"qvel"},{"kind":"energy"},{"kind":"body_position","body_name":"end_effector"}],"capture_final_snapshot":false}
 
-For create_revision, copy base_revision_id and expected_base_sha256 from open_case or the preceding revision, and copy basis_hypothesis_id and basis_experiment_run_id from the completed run_experiment. Use patch {"target":{"kind":"joint","name":"..."},"attribute":"...","expected_old_value":...,"new_value":...} and expected_effect {"scenario_id":"public_center","predicates":[{"metric":"hold_error_p95_m","op":"lte","value":0.03}]}. Derive a candidate value from public peer authored values or a geometry-consistent normalized axis rather than an arbitrary midpoint; only two revisions are available.
+After every run_experiment response, copy the exact `Result saved to:` path into a TrueForge Sandbox exec command using `python - <<'PY'` and `payload=json.load(open(exact_path))`. Actually analyze that JSON; do not merely mention the path or fabricate a result. The loaded root is the full run_experiment output: assign `rows=payload["trace"]["rows"]`. Each row is shaped as {"time_s": number, "values": {"qpos:joint_name": number, "control:actuator_name": number, ...}}. Build a list from one exact named signal key, optionally applying abs to each selected value. Compute a direct aggregate such as max(signal), mean(signal), or max(signal)-min(signal); do not replace or transform the aggregate afterward. Print one compact JSON object with exactly these keys: {"rows":len(rows),"run_id":payload["run_id"],"metric":f"signal_name={computed_value:.8g}","finding":"your evidence-bounded interpretation","candidate_attribute":"joint_name.attribute"}. The metric string must include the computed numeric aggregate. Never paste the 256 rows back into context. Use the exact hypothesis_id and run_id returned by that experiment in the next create_revision. A revision patch has target {"kind":"joint","name":"..."}, one attribute, expected_old_value, and new_value; expected_effect has scenario_id `public_center` and one or more metric predicates.
+
+For create_revision, copy base_revision_id and expected_base_sha256 from open_case or the preceding revision, and copy basis_hypothesis_id and basis_experiment_run_id from the completed run_experiment. Use patch {"target":{"kind":"joint","name":"..."},"attribute":"...","expected_old_value":...,"new_value":...} and expected_effect {"scenario_id":"public_center","predicates":[{"metric":"hold_error_p95_m","op":"lte","value":0.03}]}. Choose the candidate value from public evidence and the analyzed experiment, not an arbitrary guess; only two revisions are available.
 
 Create one attribute per revision and re-run the public task after each. Continue until two different causes have been repaired in two immutable child revisions and the public BehaviorDiff passes. Only then call verify_revision. If qualification returns 3/3, request publish_revision exactly once with the returned promotion ticket. If a bounded tool call returns INVALID_REQUEST, compare the rejected call field-for-field with the exact shapes above and continue; never stop, use Sandbox to call MCP tools, or offer to continue later. Do not ask the user questions, do not change the controller or tests, and do not use or request XML, host paths, URLs, seeds, timesteps, hidden targets, or hidden traces."""
 
@@ -81,7 +83,13 @@ def _data(payload: Mapping[str, Any]) -> Any:
 
 def build_agent_spec(model: str = DEFAULT_MODEL) -> dict[str, Any]:
     return {
-        "model": {"name": model, "params": {"parallel_tool_calls": False}},
+        "model": {
+            "name": model,
+            "params": {
+                "parallel_tool_calls": False,
+                "reasoning_effort": "high",
+            },
+        },
         "instructions": AGENT_INSTRUCTIONS,
         "mcp_servers": [
             {
@@ -575,7 +583,17 @@ def _short_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
-def _sandbox_python_reads_json(arguments: Mapping[str, Any], path: str) -> bool:
+@dataclass(frozen=True)
+class SandboxAnalysisProof:
+    candidate_attribute: str
+    finding: str
+    metric_prefix: str
+    signal_key: str
+
+
+def _sandbox_python_reads_json(
+    arguments: Mapping[str, Any], path: str
+) -> SandboxAnalysisProof | None:
     language = arguments.get("language")
     code = arguments.get("code")
     sources: list[str] = []
@@ -601,65 +619,408 @@ def _sandbox_python_reads_json(arguments: Mapping[str, Any], path: str) -> bool:
                 sources.append(tokens[index + 2])
 
     for source in sources:
-        if _python_source_reads_json(source, path):
-            return True
-    return False
+        proof = _python_source_reads_json(source, path)
+        if proof is not None:
+            return proof
+    return None
 
 
-def _python_source_reads_json(code: str, path: str) -> bool:
+def _python_source_reads_json(
+    code: str, path: str
+) -> SandboxAnalysisProof | None:
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return False
-
-    string_bindings: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, (ast.Assign, ast.AnnAssign))
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        ):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if isinstance(target, ast.Name):
-                    string_bindings[target.id] = node.value.value
-
-    def resolved_string(node: ast.AST) -> str | None:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        if isinstance(node, ast.Name):
-            return string_bindings.get(node.id)
         return None
 
-    reads_path = False
-    parses_json = False
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+    statistics_functions = {
+        "fmean",
+        "mean",
+        "median",
+        "pstdev",
+        "stdev",
+        "variance",
+    }
+    imported_modules: set[str] = set()
+    imported_statistics_functions: set[str] = set()
+    print_statements: list[ast.Expr] = []
+    assignment_targets: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            if any(
+                alias.asname is not None or alias.name not in {"json", "statistics"}
+                for alias in statement.names
+            ):
+                return None
+            imported_modules.update(alias.name for alias in statement.names)
+            continue
+        if isinstance(statement, ast.ImportFrom):
+            if statement.module != "statistics" or any(
+                alias.asname is not None or alias.name not in statistics_functions
+                for alias in statement.names
+            ):
+                return None
+            imported_statistics_functions.update(
+                alias.name for alias in statement.names
+            )
+            continue
+        if isinstance(statement, ast.Assign):
+            if len(statement.targets) != 1 or not isinstance(
+                statement.targets[0], ast.Name
+            ):
+                return None
+            target_name = statement.targets[0].id
+            if target_name in assignment_targets or target_name in {
+                "abs",
+                "json",
+                "len",
+                "max",
+                "min",
+                "open",
+                "print",
+                "statistics",
+                "sum",
+                *statistics_functions,
+            }:
+                return None
+            assignment_targets.add(target_name)
             continue
         if (
-            isinstance(node.func, ast.Name)
-            and node.func.id == "open"
-            and node.args
-            and resolved_string(node.args[0]) == path
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Name)
+            and statement.value.func.id == "print"
         ):
-            reads_path = True
-        if isinstance(node.func, ast.Attribute):
-            if (
-                node.func.attr in {"open", "read_text", "read_bytes"}
-                and isinstance(node.func.value, ast.Call)
-                and isinstance(node.func.value.func, ast.Name)
-                and node.func.value.func.id == "Path"
-                and node.func.value.args
-                and resolved_string(node.func.value.args[0]) == path
+            print_statements.append(statement)
+            continue
+        return None
+    if (
+        imported_modules.isdisjoint({"json"})
+        or len(print_statements) != 1
+        or tree.body[-1] is not print_statements[0]
+    ):
+        return None
+
+    assignments: dict[str, ast.expr] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                assignments[target.id] = statement.value
+    if (
+        set(assignments) & imported_modules
+        or set(assignments) & imported_statistics_functions
+    ):
+        return None
+
+    def resolved_expression(node: ast.expr, depth: int = 0) -> ast.expr:
+        if depth > 8:
+            return node
+        if isinstance(node, ast.Name) and node.id in assignments:
+            return resolved_expression(assignments[node.id], depth + 1)
+        return node
+
+    def resolved_string(
+        node: ast.AST, seen: frozenset[str] = frozenset()
+    ) -> str | None:
+        if isinstance(node, ast.Name) and node.id in assignments:
+            if node.id in seen or len(seen) >= 8:
+                return None
+            return resolved_string(assignments[node.id], seen | {node.id})
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    def subscript_key(node: ast.AST) -> str | None:
+        if not isinstance(node, ast.Subscript):
+            return None
+        return resolved_string(node.slice)
+
+    def is_json_load(node: ast.expr) -> bool:
+        expression = resolved_expression(node)
+        if not (
+            isinstance(expression, ast.Call)
+            and isinstance(expression.func, ast.Attribute)
+            and isinstance(expression.func.value, ast.Name)
+            and expression.func.value.id == "json"
+            and expression.func.attr == "load"
+            and len(expression.args) == 1
+            and not expression.keywords
+        ):
+            return False
+        opened = expression.args[0]
+        return (
+            isinstance(opened, ast.Call)
+            and isinstance(opened.func, ast.Name)
+            and opened.func.id == "open"
+            and "open" not in assignments
+            and len(opened.args) == 1
+            and not opened.keywords
+            and resolved_string(opened.args[0]) == path
+        )
+
+    payload_names = {
+        name for name, expression in assignments.items() if is_json_load(expression)
+    }
+    if not payload_names:
+        return None
+
+    def is_trace_rows(node: ast.expr, payload_name: str) -> bool:
+        expression = resolved_expression(node)
+        if subscript_key(expression) != "rows":
+            return False
+        trace = expression.value
+        return (
+            subscript_key(trace) == "trace"
+            and isinstance(trace, ast.Subscript)
+            and isinstance(trace.value, ast.Name)
+            and trace.value.id == payload_name
+        )
+
+    rows_to_payload: dict[str, str] = {}
+    for name, expression in assignments.items():
+        for payload_name in payload_names:
+            if is_trace_rows(expression, payload_name):
+                rows_to_payload[name] = payload_name
+                break
+    if not rows_to_payload:
+        return None
+
+    def series_signal_key(node: ast.expr, rows_name: str) -> str | None:
+        expression = resolved_expression(node)
+        if not isinstance(expression, ast.ListComp) or len(expression.generators) != 1:
+            return None
+        generator = expression.generators[0]
+        if (
+            not isinstance(generator.target, ast.Name)
+            or generator.target.id in assignments
+            or not isinstance(generator.iter, ast.Name)
+            or generator.iter.id != rows_name
+            or generator.ifs
+            or generator.is_async
+        ):
+            return None
+        element = expression.elt
+        if (
+            isinstance(element, ast.Call)
+            and isinstance(element.func, ast.Name)
+            and element.func.id == "abs"
+            and "abs" not in assignments
+            and len(element.args) == 1
+            and not element.keywords
+        ):
+            element = element.args[0]
+        if not isinstance(element, ast.Subscript):
+            return None
+        key = subscript_key(element)
+        values = element.value
+        if (
+            key is None
+            or not (
+                key == "contact_count"
+                or re.fullmatch(
+                    r"(?:qpos|qvel|energy|body_position|control):"
+                    r"[A-Za-z0-9_.:-]+",
+                    key,
+                )
+            )
+            or subscript_key(values) != "values"
+            or not isinstance(values, ast.Subscript)
+            or not isinstance(values.value, ast.Name)
+            or values.value.id != generator.target.id
+        ):
+            return None
+        return key
+
+    series_to_signal: dict[str, str] = {}
+    series_to_rows: dict[str, str] = {}
+    for name, expression in assignments.items():
+        for rows_name in rows_to_payload:
+            signal_key = series_signal_key(expression, rows_name)
+            if signal_key is not None:
+                series_to_signal[name] = signal_key
+                series_to_rows[name] = rows_name
+                break
+    if not series_to_signal:
+        return None
+
+    builtin_aggregate_names = {"max", "min", "sum"}
+
+    def direct_series_name(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Name) and node.id in series_to_signal:
+            return node.id
+        return None
+
+    def aggregate_series_name(node: ast.expr) -> str | None:
+        if (
+            not isinstance(node, ast.Call)
+            or len(node.args) != 1
+            or node.keywords
+        ):
+            return None
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+            valid_function = (
+                name in builtin_aggregate_names and name not in assignments
+            ) or name in imported_statistics_functions
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+        ):
+            valid_function = (
+                node.func.value.id == "statistics"
+                and "statistics" in imported_modules
+                and node.func.attr in statistics_functions
+            )
+        else:
+            valid_function = False
+        if not valid_function:
+            return None
+        return direct_series_name(node.args[0])
+
+    def metric_series_name(node: ast.expr) -> str | None:
+        expression = resolved_expression(node)
+        direct = aggregate_series_name(expression)
+        if direct is not None:
+            return direct
+        if not isinstance(expression, ast.BinOp) or not isinstance(
+            expression.op, ast.Sub
+        ):
+            return None
+        left = aggregate_series_name(expression.left)
+        right = aggregate_series_name(expression.right)
+        return left if left is not None and left == right else None
+
+    metric_to_series = {
+        name: series_name
+        for name, expression in assignments.items()
+        if (series_name := metric_series_name(expression)) is not None
+    }
+    if not metric_to_series:
+        return None
+
+    def is_len_of(node: ast.expr, name: str) -> bool:
+        expression = resolved_expression(node)
+        return (
+            isinstance(expression, ast.Call)
+            and isinstance(expression.func, ast.Name)
+            and expression.func.id == "len"
+            and len(expression.args) == 1
+            and not expression.keywords
+            and isinstance(expression.args[0], ast.Name)
+            and expression.args[0].id == name
+        )
+
+    def is_payload_run_id(node: ast.expr, payload_name: str) -> bool:
+        expression = resolved_expression(node)
+        return (
+            subscript_key(expression) == "run_id"
+            and isinstance(expression, ast.Subscript)
+            and isinstance(expression.value, ast.Name)
+            and expression.value.id == payload_name
+        )
+
+    def metric_prefix(node: ast.expr) -> tuple[str, str] | None:
+        expression = resolved_expression(node)
+        if not isinstance(expression, ast.JoinedStr):
+            return None
+        formatted = [
+            value for value in expression.values if isinstance(value, ast.FormattedValue)
+        ]
+        fixed_format = (
+            len(formatted) == 1
+            and formatted[0].conversion == -1
+            and isinstance(formatted[0].format_spec, ast.JoinedStr)
+            and len(formatted[0].format_spec.values) == 1
+            and isinstance(formatted[0].format_spec.values[0], ast.Constant)
+            and formatted[0].format_spec.values[0].value == ".8g"
+        )
+        if (
+            len(formatted) != 1
+            or not fixed_format
+            or not isinstance(formatted[0].value, ast.Name)
+            or formatted[0].value.id not in metric_to_series
+            or not expression.values
+        ):
+            return None
+        first = expression.values[0]
+        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+            return None
+        prefix = first.value
+        if not prefix or "=" not in prefix:
+            return None
+        return prefix, formatted[0].value.id
+
+    required_keys = {"rows", "run_id", "metric", "finding", "candidate_attribute"}
+
+    def reachable_assignment_names(node: ast.AST) -> set[str]:
+        reachable: set[str] = set()
+        pending = [node]
+        while pending:
+            expression = pending.pop()
+            for child in ast.walk(expression):
+                if (
+                    isinstance(child, ast.Name)
+                    and child.id in assignments
+                    and child.id not in reachable
+                ):
+                    reachable.add(child.id)
+                    pending.append(assignments[child.id])
+        return reachable
+
+    for statement in print_statements:
+        if not statement.value.args:
+            continue
+        printed = resolved_expression(statement.value.args[0])
+        if (
+            isinstance(printed, ast.Call)
+            and isinstance(printed.func, ast.Attribute)
+            and isinstance(printed.func.value, ast.Name)
+            and printed.func.value.id == "json"
+            and printed.func.attr == "dumps"
+            and printed.args
+        ):
+            printed = resolved_expression(printed.args[0])
+        if not isinstance(printed, ast.Dict):
+            continue
+        keys = [resolved_string(key) for key in printed.keys]
+        if None in keys or set(keys) != required_keys or len(keys) != len(required_keys):
+            continue
+        fields = dict(zip(keys, printed.values, strict=True))
+        candidate = resolved_string(fields["candidate_attribute"])
+        finding = resolved_string(fields["finding"])
+        metric = metric_prefix(fields["metric"])
+        if (
+            candidate is None
+            or re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_.-]*\."
+                r"(?:axis|damping|armature|frictionloss)",
+                candidate,
+            )
+            is None
+            or finding is None
+            or not finding.strip()
+            or metric is None
+        ):
+            continue
+        prefix, metric_name = metric
+        series_name = metric_to_series[metric_name]
+        for rows_name, payload_name in rows_to_payload.items():
+            if not is_len_of(fields["rows"], rows_name) or not is_payload_run_id(
+                fields["run_id"], payload_name
             ):
-                reads_path = True
-            if (
-                isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "json"
-                and node.func.attr in {"load", "loads"}
-            ):
-                parses_json = True
-    return reads_path and parses_json
+                continue
+            if series_to_rows.get(series_name) != rows_name:
+                continue
+            if reachable_assignment_names(statement.value.args[0]) != set(assignments):
+                continue
+            return SandboxAnalysisProof(
+                candidate_attribute=candidate,
+                finding=finding,
+                metric_prefix=prefix,
+                signal_key=series_to_signal[series_name],
+            )
+    return None
 
 
 def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -719,27 +1080,50 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             ),
             default=len(events),
         )
-        matching_exec = next(
-            (
-                record
-                for record in exec_calls
-                if record["event_index"] > response["event_index"]
+        matching_exec: tuple[dict[str, Any], SandboxAnalysisProof] | None = None
+        for record in exec_calls:
+            if not (
+                record["event_index"] > response["event_index"]
                 and record["event_index"] < next_public_index
-                and _sandbox_python_reads_json(_call_arguments(record["call"]), ltr_path)
-            ),
-            None,
-        )
+            ):
+                continue
+            proof = _sandbox_python_reads_json(
+                _call_arguments(record["call"]), ltr_path
+            )
+            if proof is not None:
+                matching_exec = (record, proof)
+                break
         if matching_exec is None:
             failures.append("an offloaded experiment was not read by Sandbox Python")
             continue
-        exec_response = responses.get(matching_exec["id"])
-        analysis = _response_payload(exec_response) if exec_response is not None else None
+        exec_record, analysis_proof = matching_exec
+        exec_response = responses.get(exec_record["id"])
+        if (
+            exec_response is None
+            or exec_response["event_index"] <= exec_record["event_index"]
+            or exec_response["event_index"] >= next_public_index
+        ):
+            failures.append("a Sandbox Python analysis lacks an ordered tool response")
+            continue
+        analysis = _response_payload(exec_response)
         if analysis is None:
             failures.append("a Sandbox Python analysis has no parseable response")
             continue
         required = ("run_id", "metric", "finding", "candidate_attribute")
         if analysis.get("rows") != 256 or any(not isinstance(analysis.get(key), str) for key in required):
             failures.append("a Sandbox Python analysis lacks the compact 256-row evidence")
+            continue
+        if (
+            analysis.get("candidate_attribute")
+            != analysis_proof.candidate_attribute
+            or analysis.get("finding") != analysis_proof.finding
+            or not str(analysis.get("metric", "")).startswith(
+                analysis_proof.metric_prefix
+            )
+        ):
+            failures.append(
+                "a Sandbox Python response does not match its analyzed stdout shape"
+            )
             continue
         sandbox_evidence.append(
             {
@@ -749,6 +1133,7 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
                 "run_id_hash": _short_hash(str(analysis["run_id"])),
                 "metric": analysis["metric"],
                 "candidate_attribute": analysis["candidate_attribute"],
+                "signal_key": analysis_proof.signal_key,
             }
         )
 
@@ -898,6 +1283,7 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
                     "run_id_hash": evidence["run_id_hash"],
                     "metric": evidence["metric"],
                     "candidate_attribute": evidence["candidate_attribute"],
+                    "signal_key": evidence["signal_key"],
                 }
                 for evidence in sandbox_evidence
             ],

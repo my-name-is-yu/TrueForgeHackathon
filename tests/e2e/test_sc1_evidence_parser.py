@@ -220,8 +220,17 @@ def _successful_events() -> list[dict[str, Any]]:
                 "command": (
                     "python - <<'PY'\n"
                     "import json\n"
-                    f"trace = json.load(open('{trace_one}'))\n"
-                    "print(json.dumps({'rows': len(trace['rows'])}))\n"
+                    f"payload = json.load(open('{trace_one}'))\n"
+                    "rows = payload['trace']['rows']\n"
+                    "plane = [row['values']['body_position:end_effector:z'] for row in rows]\n"
+                    "residual = max(plane) - min(plane)\n"
+                    "print(json.dumps({\n"
+                    "  'rows': len(rows),\n"
+                    "  'run_id': payload['run_id'],\n"
+                    "  'metric': f'z_span={residual:.8g}',\n"
+                    "  'finding': 'The isolated motion plane supports the axis hypothesis.',\n"
+                    "  'candidate_attribute': 'joint_b.axis',\n"
+                    "}))\n"
                     "PY"
                 ),
             },
@@ -231,8 +240,8 @@ def _successful_events() -> list[dict[str, Any]]:
             {
                 "rows": 256,
                 "run_id": "run_axis_evidence",
-                "metric": "joint-plane residual",
-                "finding": "joint_b follows the wrong plane",
+                "metric": "z_span=0.125",
+                "finding": "The isolated motion plane supports the axis hypothesis.",
                 "candidate_attribute": "joint_b.axis",
             },
         ),
@@ -303,8 +312,17 @@ def _successful_events() -> list[dict[str, Any]]:
                 "command": (
                     "python - <<'PY'\n"
                     "import json\n"
-                    f"trace = json.load(open('{trace_two}'))\n"
-                    "print(json.dumps({'rows': len(trace['rows'])}))\n"
+                    f"payload = json.load(open('{trace_two}'))\n"
+                    "rows = payload['trace']['rows']\n"
+                    "velocity = [abs(row['values']['qvel:joint_c']) for row in rows]\n"
+                    "peak = max(velocity)\n"
+                    "print(json.dumps({\n"
+                    "  'rows': len(rows),\n"
+                    "  'run_id': payload['run_id'],\n"
+                    "  'metric': f'peak_qvel={peak:.8g}',\n"
+                    "  'finding': 'The decay trace supports the damping hypothesis.',\n"
+                    "  'candidate_attribute': 'joint_c.damping',\n"
+                    "}))\n"
                     "PY"
                 ),
             },
@@ -314,8 +332,8 @@ def _successful_events() -> list[dict[str, Any]]:
             {
                 "rows": 256,
                 "run_id": "run_damping_evidence",
-                "metric": "settling velocity",
-                "finding": "joint_c keeps oscillating after the hold",
+                "metric": "peak_qvel=0.75",
+                "finding": "The decay trace supports the damping hypothesis.",
                 "candidate_attribute": "joint_c.damping",
             },
         ),
@@ -492,6 +510,358 @@ def test_rejects_sandbox_code_that_only_mentions_the_trace_path() -> None:
 
     assert evidence["passed"] is False
     assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+
+
+def test_rejects_sandbox_code_that_loads_json_without_analyzing_trace_values() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = (
+        "python - <<'PY'\n"
+        "import json\n"
+        "payload = json.load(open('/sandbox/large_tool_responses/experiment-axis.json'))\n"
+        "print(json.dumps({'rows': 256, 'run_id': payload['run_id']}))\n"
+        "PY"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+
+
+def test_rejects_unreachable_trace_analysis_with_constant_aggregate() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = (
+        "python - <<'PY'\n"
+        "import json\n"
+        "payload = json.load(open('/sandbox/large_tool_responses/experiment-axis.json'))\n"
+        "if False:\n"
+        "  rows = payload['trace']['rows']\n"
+        "  signal = [row['values']['qvel:joint_c'] for row in rows]\n"
+        "fake = max([1.0])\n"
+        "print(json.dumps({'rows': 256, 'run_id': payload['run_id'], "
+        "'metric': f'z_span={fake:.8g}', 'finding': "
+        "'The isolated motion plane supports the axis hypothesis.', "
+        "'candidate_attribute': 'joint_b.axis'}))\n"
+        "PY"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+
+
+def test_rejects_named_trace_read_with_unrelated_aggregate() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = (
+        "python - <<'PY'\n"
+        "import json\n"
+        "payload = json.load(open('/sandbox/large_tool_responses/experiment-axis.json'))\n"
+        "rows = payload['trace']['rows']\n"
+        "signal = [row['values']['qvel:joint_c'] for row in rows]\n"
+        "fake = max([1.0])\n"
+        "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
+        "'metric': f'z_span={fake:.8g}', 'finding': "
+        "'The isolated motion plane supports the axis hypothesis.', "
+        "'candidate_attribute': 'joint_b.axis'}))\n"
+        "PY"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+
+
+@pytest.mark.parametrize(
+    ("series_expression", "metric_expression"),
+    (
+        (
+            "0 * row['values']['qvel:joint_c'] + 999.0",
+            "max(signal)",
+        ),
+        (
+            "row['values']['qvel:joint_c']",
+            "max(signal if False else [999.0])",
+        ),
+        (
+            "row['values']['qvel:joint_c']",
+            "max(signal) * 0 + 999.0",
+        ),
+    ),
+)
+def test_rejects_signal_or_metric_expressions_that_erase_trace_dataflow(
+    series_expression: str, metric_expression: str
+) -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = (
+        "python - <<'PY'\n"
+        "import json\n"
+        "payload = json.load(open('/sandbox/large_tool_responses/experiment-axis.json'))\n"
+        "rows = payload['trace']['rows']\n"
+        f"signal = [{series_expression} for row in rows]\n"
+        f"computed = {metric_expression}\n"
+        "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
+        "'metric': f'z_span={computed:.8g}', 'finding': "
+        "'The isolated motion plane supports the axis hypothesis.', "
+        "'candidate_attribute': 'joint_b.axis'}))\n"
+        "PY"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+
+
+@pytest.mark.parametrize(
+    ("preamble", "series_expression", "metric_expression"),
+    (
+        (
+            "max = lambda values: 999.0\n",
+            "row['values']['qvel:joint_c']",
+            "max(signal)",
+        ),
+        (
+            "abs = lambda value: 999.0\n",
+            "abs(row['values']['qvel:joint_c'])",
+            "max(signal)",
+        ),
+        (
+            "import builtins\nbuiltins.max = lambda values: 999.0\n",
+            "row['values']['qvel:joint_c']",
+            "max(signal)",
+        ),
+        (
+            "mutation = setattr(__import__('builtins'), 'max', lambda values: 999.0)\n",
+            "row['values']['qvel:joint_c']",
+            "max(signal)",
+        ),
+        (
+            "mutation = globals()['__builtins__'].__setattr__('max', lambda values: 999.0)\n",
+            "row['values']['qvel:joint_c']",
+            "max(signal)",
+        ),
+        (
+            "mutation: setattr(__import__('builtins'), 'max', lambda values: 999.0) = None\n",
+            "row['values']['qvel:joint_c']",
+            "max(signal)",
+        ),
+        (
+            "row = setattr(__import__('builtins'), 'max', lambda values: 999.0)\n",
+            "row['values']['qvel:joint_c']",
+            "max(signal)",
+        ),
+        (
+            "len = (setattr(__import__('builtins'), 'max', lambda values: 999.0), lambda values: 256)[1]\n",
+            "row['values']['qvel:joint_c']",
+            "max(signal)",
+        ),
+    ),
+)
+def test_rejects_shadowed_or_mutated_analysis_functions(
+    preamble: str, series_expression: str, metric_expression: str
+) -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = (
+        "python - <<'PY'\n"
+        "import json\n"
+        f"{preamble}"
+        "payload = json.load(open('/sandbox/large_tool_responses/experiment-axis.json'))\n"
+        "rows = payload['trace']['rows']\n"
+        f"signal = [{series_expression} for row in rows]\n"
+        f"computed = {metric_expression}\n"
+        "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
+        "'metric': f'z_span={computed:.8g}', 'finding': "
+        "'The isolated motion plane supports the axis hypothesis.', "
+        "'candidate_attribute': 'joint_b.axis'}))\n"
+        "PY"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+
+
+def test_rejects_json_load_hook_even_when_it_reads_the_exact_trace_path() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = (
+        "python - <<'PY'\n"
+        "import json\n"
+        "payload = json.load(\n"
+        "  open('/sandbox/large_tool_responses/experiment-axis.json'),\n"
+        "  object_hook=lambda value: value,\n"
+        ")\n"
+        "rows = payload['trace']['rows']\n"
+        "signal = [row['values']['qvel:joint_c'] for row in rows]\n"
+        "computed = max(signal)\n"
+        "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
+        "'metric': f'z_span={computed:.8g}', 'finding': "
+        "'The isolated motion plane supports the axis hypothesis.', "
+        "'candidate_attribute': 'joint_b.axis'}))\n"
+        "PY"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+
+
+def test_rejects_dynamic_metric_format_spec_with_side_effect() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = (
+        "python - <<'PY'\n"
+        "import json\n"
+        "fmt = (setattr(__import__('builtins'), 'max', lambda values: 999.0), '.8g')[1]\n"
+        "payload = json.load(open('/sandbox/large_tool_responses/experiment-axis.json'))\n"
+        "rows = payload['trace']['rows']\n"
+        "signal = [row['values']['qvel:joint_c'] for row in rows]\n"
+        "computed = max(signal)\n"
+        "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
+        "'metric': f'z_span={computed:{fmt}}', 'finding': "
+        "'The isolated motion plane supports the axis hypothesis.', "
+        "'candidate_attribute': 'joint_b.axis'}))\n"
+        "PY"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+
+
+def test_rejects_overwritten_assignment_that_hides_an_earlier_side_effect() -> None:
+    events = _successful_events()
+    call = next(
+        call
+        for item in events
+        for call in item["event"].get("tool_calls", [])
+        if call.get("id") == "sandbox-1"
+    )
+    arguments = json.loads(call["function"]["arguments"])
+    arguments["command"] = (
+        "python - <<'PY'\n"
+        "import json\n"
+        "finding = setattr(__import__('builtins'), 'max', lambda values: 999.0)\n"
+        "finding = 'The isolated motion plane supports the axis hypothesis.'\n"
+        "payload = json.load(open('/sandbox/large_tool_responses/experiment-axis.json'))\n"
+        "rows = payload['trace']['rows']\n"
+        "signal = [row['values']['qvel:joint_c'] for row in rows]\n"
+        "computed = max(signal)\n"
+        "print(json.dumps({'rows': len(rows), 'run_id': payload['run_id'], "
+        "'metric': f'z_span={computed:.8g}', 'finding': finding, "
+        "'candidate_attribute': 'joint_b.axis'}))\n"
+        "PY"
+    )
+    call["function"]["arguments"] = json.dumps(arguments, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "an offloaded experiment was not read by Sandbox Python" in evidence["failures"]
+
+
+def test_rejects_sandbox_response_that_differs_from_printed_analysis() -> None:
+    events = _successful_events()
+    response = next(
+        item["event"]
+        for item in events
+        if item["event"].get("tool_call_id") == "sandbox-1"
+    )
+    content = json.loads(response["content"])
+    content["finding"] = "A fabricated finding not printed by the Sandbox code."
+    response["content"] = json.dumps(content, sort_keys=True)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert (
+        "a Sandbox Python response does not match its analyzed stdout shape"
+        in evidence["failures"]
+    )
+
+
+def test_rejects_sandbox_response_before_its_exec_call() -> None:
+    events = _successful_events()
+    response_index = next(
+        index
+        for index, item in enumerate(events)
+        if item["event"].get("tool_call_id") == "sandbox-1"
+    )
+    response = events.pop(response_index)
+    call_index = next(
+        index
+        for index, item in enumerate(events)
+        if any(
+            call.get("id") == "sandbox-1"
+            for call in item["event"].get("tool_calls", [])
+            if isinstance(call, dict)
+        )
+    )
+    events.insert(call_index, response)
+
+    evidence = evaluate_sc1_events(events)
+
+    assert evidence["passed"] is False
+    assert "a Sandbox Python analysis lacks an ordered tool response" in evidence["failures"]
 
 
 def test_rejects_schema_invalid_public_tool_arguments() -> None:

@@ -87,7 +87,9 @@ def test_experiment_resampling_is_uniform_and_uses_zoh_for_control_and_contacts(
     )
 
     assert len(trace.rows) == 256
-    intervals = [right[0] - left[0] for left, right in zip(trace.rows, trace.rows[1:])]
+    intervals = [
+        right.time_s - left.time_s for left, right in zip(trace.rows, trace.rows[1:])
+    ]
     assert all(
         math.isclose(item, intervals[0], rel_tol=1e-9, abs_tol=1e-12)
         for item in intervals
@@ -95,6 +97,9 @@ def test_experiment_resampling_is_uniform_and_uses_zoh_for_control_and_contacts(
     kinds = [column.kind for column in trace.columns]
     assert kinds[0] == "time"
     assert kinds.count("control") == 3
-    contact_index = kinds.index("contact_count")
-    assert trace.rows[0][contact_index] == 0.0
-    assert trace.rows[-1][contact_index] == 2.0
+    assert trace.rows[0].values["contact_count"] == 0.0
+    assert trace.rows[-1].values["contact_count"] == 2.0
+    assert trace.rows[0].values["control:motor_a"] == 0.1
+    assert trace.rows[127].values["control:motor_a"] == 0.1
+    assert trace.rows[128].values["control:motor_a"] == -0.1
+    assert trace.rows[-1].values["control:motor_a"] == -0.1
