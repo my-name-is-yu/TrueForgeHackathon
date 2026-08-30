@@ -1098,6 +1098,80 @@ def test_qualification_event_revision_must_match_its_payload(tmp_path: Path) -> 
         store.restore_state("case-1")
 
 
+def test_qualification_reservation_must_match_materialized_case(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    replace_tail_event_payload(
+        tmp_path / "ledger.sqlite",
+        "QUALIFICATION_RESERVED",
+        {
+            "attempt_id": "forged-attempt",
+            "revision_id": "r001",
+            "suite_commitment_sha256": "4" * 64,
+            "scenario_hashes": ["5" * 64, "6" * 64, "7" * 64],
+            **COMMITMENTS,
+        },
+    )
+
+    with pytest.raises(IntegrityError, match="reservation differs from the case"):
+        store.get_qualification("case-1")
+
+
+def test_nonterminal_qualification_event_cannot_expose_a_result(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    replace_tail_event_payload(
+        tmp_path / "ledger.sqlite",
+        "QUALIFICATION_RESERVED",
+        {
+            "attempt_id": "attempt-1",
+            "revision_id": "r001",
+            "suite_commitment_sha256": "4" * 64,
+            "scenario_hashes": ["5" * 64, "6" * 64, "7" * 64],
+            "result": {"private_score": 99},
+            **COMMITMENTS,
+        },
+    )
+
+    with pytest.raises(IntegrityError, match="nonterminal qualification result"):
+        store.get_qualification("case-1")
+    with pytest.raises(IntegrityError, match="nonterminal qualification result"):
+        store.restore_state("case-1")
+
+
+def test_restore_rejects_illegal_qualification_transition(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    with sqlite3.connect(tmp_path / "ledger.sqlite") as connection:
+        connection.execute(
+            """
+            UPDATE ledger_events SET event_type = 'QUALIFICATION_RECOVERED'
+            WHERE event_type = 'QUALIFICATION_RESERVED'
+            """
+        )
+        connection.commit()
+    replace_tail_event_payload(
+        tmp_path / "ledger.sqlite",
+        "QUALIFICATION_RECOVERED",
+        {
+            "attempt_id": "attempt-1",
+            "revision_id": "r001",
+            "suite_commitment_sha256": "4" * 64,
+            "scenario_hashes": ["5" * 64, "6" * 64, "7" * 64],
+            **COMMITMENTS,
+        },
+    )
+
+    with pytest.raises(IntegrityError, match="lifecycle transition is invalid"):
+        store.restore_state("case-1")
+
+
 def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)

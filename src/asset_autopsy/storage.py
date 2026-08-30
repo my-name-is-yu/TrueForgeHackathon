@@ -938,9 +938,13 @@ class EvidenceStore:
                 head_ordinal = revision["ordinal"]
                 replayed_revision_ids.add(event.revision_id)
             elif event.event_type == "QUALIFICATION_RESERVED":
+                if qualification_result is not None:
+                    raise IntegrityError("qualification reservation is duplicated")
                 attempt = self._attempt_from_event(
                     case_id, "RUNNING", event, commitments=case_commitments
                 )
+                if attempt.revision_id != head_revision_id:
+                    raise IntegrityError("qualification revision is not the restored head")
                 qualification_revision_id = attempt.revision_id
                 qualification_attempt_id = attempt.attempt_id
                 qualification_result = "RUNNING"
@@ -957,6 +961,14 @@ class EvidenceStore:
                     "QUALIFICATION_PASSED": "PASSED",
                     "QUALIFICATION_FAILED": "FAILED",
                 }[event.event_type]
+                required_previous = {
+                    "QUALIFICATION_RECOVERING": "RUNNING",
+                    "QUALIFICATION_RECOVERED": "RECOVERING",
+                    "QUALIFICATION_PASSED": "RUNNING",
+                    "QUALIFICATION_FAILED": "RUNNING",
+                }[event.event_type]
+                if qualification_result != required_previous:
+                    raise IntegrityError("qualification lifecycle transition is invalid")
                 attempt = self._attempt_from_event(
                     case_id, state, event, commitments=case_commitments
                 )
@@ -964,9 +976,11 @@ class EvidenceStore:
                     raise IntegrityError("qualification event identity is invalid")
                 qualification_result = state
             elif event.event_type == "PROMOTED":
-                promoted_revision_id = self._promotion_from_event(
-                    case_id, event
-                ).revision_id
+                if qualification_result != "PASSED" or promoted_revision_id is not None:
+                    raise IntegrityError("promotion lifecycle transition is invalid")
+                promoted_revision_id = self._promotion_from_event(case_id, event).revision_id
+                if promoted_revision_id != qualification_revision_id:
+                    raise IntegrityError("promotion revision is not qualified")
 
         if replayed_revision_ids != set(revisions_by_id):
             raise IntegrityError("revision rows do not match the ledger replay")
@@ -1402,6 +1416,8 @@ class EvidenceStore:
         *,
         commitments: Mapping[str, str],
     ) -> QualificationAttempt:
+        if state not in {"PASSED", "FAILED"} and "result" in event.payload:
+            raise IntegrityError("nonterminal qualification result is invalid")
         result = event.payload.get("result")
         if result is not None and not isinstance(result, Mapping):
             raise IntegrityError("qualification terminal result is invalid")
@@ -1461,9 +1477,23 @@ class EvidenceStore:
         if row is None:
             raise IntegrityError("qualification reservation is missing")
         event = self._event_from_row(row)
-        return self._attempt_from_event(
+        attempt = self._attempt_from_event(
             case_id, state, event, commitments=commitments
         )
+        case = connection.execute(
+            """
+            SELECT qualification_attempt_id, qualification_revision_id
+            FROM cases WHERE case_id = ?
+            """,
+            (case_id,),
+        ).fetchone()
+        if (
+            case is None
+            or case["qualification_attempt_id"] != attempt.attempt_id
+            or case["qualification_revision_id"] != attempt.revision_id
+        ):
+            raise IntegrityError("qualification reservation differs from the case")
+        return attempt
 
     def _require_attempt(
         self,
