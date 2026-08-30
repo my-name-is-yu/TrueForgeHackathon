@@ -564,6 +564,57 @@ def test_record_run_accepts_a_valid_artifact_reference(tmp_path: Path) -> None:
     assert store.ledger_events("case-1")[-1].artifact_refs == (reference,)
 
 
+def test_failed_partial_run_and_ledger_evidence_survive_reopen(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    partial = store.objects.put_bytes(b'{"completed_steps":128}')
+    reference = {
+        "sha256": partial.sha256,
+        "kind": "partial_experiment",
+        "size": partial.bytes,
+        "media_type": "application/json",
+    }
+    expected = RunRecord(
+        run_id="run-partial-1",
+        case_id="case-1",
+        revision_id="r000",
+        run_kind="probe",
+        probe_kind="agent_defined",
+        condition_hash="condition-partial",
+        execution_fingerprint="execution-partial",
+        trace_sha256=None,
+        metrics_sha256=None,
+        passed=False,
+    )
+    stored = store.record_run(
+        run=expected,
+        event=LedgerEventRecord(
+            event_id="evt-partial-1",
+            request_id="req-partial-1",
+            case_id="case-1",
+            revision_id="r000",
+            event_type="EXPERIMENT_FAILED",
+            payload={
+                "run_id": expected.run_id,
+                "completed_steps": 128,
+                "completed_segment_boundaries": [
+                    {"segment_index": 0, "start_step": 0, "end_step": 128}
+                ],
+            },
+            artifact_refs=(reference,),
+        ),
+    )
+    store.close()
+
+    reopened = EvidenceStore(tmp_path / "ledger.sqlite", tmp_path / "objects")
+
+    reopened.restore_state("case-1")
+    assert reopened.get_run(expected.run_id) == stored
+    events = reopened.verify_ledger()
+    assert events[-1].event_type == "EXPERIMENT_FAILED"
+    assert events[-1].artifact_refs == (reference,)
+    assert reopened.objects.read_bytes(partial.sha256) == b'{"completed_steps":128}'
+
+
 def test_record_run_missing_artifact_rolls_back_run_and_ledger(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     missing_digest = hashlib.sha256(b"missing").hexdigest()

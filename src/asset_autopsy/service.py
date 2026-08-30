@@ -30,6 +30,7 @@ from .qualification import (
 from .runner import (
     ConstantSegment,
     DeterministicRunner,
+    PartialRunError,
     RunConfiguration,
     RunRecord as PhysicsRunRecord,
 )
@@ -463,6 +464,77 @@ class AssetAutopsyService:
                         render_height=120,
                     )
                 )
+            except PartialRunError as exc:
+                completed_boundaries = boundaries[
+                    : len(exc.partial_record.segments)
+                ]
+                partial_bytes = canonical_json_bytes(
+                    {
+                        "run_id": run_id,
+                        "requested_steps": requested_steps,
+                        "completed_steps": exc.partial_record.step_count,
+                        "segment_boundaries": [
+                            boundary.model_dump(mode="json")
+                            for boundary in completed_boundaries
+                        ],
+                        "segments": [
+                            segment.as_dict()
+                            for segment in exc.partial_record.segments
+                        ],
+                    }
+                )
+                try:
+                    _, partial_internal = self._store_artifact(
+                        partial_bytes,
+                        case_id=case.case_id,
+                        logical_name=f"{run_id}-partial.json",
+                        public_kind="trace_json",
+                        internal_kind="partial_experiment",
+                        media_type="application/json",
+                    )
+                    self.store.record_run(
+                        run=StoredRunRecord(
+                            run_id=run_id,
+                            case_id=case.case_id,
+                            revision_id=revision.revision_id,
+                            run_kind="probe",
+                            probe_kind="agent_defined",
+                            condition_hash=condition_hash,
+                            execution_fingerprint=execution,
+                            trace_sha256=None,
+                            metrics_sha256=None,
+                            passed=False,
+                        ),
+                        event=LedgerEventRecord(
+                            event_id=_new_id("evt"),
+                            request_id=request_id,
+                            case_id=case.case_id,
+                            revision_id=revision.revision_id,
+                            event_type="EXPERIMENT_FAILED",
+                            payload={
+                                "hypothesis_id": hypothesis_id,
+                                "hypothesis_event_id": hypothesis_event_id,
+                                "run_id": run_id,
+                                "outcome": {
+                                    "kind": "upstream_failure",
+                                    "budget_consumed": True,
+                                },
+                                "failure_code": exc.code,
+                                "requested_steps": requested_steps,
+                                "completed_steps": exc.partial_record.step_count,
+                                "completed_segment_boundaries": [
+                                    boundary.model_dump(mode="json")
+                                    for boundary in completed_boundaries
+                                ],
+                                "condition_sha256": condition_hash,
+                                "execution_fingerprint_sha256": execution,
+                            },
+                            artifact_refs=[spec_internal, partial_internal],
+                        ),
+                    )
+                except StorageError:
+                    raise self._integrity_error(request_id) from None
+                raise self._upstream_error(request_id, exc) from None
             except UpstreamToolError as exc:
                 raise self._upstream_error(request_id, exc) from None
             except ValueError:
@@ -1639,7 +1711,7 @@ class AssetAutopsyService:
             ),
             "EXPERIMENT_FAILED": (
                 "EXPERIMENT_FAILED",
-                "An agent-defined experiment reached a non-finite state.",
+                "An agent-defined experiment did not complete.",
             ),
             "REVISION_CREATED": (
                 "REVISION_CREATED",
