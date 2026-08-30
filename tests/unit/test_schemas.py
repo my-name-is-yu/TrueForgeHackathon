@@ -24,6 +24,7 @@ from asset_autopsy.schemas import (
     VerifyRevisionOutput,
     TOOL_INPUT_MODELS,
     TOOL_OUTPUT_MODELS,
+    experiment_trace_columns,
 )
 
 
@@ -323,6 +324,32 @@ def test_run_experiment_accepts_bounded_generic_contract() -> None:
     assert experiment.hypothesis.competing_explanation.suspected_elements[0].name == (
         "elbow_motor"
     )
+
+
+def test_experiment_trace_columns_expand_the_accepted_named_selection() -> None:
+    experiment = RunExperimentInput.model_validate(_run_experiment_input_payload())
+
+    columns = experiment_trace_columns(
+        observables=experiment.observables,
+        joint_names=("shoulder", "elbow"),
+        actuator_names=("shoulder_motor", "elbow_motor"),
+    )
+
+    assert [column.model_dump(mode="json") for column in columns] == [
+        {"kind": "time"},
+        {"kind": "qpos", "joint_name": "shoulder"},
+        {"kind": "qpos", "joint_name": "elbow"},
+        {"kind": "qvel", "joint_name": "shoulder"},
+        {"kind": "qvel", "joint_name": "elbow"},
+        {"kind": "energy", "component": "potential"},
+        {"kind": "energy", "component": "kinetic"},
+        {"kind": "contact_count"},
+        {"kind": "body_position", "body_name": "hand", "axis": "x"},
+        {"kind": "body_position", "body_name": "hand", "axis": "y"},
+        {"kind": "body_position", "body_name": "hand", "axis": "z"},
+        {"kind": "control", "actuator_name": "shoulder_motor"},
+        {"kind": "control", "actuator_name": "elbow_motor"},
+    ]
 
 
 def test_run_experiment_rejects_old_or_incomplete_input_names() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import (
@@ -927,6 +928,47 @@ def experiment_trace_value_key(column: ExperimentTraceColumn) -> str:
     raise ValueError("time is represented by experiment trace row time_s")
 
 
+def experiment_trace_columns(
+    *,
+    observables: Sequence[ExperimentObservable],
+    joint_names: Sequence[str],
+    actuator_names: Sequence[str],
+) -> tuple[ExperimentTraceColumn, ...]:
+    columns: list[ExperimentTraceColumn] = [TimeTraceColumn(kind="time")]
+    for observable in observables:
+        if isinstance(observable, QposObservable):
+            columns.extend(
+                JointTraceColumn(kind="qpos", joint_name=name) for name in joint_names
+            )
+        elif isinstance(observable, QvelObservable):
+            columns.extend(
+                JointTraceColumn(kind="qvel", joint_name=name) for name in joint_names
+            )
+        elif isinstance(observable, EnergyObservable):
+            columns.extend(
+                (
+                    EnergyTraceColumn(kind="energy", component="potential"),
+                    EnergyTraceColumn(kind="energy", component="kinetic"),
+                )
+            )
+        elif isinstance(observable, ContactCountObservable):
+            columns.append(ContactCountTraceColumn(kind="contact_count"))
+        elif isinstance(observable, BodyPositionObservable):
+            columns.extend(
+                BodyPositionTraceColumn(
+                    kind="body_position", body_name=observable.body_name, axis=axis
+                )
+                for axis in ("x", "y", "z")
+            )
+        else:
+            raise ValueError("unsupported experiment observable")
+    columns.extend(
+        ActuatorControlTraceColumn(kind="control", actuator_name=name)
+        for name in actuator_names
+    )
+    return tuple(columns)
+
+
 class ExperimentTraceRow(StrictModel):
     time_s: StrictFiniteFloat = Field(ge=0.0)
     values: dict[TraceValueKey, StrictFiniteFloat] = Field(
@@ -997,6 +1039,26 @@ class ExperimentTrace(StrictModel):
                 "experiment trace row values must match the named columns"
             )
         return self
+
+
+def validate_experiment_trace_contract(
+    trace: ExperimentTrace,
+    *,
+    observables: Sequence[ExperimentObservable],
+    joint_names: Sequence[str],
+    actuator_names: Sequence[str],
+) -> ExperimentTrace:
+    trace = ExperimentTrace.model_validate(trace.model_dump(mode="python"))
+    expected = experiment_trace_columns(
+        observables=observables,
+        joint_names=joint_names,
+        actuator_names=actuator_names,
+    )
+    if tuple(trace.columns) != expected:
+        raise ValueError(
+            "experiment trace columns do not match the accepted experiment"
+        )
+    return trace
 
 
 class FinalSnapshotMetadata(StrictModel):
