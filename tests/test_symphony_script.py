@@ -202,7 +202,19 @@ def test_no_comments_is_a_hash_bound_finalization_gate() -> None:
     assert "shell pipe-failure propagation enabled" in finalization
     assert "complete 64-character SHA-256" in normalized
     assert "retry No Comments once" in finalization
+    assert "any tracked-file fix creates" in finalization
+    assert "If any tracked candidate file changes" in finalization
     assert "return to step 8" in finalization
+
+
+def test_existing_pr_must_target_main() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    existing_pr_path = template.split("- Continue an existing PR", 1)[1].split(
+        "- Otherwise create one", 1
+    )[0]
+    assert "its base is exactly\n     `main`" in existing_pr_path
+    assert "A mismatch is `Blocked`" in existing_pr_path
 
 
 def test_review_counters_do_not_stop_rework() -> None:

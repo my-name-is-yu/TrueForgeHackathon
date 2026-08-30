@@ -86,8 +86,8 @@ Operating rules:
      `git fetch origin "$refspec"`, passing the complete refspec as one quoted argument,
      then create/switch the local branch from that exact remote-tracking ref. Verify the resulting
      local HEAD equals the recorded SHA before changing the index or worktree. Then use the Codex
-     GitHub connector to verify that the PR is open and its base/head match. A mismatch is `Blocked`;
-     never guess or duplicate.
+     GitHub connector to verify that the PR is open, its base/head match, and its base is exactly
+     `main`. A mismatch is `Blocked`; never guess or duplicate.
    - Otherwise create one `yu/` branch, focused commits, and one PR against `main`. Record its URL,
      branch, base, and exact 40-character head SHA in the Workpad immediately.
 6. Local Git owns fetch, branch, checkout, commit, and push. The Codex GitHub connector owns PR,
@@ -188,7 +188,7 @@ Operating rules:
      obsolete base.
    - After an exact current-head review has produced zero `fix_now` findings, require a clean working
      tree and run `$no-comments` as a mandatory review of the complete `origin/main...HEAD` final
-     candidate. This is once per finalization attempt, not once per PR: any code-changing fix creates
+     candidate. This is once per finalization attempt, not once per PR: any tracked-file fix creates
      a new candidate that must first return through external review and then finalization again.
    - Use the controller's exact absolute workspace from `pwd -P`. Generate the target list with
      `/usr/bin/git -C "$workspace" diff --name-status --no-ext-diff origin/main...HEAD` and compute
@@ -202,11 +202,12 @@ Operating rules:
    - A digest mismatch invalidates the review. Rebuild the target list and digest from the same
      workspace and retry No Comments once. A second mismatch is an observable execution failure and
      may move to `Blocked`; never apply findings from a mismatched review.
-   - Apply only verified in-scope No Comments fixes. If code changes, run required checks/tests,
-     commit/push, update the Workpad, and return to step 8. Otherwise freshly prove on the latest
-     remote head that the PR is open and ready; head/base still match the Workpad; PR history contains
-     at least one completed Codex review and one completed Qodo review; at least one completed
-     current-head review and all its late comments were included; `fix_now` findings are zero;
+   - Apply only verified in-scope No Comments fixes. If any tracked candidate file changes, run
+     required checks/tests, commit/push, update the Workpad, and return to step 8. Otherwise freshly
+     prove on the latest remote head that the PR is open and ready; head/base still match the Workpad;
+     PR history contains at least one completed Codex review and one completed Qodo review; at
+     least one completed current-head review and all its late comments were included; `fix_now`
+     findings are zero;
      required checks/tests passed; the working tree is clean; and base synchronization remains
      satisfied. An empty GitHub checks/status list is not a failure unless repository configuration
      identifies required checks. Every `backlog` disposition must already have a created-or-deduplicated

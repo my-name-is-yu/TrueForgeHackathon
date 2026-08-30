@@ -90,8 +90,8 @@ After external review reaches zero `fix_now` findings and base synchronization i
 candidate must pass `$no-comments`. Controller and reviewer use the same absolute workspace, explicit
 changed-file list, and full SHA-256 of the binary full-index diff. The controller verifies the digest
 before and after review. A mismatch invalidates the result and is retried once; a second mismatch is
-an execution failure. Any code-changing No Comments fix is pushed and returned to exact-head external
-review before finalization runs again.
+an execution failure. Any No Comments fix that changes a tracked candidate file is pushed and
+returned to exact-head external review before finalization runs again.
 
 `Merge Ready` requires a fresh connector read proving that the recorded head is still current, PR
 history contains both reviewer sources, at least one current-head review and its late comments were
