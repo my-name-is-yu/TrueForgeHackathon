@@ -893,23 +893,34 @@ def test_concurrent_first_runner_startup_shares_lifecycle_without_early_close() 
 
 def test_cancelled_partial_startup_closes_entered_resources() -> None:
     async def check() -> None:
-        transport, make_session, get_session = _fake_client(block_on_initialize=True)
+        transport = _BlockingCloseTransport()
+        session: _FakeSession | None = None
         from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        def make_session(read: object, write: object) -> _FakeSession:
+            nonlocal session
+            session = _FakeSession(read, write, block_on_initialize=True)
+            return session
 
         client = PinnedMujocoClient(
             transport_factory=lambda _parameters: transport,
             session_factory=make_session,
         )
         task = asyncio.create_task(client.__aenter__())
-        while get_session() is None:
+        while session is None:
             await asyncio.sleep(0)
-        await get_session().initialize_started.wait()
+        await session.initialize_started.wait()
         task.cancel()
+        await transport.close_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert task.done() is False
+        transport.allow_close.set()
         with pytest.raises(asyncio.CancelledError):
             await task
         assert client.ready is False
         assert transport.closed is True
-        assert get_session().closed is True
+        assert session.closed is True
 
     asyncio.run(check())
 

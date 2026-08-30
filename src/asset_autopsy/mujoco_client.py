@@ -603,8 +603,8 @@ class PinnedMujocoClient:
             except asyncio.CancelledError:
                 resource_task.cancel()
                 try:
-                    await resource_task
-                except (asyncio.CancelledError, Exception):
+                    await _finish_resource_task(resource_task)
+                except asyncio.CancelledError:
                     pass
                 raise
             except UpstreamToolError:
