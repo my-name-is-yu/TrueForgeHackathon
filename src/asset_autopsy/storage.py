@@ -615,7 +615,7 @@ class EvidenceStore:
             raise IntegrityError("ledger event JSON is invalid") from exc
         if not isinstance(payload, dict) or not isinstance(artifact_refs, list):
             raise IntegrityError("ledger event JSON shape is invalid")
-        return LedgerEvent(
+        event = LedgerEvent(
             seq=row["seq"],
             event_id=row["event_id"],
             request_id=row["request_id"],
@@ -628,6 +628,27 @@ class EvidenceStore:
             event_hash=row["event_hash"],
             created_at=row["created_at"],
         )
+        try:
+            if not isinstance(event.seq, int) or isinstance(event.seq, bool) or event.seq <= 0:
+                raise ValidationError("ledger sequence is invalid")
+            _id(event.event_id, "event_id")
+            _id(event.request_id, "request_id")
+            _id(event.case_id, "case_id")
+            if event.revision_id is not None:
+                _id(event.revision_id, "revision_id")
+            _id(event.event_type, "event_type")
+            if not isinstance(event.created_at, str):
+                raise ValidationError("event timestamp is invalid")
+            _timestamp(event.created_at)
+            _sha256(event.prev_hash, "prev_hash")
+            _sha256(event.event_hash, "event_hash")
+            if any(not isinstance(reference, Mapping) for reference in event.artifact_refs):
+                raise ValidationError("artifact_refs must contain objects")
+            for reference in event.artifact_refs:
+                cls._validate_artifact_reference(reference)
+        except ValidationError as exc:
+            raise IntegrityError("stored ledger event is invalid") from exc
+        return event
 
     @classmethod
     def _event_matches_record(
@@ -2245,14 +2266,11 @@ class EvidenceStore:
     def ledger_events(self, case_id: str | None = None) -> tuple[LedgerEvent, ...]:
         if case_id is not None:
             _id(case_id, "case_id")
-        with self._read_connection() as connection:
+        with self._read_transaction() as connection:
+            events = self._verified_ledger_from_connection(connection)
             if case_id is None:
-                rows = connection.execute("SELECT * FROM ledger_events ORDER BY seq").fetchall()
-            else:
-                rows = connection.execute(
-                    "SELECT * FROM ledger_events WHERE case_id = ? ORDER BY seq", (case_id,)
-                ).fetchall()
-        return tuple(self._event_from_row(row) for row in rows)
+                return events
+            return tuple(event for event in events if event.case_id == case_id)
 
     def _verified_ledger_from_connection(
         self, connection: sqlite3.Connection

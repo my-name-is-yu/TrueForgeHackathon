@@ -1495,7 +1495,9 @@ def test_malformed_stored_promotion_revision_is_an_integrity_error(
         },
     )
 
-    with pytest.raises(IntegrityError, match="promotion receipt identity is invalid"):
+    with pytest.raises(
+        IntegrityError, match="promotion receipt identity is invalid|stored ledger event is invalid"
+    ):
         store.reconcile_promotion(case_id="case-1")
 
 
