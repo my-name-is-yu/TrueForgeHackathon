@@ -700,7 +700,7 @@ class AssetAutopsyService:
                     "REVISION_BUDGET_EXHAUSTED",
                     "The child revision budget is exhausted.",
                     False,
-                    "Verify the current two-revision repair or start a fresh case.",
+                    "Verify the current head or start a fresh case.",
                 )
             base = self._revision(case.case_id, value.base_revision_id, request_id)
             if base.asset_sha256 != value.expected_base_sha256:
@@ -851,15 +851,15 @@ class AssetAutopsyService:
             revisions = self.store.list_revisions(case.case_id)
             if (
                 case.head_revision_id != revision.revision_id
-                or revision.ordinal != 2
-                or len(revisions) != 3
+                or not 1 <= revision.ordinal <= REVISION_BUDGET
+                or len(revisions) != revision.ordinal + 1
             ):
                 raise self._error(
                     request_id,
                     "QUALIFICATION_NOT_READY",
-                    "Qualification requires the current head at repair depth two.",
+                    "Qualification requires a current child head within the revision budget.",
                     False,
-                    "Complete exactly two evidence-backed child revisions, then retry.",
+                    "Run the public task for the current evidence-backed child head, then retry.",
                 )
             if revision.asset_sha256 != value.expected_asset_sha256:
                 raise self._error(
@@ -1096,7 +1096,7 @@ class AssetAutopsyService:
                 raise self._error(
                     request_id,
                     "TICKET_LINEAGE_MISMATCH",
-                    "The promotion ticket does not match the stored two-change lineage.",
+                    "The promotion ticket does not match the stored qualified lineage.",
                     False,
                     "Use the exact ticket returned by verify_revision.",
                 )
@@ -1596,7 +1596,12 @@ class AssetAutopsyService:
                 case.public_contract_sha256 == self.fixture.public_contract_sha256
             )
             runner = case.runner_sha256 == self.fixture.runner_sha256
-            lineage = len(revisions) == 3 and revisions[0].revision_id == "r000"
+            lineage = (
+                1 <= len(revisions) - 1 <= REVISION_BUDGET
+                and revisions[0].revision_id == "r000"
+                and revisions[0].ordinal == 0
+                and revisions[-1].revision_id == case.head_revision_id
+            )
             for parent, child in zip(revisions, revisions[1:]):
                 lineage = (
                     lineage

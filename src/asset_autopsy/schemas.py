@@ -363,7 +363,7 @@ class PromotionTicket(StrictModel):
     case_id: CaseId
     revision_id: RevisionId
     asset_sha256: AssetHash
-    canonical_diff: list["CanonicalDiffEntry"] = Field(min_length=2, max_length=2)
+    canonical_diff: list["CanonicalDiffEntry"] = Field(min_length=1, max_length=2)
     public_result: "AggregateResult"
     holdout_result: "AggregateResult"
     export_name: Annotated[

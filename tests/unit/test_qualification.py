@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from asset_autopsy.fixture import clean_end_effector_position, load_compound_arm_fixture
 from asset_autopsy.qualification import (
     HiddenVerifier,
@@ -49,7 +51,10 @@ def test_hidden_verifier_returns_only_aggregate_state() -> None:
     assert not hasattr(result, "traces")
 
 
-def test_promotion_ticket_digest_binds_commitments_and_two_diffs() -> None:
+@pytest.mark.parametrize("diff_count", [1, 2])
+def test_promotion_ticket_digest_binds_commitments_for_qualifiable_heads(
+    diff_count: int,
+) -> None:
     diffs = [
         CanonicalDiffEntry(
             target="joint_b", attribute="axis", before="0 0 1", after="0 1 0"
@@ -72,7 +77,7 @@ def test_promotion_ticket_digest_binds_commitments_and_two_diffs() -> None:
         case_id="case_compound-arm-01",
         revision_id="r002",
         asset_sha256="f" * 64,
-        canonical_diff=diffs,
+        canonical_diff=diffs[:diff_count],
         public_result=public,
         holdout_result=holdout,
         export_name="compound-arm-01-repaired",
