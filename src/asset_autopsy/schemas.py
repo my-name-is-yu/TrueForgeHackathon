@@ -499,7 +499,9 @@ class BehaviorDiff(StrictModel):
     first_divergence: FirstDivergence | None = None
     metric_deltas: list[MetricDelta] = Field(min_length=1, max_length=64)
     clause_outcomes: list[ClauseResult] = Field(min_length=1, max_length=32)
-    verdict: Literal["regressed", "changed", "improved", "public_pass"]
+    verdict: Literal[
+        "regressed", "changed", "improved", "public_pass", "unchanged_failure"
+    ]
 
     @model_validator(mode="after")
     def validate_evidence_state(self) -> BehaviorDiff:
@@ -508,8 +510,8 @@ class BehaviorDiff(StrictModel):
         if not self.changed:
             if self.first_divergence is not None:
                 raise ValueError("unchanged behavior cannot report first divergence")
-            if self.verdict in {"regressed", "improved"}:
-                raise ValueError("unchanged behavior cannot report an outcome verdict")
+            if self.verdict not in {"public_pass", "unchanged_failure"}:
+                raise ValueError("unchanged behavior requires an unchanged verdict")
         return self
 
 
@@ -523,12 +525,16 @@ class RunTaskOutput(CommonOutput):
 
     @model_validator(mode="after")
     def validate_behavior_diff_result(self) -> RunTaskOutput:
-        if self.behavior_diff is None or self.behavior_diff.changed:
+        if self.behavior_diff is None:
+            if self.revision_id != "r000":
+                raise ValueError("child task output requires behavior diff evidence")
+            return self
+        if self.behavior_diff.changed:
             return self
         if self.result == "pass" and self.behavior_diff.verdict != "public_pass":
             raise ValueError("a passing unchanged task must have the public_pass verdict")
-        if self.result == "fail" and self.behavior_diff.verdict != "changed":
-            raise ValueError("a failing unchanged task must have the changed verdict")
+        if self.result == "fail" and self.behavior_diff.verdict != "unchanged_failure":
+            raise ValueError("a failing unchanged task must have the unchanged_failure verdict")
         return self
 
     @model_validator(mode="after")
@@ -654,8 +660,10 @@ class VerifyRevisionOutput(CommonOutput):
             )
             and self.public_result.total > 0
             and self.public_result.passed == self.public_result.total
+            and not self.public_result.violated_clause_ids
             and self.holdout_result.passed == 3
             and self.holdout_result.total == 3
+            and not self.holdout_result.violated_clause_ids
         )
         if not qualification_passed:
             if self.promotion_ticket is not None:

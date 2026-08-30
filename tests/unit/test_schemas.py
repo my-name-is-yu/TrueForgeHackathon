@@ -266,6 +266,18 @@ def test_behavior_diff_rejects_false_metric_deltas_and_contradictory_state() -> 
         BehaviorDiff.model_validate(
             {
                 "changed": False,
+                "metric_deltas": [
+                    {"metric": "hold_error_p95_m", "before": 0.04, "after": 0.04, "delta": 0.0}
+                ],
+                "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+                "verdict": "changed",
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        BehaviorDiff.model_validate(
+            {
+                "changed": False,
                 "first_divergence": {
                     "step": 12,
                     "time_s": 0.12,
@@ -353,10 +365,48 @@ def test_run_task_output_accepts_behavior_diff_evidence() -> None:
                     {"metric": "hold_error_p95_m", "before": 0.02, "after": 0.02, "delta": 0.0}
                 ],
                 "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
-                "verdict": "changed",
+                "verdict": "unchanged_failure",
             },
         }
     )
+
+    child_without_diff = {
+        "schema_version": "asset-autopsy/v1",
+        "request_id": "req_demo",
+        "case_id": "case_demo",
+        "revision_id": "r001",
+        "scenario_id": "public_center",
+        "result": "fail",
+        "observations": [{"metric": "hold_error_p95_m", "value": 0.02}],
+    }
+    with pytest.raises(ValidationError):
+        RunTaskOutput.model_validate(child_without_diff)
+
+    child_with_unchanged_failure = {
+        **child_without_diff,
+        "behavior_diff": {
+            "changed": False,
+            "metric_deltas": [
+                {"metric": "hold_error_p95_m", "before": 0.02, "after": 0.02, "delta": 0.0}
+            ],
+            "clause_outcomes": [{"clause_id": "hold_error", "outcome": "unchanged"}],
+            "verdict": "unchanged_failure",
+        },
+    }
+    RunTaskOutput.model_validate(child_with_unchanged_failure)
+
+
+def test_verify_revision_rejects_violated_clauses_as_successful_qualification() -> None:
+    for result_name in ("public_result", "holdout_result"):
+        payload = _verify_revision_payload()
+        payload[result_name] = {"passed": 1 if result_name == "public_result" else 3,
+                                "total": 1 if result_name == "public_result" else 3,
+                                "violated_clause_ids": ["hold_error"]}
+        ticket = _promotion_ticket_payload()
+        ticket[result_name] = payload[result_name]
+        payload["promotion_ticket"] = ticket
+        with pytest.raises(ValidationError):
+            VerifyRevisionOutput.model_validate(payload)
 
 
 def test_run_task_output_rejects_nonuniform_trace_timestamps() -> None:
