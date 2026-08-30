@@ -54,6 +54,12 @@ def _numbers(value: Any) -> bool:
     return isinstance(value, list) and all(_numbers(item) for item in value)
 
 
+def _finite_numbers(value: Any) -> bool:
+    if type(value) in (int, float):
+        return _number(value)
+    return isinstance(value, list) and all(_finite_numbers(item) for item in value)
+
+
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
@@ -271,6 +277,7 @@ class DeterministicRunner:
         )
 
         records: list[SegmentRecord] = []
+        nonfinite_state = False
         previous_timestamp: float | None = None
         timestep = slot.summary["timestep"]
         interval_tolerance = timestep * 1e-6
@@ -320,10 +327,17 @@ class DeterministicRunner:
                     timeseries=rows,
                 )
             )
+            nonfinite_state = any(
+                not all(_finite_numbers(value) for value in row.values())
+                for row in rows
+            )
+            if nonfinite_state:
+                slot.state = SlotState.POISONED
+                break
 
         image: bytes | None = None
         render_fallback = False
-        if configuration.render:
+        if configuration.render and not nonfinite_state:
             try:
                 image = await self.client.render(
                     slot,
