@@ -33,6 +33,7 @@ allow-direct-references = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+    "cgl: requires a CGL-capable real Mac with a working MuJoCo renderer",
     "phase0_upstream: requires the pinned local MuJoCo MCP stdio server",
     "phase0_trueforge: requires the pinned local TrueForge 0.1.4 runtime",
 ]

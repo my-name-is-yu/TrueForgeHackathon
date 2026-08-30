@@ -11,8 +11,8 @@ permissions:
 
 jobs:
   quality:
-    name: macOS CGL quality gates
-    runs-on: macos-15-intel
+    name: macOS quality gates
+    runs-on: macos-15
 
     steps:
       - name: Checkout repository
@@ -41,8 +41,8 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --frozen
 
-      - name: Run repository tests
-        run: uv run pytest -q
+      - name: Run GPU-independent repository tests
+        run: uv run pytest -q -m "not cgl"
 
       - name: Run Ruff lint
         run: uv run ruff check .

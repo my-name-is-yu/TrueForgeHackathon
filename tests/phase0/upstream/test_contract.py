@@ -85,6 +85,7 @@ def test_stdio_initializes_and_matches_required_schemas() -> None:
     asyncio.run(check())
 
 
+@pytest.mark.cgl
 @pytest.mark.phase0_upstream
 def test_cgl_renders_160_by_120_primitive_scene() -> None:
     async def render() -> bool:
