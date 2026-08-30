@@ -729,6 +729,9 @@ def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_pat
     assert recovering.state == "RECOVERING"
     assert store.get_case("case-1").qualification_attempt_id == "attempt-1"
     with pytest.raises(Exception):
+        store.record_qualification_terminal(**identity, state="PASSED")
+    assert store.get_case("case-1").qualification_state == "recovering"
+    with pytest.raises(Exception):
         store.recover_qualification(**{**identity, "scenario_hashes": ("8" * 64,)})
     assert store.get_case("case-1").qualification_state == "recovering"
 
@@ -782,8 +785,9 @@ def test_promotion_receipt_is_atomic_and_reconcilable(tmp_path: Path) -> None:
         revision_id="r001",
         ticket_id="ticket-1",
         manifest_sha256="8" * 64,
-        receipt={"export_name": "synthetic"},
+        receipt={"export_name": "synthetic", "members": ("a", "b")},
     )
+    assert receipt.receipt == {"export_name": "synthetic", "members": ["a", "b"]}
     assert store.get_case("case-1").promotion_state == "promoted"
     assert store.reconcile_promotion(case_id="case-1", revision_id="r001") == receipt
     assert store.record_promotion_receipt(
@@ -791,7 +795,7 @@ def test_promotion_receipt_is_atomic_and_reconcilable(tmp_path: Path) -> None:
         revision_id="r001",
         ticket_id="ticket-1",
         manifest_sha256="8" * 64,
-        receipt={"export_name": "synthetic"},
+        receipt={"export_name": "synthetic", "members": ("a", "b")},
     ) == receipt
     with pytest.raises(Exception):
         store.record_promotion_receipt(

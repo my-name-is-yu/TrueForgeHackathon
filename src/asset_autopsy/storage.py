@@ -1553,8 +1553,8 @@ class EvidenceStore:
                         result=stored_result,
                     )
                 raise QualificationConflictError("qualification terminal state is immutable")
-            if case["qualification_result"] not in {"RUNNING", "RECOVERING"}:
-                raise QualificationConflictError("qualification is not active")
+            if case["qualification_result"] != "RUNNING":
+                raise QualificationConflictError("qualification is not running")
             self._require_attempt(
                 connection,
                 case_id=case_id,
@@ -1659,7 +1659,9 @@ class EvidenceStore:
         _sha256(manifest_sha256, "manifest_sha256")
         if receipt is not None and not isinstance(receipt, Mapping):
             raise ValidationError("receipt must be an object")
-        receipt_payload = dict(receipt) if receipt is not None else {}
+        receipt_payload = (
+            json.loads(_json_text(dict(receipt))) if receipt is not None else {}
+        )
         with self._transaction() as connection:
             case = connection.execute(
                 "SELECT * FROM cases WHERE case_id = ?", (case_id,)
