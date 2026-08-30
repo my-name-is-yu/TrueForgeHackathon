@@ -44,6 +44,10 @@ qodo_status=$(sed -En '6s/^Qodo status: (complete|timeout)$/\1/p' "$packet")
   echo "Packet line 7 must terminate the trusted header." >&2
   exit 1
 }
+if [ "$codex_status" != complete ] || [ "$qodo_status" != complete ]; then
+  echo "Both review sources must be complete before Sol adjudication." >&2
+  exit 1
+fi
 
 output_dir=$(dirname -- "$output")
 [ -d "$output_dir" ] || { echo "Output directory does not exist: $output_dir" >&2; exit 1; }
@@ -82,14 +86,7 @@ trap 'rm -f "$temporary"; rm -rf "$temporary_workspace"' EXIT HUP INT TERM
   --output-last-message "$temporary" \
   -
 
-python3 "$PROJECT_ROOT/scripts/symphony_review_decision.py" \
-  --expected-head "$head_sha" \
-  --expected-review-head "$review_head" \
-  --expected-rework-round "$rework_round" \
-  --expected-codex-status "$codex_status" \
-  --expected-qodo-status "$qodo_status" \
-  "$temporary" >/dev/null
 mv "$temporary" "$output"
 rm -rf "$temporary_workspace"
 trap - EXIT HUP INT TERM
-echo "Validated Sol decision: $output"
+echo "Wrote schema-valid Sol decision: $output"

@@ -80,14 +80,14 @@ def test_wrapper_counts_an_unterminated_final_line(tmp_path: Path) -> None:
     assert "refusing to truncate evidence" in result.stderr
 
 
-def test_wrapper_parses_tenth_head_and_timeout_statuses_on_macos(tmp_path: Path) -> None:
+def test_wrapper_refuses_incomplete_reviews_before_invoking_sol(tmp_path: Path) -> None:
     packet = tmp_path / "packet.md"
     packet.write_text(valid_header(10, 9, "timeout", "timeout"))
 
-    result = run_wrapper(packet, tmp_path / "missing" / "decision.json")
+    result = run_wrapper(packet, tmp_path / "decision.json")
 
     assert result.returncode == 1
-    assert "Output directory does not exist" in result.stderr
+    assert "Both review sources must be complete" in result.stderr
 
 
 def test_wrapper_does_not_accept_head_metadata_outside_trusted_line(tmp_path: Path) -> None:
@@ -116,14 +116,8 @@ def test_wrapper_runs_sol_without_file_reading_tools(tmp_path: Path) -> None:
     decision.write_text(
         json.dumps(
             {
-                "head_sha": HEAD,
-                "review_head_number": 1,
-                "rework_round": 0,
-                "sources": {"codex": "complete", "qodo": "complete"},
                 "findings": [],
-                "uncertain": False,
-                "gate": "merge_ready",
-                "summary": "No accepted findings.",
+                "summary": "No fix-now findings.",
             }
         )
     )
@@ -167,3 +161,25 @@ def test_wrapper_runs_sol_without_file_reading_tools(tmp_path: Path) -> None:
         assert ["--disable", feature] == args[args.index(feature) - 1 : args.index(feature) + 1]
     workspace = Path(args[args.index("--cd") + 1])
     assert not workspace.exists()
+
+
+def test_decision_schema_contains_only_final_dispositions() -> None:
+    schema = json.loads(
+        (Path(__file__).parents[1] / "symphony" / "review-decision.schema.json").read_text()
+    )
+
+    assert schema["required"] == ["findings", "summary"]
+    assert set(schema["properties"]) == {"findings", "summary"}
+    finding = schema["properties"]["findings"]["items"]
+    assert finding["required"] == [
+        "id",
+        "disposition",
+        "rationale",
+        "instruction",
+        "backlog_title",
+    ]
+    assert finding["properties"]["disposition"]["enum"] == [
+        "fix_now",
+        "backlog",
+        "reject",
+    ]

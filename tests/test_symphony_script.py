@@ -113,7 +113,8 @@ def test_agent_linear_operations_stay_behind_the_authenticated_tool_boundary() -
 
     assert "linear_graphql" in template
     assert "scripts/symphony_linear.py" in template
-    assert "Never read\n   tracker credentials or call `scripts/symphony_linear.py`" in template
+    assert "tracker auth behind the dynamic-tool boundary" in template
+    assert "Never read tracker credentials or call `scripts/symphony_linear.py`" in template
     assert "python3 scripts/symphony_linear.py" not in template
 
 
@@ -161,3 +162,20 @@ def test_review_packet_uses_authoritative_contract_context_and_separates_resolve
     assert "Separate\n     outstanding current-head findings from resolved or outdated context" in template
     assert "exact implementation and test evidence that resolved it" in template
     assert "never present a still-required acceptance\n     invariant as though it had been rejected or deferred" in template
+
+
+def test_sol_decision_is_exact_head_and_uses_only_three_dispositions() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    assert "re-read the PR through the\n     GitHub connector" in template
+    assert "If its head differs from the packet head, discard the decision" in template
+    assert "`fix_now`, `backlog`, or `reject`" in template
+    assert "cannot request human\n   adjudication" in template
+    assert "without re-adjudicating its meaning" in template
+
+
+def test_workpad_keeps_contract_content_in_authoritative_linear_sources() -> None:
+    template = (ROOT / "symphony" / "WORKFLOW.md.template").read_text()
+
+    assert "Keep the Workpad to durable orchestration facts" in template
+    assert "Do not copy acceptance criteria, follow-up\n   descriptions, or frozen contracts" in template

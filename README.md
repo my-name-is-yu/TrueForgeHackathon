@@ -85,7 +85,7 @@ references become blockers instead of creating a duplicate branch or pull reques
 
 OpenAI Codex and Qodo continue to generate reviews externally. The repository-owned workflow waits
 for both results for each PR head, asks GPT-5.6 Sol to deduplicate and adjudicate them, and sends only
-accepted findings back to GPT-5.6 Luna for at most nine same-PR rework rounds and ten distinct
+`fix_now` findings back to GPT-5.6 Luna for at most nine same-PR rework rounds and ten distinct
 reviewed heads. Linear holds one
 durable Workpad comment so retries and model boundaries do not depend on a long-lived session.
 The merge-ready gate and deduplicated, non-executing Backlog candidate creation are documented in
