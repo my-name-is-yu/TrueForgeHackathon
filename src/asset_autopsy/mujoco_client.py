@@ -859,6 +859,7 @@ class PinnedMujocoClient:
 
 __all__ = [
     "MAX_STEPS",
+    "MAX_TRACE_SCALARS",
     "PinnedMujocoClient",
     "REQUIRED_ENVIRONMENT",
     "REQUIRED_TOOL_NAMES",

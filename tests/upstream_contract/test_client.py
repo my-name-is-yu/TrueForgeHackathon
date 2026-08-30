@@ -27,7 +27,12 @@ from asset_autopsy.mujoco_client import (
     server_parameters,
     verify_pinned_upstream,
 )
-from asset_autopsy.runner import ConstantSegment, DeterministicRunner, RunConfiguration
+from asset_autopsy.runner import (
+    MAX_SEGMENTS,
+    ConstantSegment,
+    DeterministicRunner,
+    RunConfiguration,
+)
 
 
 def _text_result(payload: object, *, is_error: bool = False) -> SimpleNamespace:
@@ -363,6 +368,17 @@ def test_runner_configuration_requires_constant_bounded_segments() -> None:
         RunConfiguration(
             xml_string="<mujoco/>",
             segments=tuple(ConstantSegment((), 1) for _ in range(100_001)),
+        )
+    assert len(
+        RunConfiguration(
+            xml_string="<mujoco/>",
+            segments=tuple(ConstantSegment((), 1) for _ in range(MAX_SEGMENTS)),
+        ).segments
+    ) == MAX_SEGMENTS
+    with pytest.raises(ValueError, match="segment count"):
+        RunConfiguration(
+            xml_string="<mujoco/>",
+            segments=tuple(ConstantSegment((), 1) for _ in range(MAX_SEGMENTS + 1)),
         )
 
 
@@ -996,6 +1012,26 @@ def test_trace_budget_rejects_high_dimensional_run_before_upstream_call(
             with pytest.raises(ValueError, match="bounded numeric record budget"):
                 await client.run_segment(slot, ctrl=[0.0] * nu, n_steps=n_steps)
             assert [name for name, _arguments in get_session().calls] == ["sim_load"]
+
+    asyncio.run(check())
+
+
+def test_runner_enforces_trace_budget_across_all_segments() -> None:
+    async def check() -> None:
+        transport, make_session, get_session = _fake_client(nq=100)
+        from asset_autopsy.mujoco_client import PinnedMujocoClient
+
+        client = PinnedMujocoClient(
+            transport_factory=lambda _parameters: transport,
+            session_factory=make_session,
+        )
+        configuration = RunConfiguration(
+            xml_string="<mujoco model=\"synthetic\"/>",
+            segments=(ConstantSegment((), 10_000), ConstantSegment((), 10_000)),
+        )
+        with pytest.raises(ValueError, match="bounded numeric record budget"):
+            await DeterministicRunner(client).run(configuration)
+        assert [name for name, _arguments in get_session().calls] == ["sim_load"]
 
     asyncio.run(check())
 

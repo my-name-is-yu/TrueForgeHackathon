@@ -10,6 +10,7 @@ from typing import Any
 from .mujoco_client import (
     MAX_RENDER_DIMENSION,
     MAX_STEPS,
+    MAX_TRACE_SCALARS,
     PinnedMujocoClient,
     UPSTREAM_BAD_RESPONSE,
     UPSTREAM_TIMEOUT,
@@ -18,6 +19,7 @@ from .mujoco_client import (
 )
 
 MAX_TOTAL_STEPS = MAX_STEPS
+MAX_SEGMENTS = 16
 _RENDER_FALLBACK_CODES = frozenset(
     {UPSTREAM_BAD_RESPONSE, UPSTREAM_TIMEOUT, UPSTREAM_UNAVAILABLE}
 )
@@ -93,6 +95,8 @@ class RunConfiguration:
             raise ValueError("xml_string is required")
         if not self.segments:
             raise ValueError("at least one constant segment is required")
+        if len(self.segments) > MAX_SEGMENTS:
+            raise ValueError(f"segment count must not exceed {MAX_SEGMENTS}")
         if sum(segment.n_steps for segment in self.segments) > MAX_TOTAL_STEPS:
             raise ValueError(f"total steps must not exceed {MAX_TOTAL_STEPS}")
         if not all(_number(value) for value in self.initial_qpos + self.initial_qvel):
@@ -167,6 +171,11 @@ class DeterministicRunner:
 
     async def _run(self, configuration: RunConfiguration) -> RunRecord:
         slot = await self.client.load(configuration.xml_string)
+        projected_scalars = sum(segment.n_steps for segment in configuration.segments) * (
+            slot.summary["nq"] + slot.summary["nv"] + slot.summary["nu"] + 4
+        )
+        if projected_scalars > MAX_TRACE_SCALARS:
+            raise ValueError("requested run exceeds the bounded numeric record budget")
         if configuration.initial_qpos and len(configuration.initial_qpos) != slot.summary["nq"]:
             raise ValueError("initial qpos width does not match the loaded model")
         if configuration.initial_qvel and len(configuration.initial_qvel) != slot.summary["nv"]:
@@ -266,6 +275,7 @@ __all__ = [
     "ConstantSegment",
     "ControllerSegment",
     "DeterministicRunner",
+    "MAX_SEGMENTS",
     "MAX_TOTAL_STEPS",
     "RunConfiguration",
     "RunRecord",
