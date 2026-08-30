@@ -1367,13 +1367,16 @@ class EvidenceStore:
             scenarios = payload["scenario_hashes"]
         except (KeyError, TypeError) as exc:
             raise IntegrityError("qualification identity is incomplete") from exc
-        normalized = EvidenceStore._validate_qualification_identity(
-            case_id=case_id,
-            attempt_id=attempt_id,
-            revision_id=revision_id,
-            suite_commitment_sha256=suite,
-            scenario_hashes=scenarios,
-        )
+        try:
+            normalized = EvidenceStore._validate_qualification_identity(
+                case_id=case_id,
+                attempt_id=attempt_id,
+                revision_id=revision_id,
+                suite_commitment_sha256=suite,
+                scenario_hashes=scenarios,
+            )
+        except ValidationError as exc:
+            raise IntegrityError("qualification identity is invalid") from exc
         try:
             payload_commitments = EvidenceStore._commitment_payload(payload)
         except ValidationError as exc:
@@ -1992,8 +1995,11 @@ class EvidenceStore:
             raise IntegrityError("promotion receipt is incomplete") from exc
         if stored_revision != event.revision_id or not isinstance(receipt, Mapping):
             raise IntegrityError("promotion receipt identity is invalid")
-        _id(ticket_id, "ticket_id")
-        _sha256(manifest_sha256, "manifest_sha256")
+        try:
+            _id(ticket_id, "ticket_id")
+            _sha256(manifest_sha256, "manifest_sha256")
+        except ValidationError as exc:
+            raise IntegrityError("promotion receipt identity is invalid") from exc
         return PromotionReceipt(
             case_id=case_id,
             revision_id=stored_revision,

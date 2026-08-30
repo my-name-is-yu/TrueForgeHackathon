@@ -21,6 +21,7 @@ from asset_autopsy.storage import (
     RevisionRecord,
     RunRecord,
     ValidationError,
+    canonical_json_bytes,
 )
 
 
@@ -78,6 +79,34 @@ def make_store(tmp_path: Path) -> EvidenceStore:
         **COMMITMENTS,
     )
     return store
+
+
+def replace_tail_event_payload(
+    database_path: Path, event_type: str, payload: dict[str, object]
+) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute(
+            "UPDATE ledger_events SET payload_json = ? WHERE event_type = ?",
+            (json.dumps(payload), event_type),
+        )
+        row = connection.execute(
+            "SELECT * FROM ledger_events WHERE event_type = ? ORDER BY seq DESC LIMIT 1",
+            (event_type,),
+        ).fetchone()
+        assert row is not None
+        assert row["seq"] == connection.execute(
+            "SELECT MAX(seq) FROM ledger_events"
+        ).fetchone()[0]
+        event_hash = hashlib.sha256(
+            bytes.fromhex(row["prev_hash"])
+            + canonical_json_bytes(EvidenceStore._event_without_hash(row))
+        ).hexdigest()
+        connection.execute(
+            "UPDATE ledger_events SET event_hash = ? WHERE seq = ?",
+            (event_hash, row["seq"]),
+        )
+        connection.commit()
 
 
 def add_probe_evidence(store: EvidenceStore) -> None:
@@ -1015,6 +1044,29 @@ def test_qualification_reads_verify_the_reservation_event(tmp_path: Path) -> Non
         store.get_qualification("case-1")
 
 
+def test_malformed_stored_qualification_identity_is_an_integrity_error(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    replace_tail_event_payload(
+        tmp_path / "ledger.sqlite",
+        "QUALIFICATION_RESERVED",
+        {
+            "attempt_id": "",
+            "revision_id": "r001",
+            "suite_commitment_sha256": "4" * 64,
+            "scenario_hashes": ["5" * 64, "6" * 64, "7" * 64],
+            **COMMITMENTS,
+        },
+    )
+
+    with pytest.raises(IntegrityError, match="qualification identity is invalid"):
+        store.get_qualification("case-1")
+
+
 def test_qualification_reserve_recover_terminal_preserves_exact_identity(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     add_probe_evidence(store)
@@ -1221,6 +1273,42 @@ def test_promotion_reads_verify_the_ledger_chain(tmp_path: Path) -> None:
         connection.commit()
 
     with pytest.raises(IntegrityError, match="ledger event hash mismatch"):
+        store.reconcile_promotion(case_id="case-1", revision_id="r001")
+
+
+def test_malformed_stored_promotion_identity_is_an_integrity_error(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    add_probe_evidence(store)
+    add_child(store)
+    qualify(store)
+    identity = {
+        "case_id": "case-1",
+        "attempt_id": "attempt-1",
+        "revision_id": "r001",
+        "suite_commitment_sha256": "4" * 64,
+        "scenario_hashes": ("5" * 64, "6" * 64, "7" * 64),
+    }
+    store.record_qualification_terminal(**identity, state="PASSED")
+    store.record_promotion_receipt(
+        case_id="case-1",
+        revision_id="r001",
+        ticket_id="ticket-1",
+        manifest_sha256="8" * 64,
+    )
+    replace_tail_event_payload(
+        tmp_path / "ledger.sqlite",
+        "PROMOTED",
+        {
+            "ticket_id": "",
+            "revision_id": "r001",
+            "manifest_sha256": "8" * 64,
+            "receipt": {},
+        },
+    )
+
+    with pytest.raises(IntegrityError, match="promotion receipt identity is invalid"):
         store.reconcile_promotion(case_id="case-1", revision_id="r001")
 
 
