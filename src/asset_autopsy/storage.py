@@ -839,13 +839,14 @@ class EvidenceStore:
 
     def get_case(self, case_id: str) -> CaseRecord:
         _id(case_id, "case_id")
-        with self._read_connection() as connection:
+        with self._read_transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM cases WHERE case_id = ?", (case_id,)
             ).fetchone()
-        if row is None:
-            raise CaseNotFoundError("case was not found")
-        return self._case_from_row(row)
+            if row is None:
+                raise CaseNotFoundError("case was not found")
+            self._validate_case_lifecycle_from_connection(connection, case_id)
+            return self._case_from_row(row)
 
     def restore_state(self, case_id: str) -> CaseRecord:
         _id(case_id, "case_id")
@@ -1706,6 +1707,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            self._validate_case_lifecycle_from_connection(connection, case_id)
             case_commitments = self._stored_commitment_payload(case)
             if case["qualification_result"] != "RUNNING":
                 raise QualificationConflictError("qualification is not running")
@@ -1771,6 +1773,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            self._validate_case_lifecycle_from_connection(connection, case_id)
             case_commitments = self._stored_commitment_payload(case)
             if case["qualification_result"] != "RECOVERING":
                 raise QualificationConflictError("qualification is not recovering")
@@ -1845,6 +1848,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            self._validate_case_lifecycle_from_connection(connection, case_id)
             case_commitments = self._stored_commitment_payload(case)
             if case["qualification_result"] in {"PASSED", "FAILED"}:
                 existing = self._latest_attempt_from_connection(
@@ -2023,6 +2027,7 @@ class EvidenceStore:
             ).fetchone()
             if case is None:
                 raise CaseNotFoundError("case was not found")
+            self._validate_case_lifecycle_from_connection(connection, case_id)
             if case["qualification_result"] != "PASSED":
                 raise PromotionConflictError("promotion requires a passed qualification")
             if case["qualification_revision_id"] != revision_id:
