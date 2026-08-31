@@ -634,22 +634,19 @@ def _large_tool_response_path(record: Mapping[str, Any]) -> str | None:
     return match.group(1).rstrip(".\"')") if match is not None else None
 
 
-def _exec_arguments_reference_path(value: Any, path: str, *, depth: int = 0) -> bool:
-    if depth > 8:
-        return False
-    if isinstance(value, str):
-        return path in value
-    if isinstance(value, Mapping):
-        return any(
-            _exec_arguments_reference_path(child, path, depth=depth + 1)
-            for child in value.values()
-        )
-    if isinstance(value, list):
-        return any(
-            _exec_arguments_reference_path(child, path, depth=depth + 1)
-            for child in value
-        )
-    return False
+def _exec_arguments_read_path(arguments: Mapping[str, Any], path: str) -> bool:
+    quoted_path = (
+        "(?:" + "|".join((re.escape(repr(path)), re.escape(json.dumps(path)))) + ")"
+    )
+    readers = (
+        rf"\bopen\(\s*{quoted_path}(?:\s*,\s*['\"]r[b+t]*['\"])?\s*\)",
+        rf"\bPath\(\s*{quoted_path}\s*\)\.(?:read_text|read_bytes)\(\s*\)",
+    )
+    return any(
+        isinstance(program, str)
+        and any(re.search(pattern, program) is not None for pattern in readers)
+        for program in (arguments.get("code"), arguments.get("command"))
+    )
 
 
 def _sandbox_response_succeeded(record: Mapping[str, Any]) -> bool:
@@ -780,7 +777,7 @@ def evaluate_autonomy_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
                     and exec_response is not None
                     and exec_response["event_index"] > exec_record["event_index"]
                     and exec_response["event_index"] < revision["event_index"]
-                    and _exec_arguments_reference_path(
+                    and _exec_arguments_read_path(
                         _call_arguments(exec_record["call"]), offloaded_path
                     )
                     and _sandbox_response_succeeded(exec_response)
@@ -840,11 +837,28 @@ def evaluate_autonomy_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             continue
         revision_attributes.append(f"{target_name}.{attribute}")
 
+    publish_id = publish_calls[0]["id"] if len(publish_calls) == 1 else None
+    published_ticket = (
+        _call_arguments(publish_calls[0]["call"]).get("promotion_ticket")
+        if len(publish_calls) == 1
+        else None
+    )
+    published_revision_id = (
+        published_ticket.get("revision_id")
+        if isinstance(published_ticket, Mapping)
+        else None
+    )
     task_results: list[tuple[dict[str, Any], dict[str, Any], Mapping[str, Any]]] = []
     for record in task_calls:
         response = responses.get(record["id"])
         payload = _response_payload(response) if response is not None else None
-        if response is not None and payload is not None:
+        if (
+            response is not None
+            and payload is not None
+            and _call_arguments(record["call"]).get("revision_id")
+            == published_revision_id
+            and payload.get("revision_id") == published_revision_id
+        ):
             task_results.append((record, response, payload))
     final_task_record, final_task_response, final_task = (
         task_results[-1] if task_results else ({}, {}, {})
@@ -871,12 +885,6 @@ def evaluate_autonomy_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             "the final post-revision public task lacks an improved passing BehaviorDiff"
         )
 
-    publish_id = publish_calls[0]["id"] if len(publish_calls) == 1 else None
-    published_ticket = (
-        _call_arguments(publish_calls[0]["call"]).get("promotion_ticket")
-        if len(publish_calls) == 1
-        else None
-    )
     qualifying_response: dict[str, Any] | None = None
     hidden_pass = False
     for verify in verify_calls:

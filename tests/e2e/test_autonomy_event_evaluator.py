@@ -557,6 +557,32 @@ def test_rejects_unrelated_successful_exec_as_revision_evidence() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {
+            "intent": "Analyze /sandbox/large_tool_responses/experiment-axis.json.",
+            "command": "true",
+        },
+        {
+            "intent": "Analyze the offloaded experiment.",
+            "command": "echo /sandbox/large_tool_responses/experiment-axis.json",
+        },
+    ],
+)
+def test_rejects_exec_that_does_not_read_trace(arguments: dict[str, Any]) -> None:
+    events = _successful_events()
+    _set_arguments(events, "sandbox-1", arguments)
+
+    evidence = evaluate_autonomy_events(events)
+
+    assert evidence["passed"] is False
+    assert (
+        "a revision lacks successful Sandbox analysis of a preceding offloaded current-base experiment"
+        in evidence["failures"]
+    )
+
+
 def test_rejects_exec_that_references_a_different_experiment_path() -> None:
     events = _successful_events()
     _set_arguments(
@@ -726,6 +752,44 @@ def test_rejects_missing_required_outcome(violation: str) -> None:
     evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False
+
+
+def test_rejects_stale_task_as_qualified_head_evidence() -> None:
+    events = _successful_events()
+    final_payload = json.loads(_response_event(events, "task-r002")["content"])
+    final_payload["result"] = "fail"
+    final_payload["behavior_diff"] = {
+        "verdict": "improved_but_failing",
+        "changed": True,
+    }
+    _response_event(events, "task-r002")["content"] = json.dumps(final_payload)
+    insertion = next(
+        index
+        for index, item in enumerate(events)
+        if any(
+            call.get("id") == "verify" for call in item["event"].get("tool_calls", [])
+        )
+    )
+    events[insertion:insertion] = [
+        _model_call("stale-task", "run_task", _run_task_arguments("r001")),
+        _tool_response(
+            "stale-task",
+            {
+                "schema_version": "asset-autopsy/v1",
+                "revision_id": "r001",
+                "result": "pass",
+                "behavior_diff": {"verdict": "public_pass", "changed": True},
+            },
+        ),
+    ]
+
+    evidence = evaluate_autonomy_events(events)
+
+    assert evidence["passed"] is False
+    assert (
+        "the final post-revision public task lacks an improved passing BehaviorDiff"
+        in evidence["failures"]
+    )
 
 
 @pytest.mark.parametrize(
