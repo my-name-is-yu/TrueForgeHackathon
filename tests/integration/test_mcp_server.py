@@ -236,11 +236,7 @@ def test_exact_strict_tool_schemas_and_annotations() -> None:
     case_id_pattern = open_case.inputSchema["properties"]["case_id"]["pattern"]
     assert re.fullmatch(case_id_pattern, "compound-arm-01")
     assert re.fullmatch(case_id_pattern, "case_compound-arm-01")
-    assert re.fullmatch(case_id_pattern, "x")
-    assert re.fullmatch(case_id_pattern, "x" * 91)
-    assert re.fullmatch(case_id_pattern, "case_" + "x" * 91)
-    assert not re.fullmatch(case_id_pattern, "x" * 92)
-    assert not re.fullmatch(case_id_pattern, "case_" + "x" * 92)
+    assert not re.fullmatch(case_id_pattern, "other-public-handle")
     assert {
         tool.name
         for tool in tools

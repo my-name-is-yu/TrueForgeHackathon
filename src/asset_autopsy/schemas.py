@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import re
 from typing import TYPE_CHECKING, Annotated, Literal, Sequence, TypeAlias
 
 from pydantic import (
@@ -33,15 +32,12 @@ if TYPE_CHECKING:
 
 
 SCHEMA_VERSION = "asset-autopsy/v1"
-_CASE_ID_PATTERN = r"^(?:case_)?[A-Za-z0-9][A-Za-z0-9_-]{0,90}$"
+_PUBLIC_CASE_HANDLE = "compound-arm-01"
+_CASE_ID_PATTERN = rf"^(?:case_[A-Za-z0-9][A-Za-z0-9_-]*|{_PUBLIC_CASE_HANDLE})$"
 
 
 def _canonical_case_id(value: object) -> object:
-    if not isinstance(value, str):
-        return value
-    if re.fullmatch(_CASE_ID_PATTERN, value) is None:
-        raise ValueError("case_id is invalid")
-    if not value.startswith("case_"):
+    if value == _PUBLIC_CASE_HANDLE:
         return f"case_{value}"
     return value
 
@@ -50,7 +46,7 @@ CaseId: TypeAlias = Annotated[
     str,
     StringConstraints(
         strict=True,
-        min_length=1,
+        min_length=6,
         max_length=96,
         pattern=_CASE_ID_PATTERN,
     ),

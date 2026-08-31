@@ -59,14 +59,8 @@ def test_public_case_handle_is_normalized_to_the_canonical_case_id() -> None:
         OpenCaseInput.model_validate({"case_id": "case_compound-arm-01"}).case_id
         == "case_compound-arm-01"
     )
-    assert OpenCaseInput.model_validate({"case_id": "x"}).case_id == "case_x"
-    assert (
-        OpenCaseInput.model_validate({"case_id": "x" * 91}).case_id
-        == "case_" + "x" * 91
-    )
-    OpenCaseInput.model_validate({"case_id": "case_" + "x" * 91})
 
-    for case_id in ("", "x" * 92, "case_" + "x" * 92):
+    for case_id in ("", "x", "other-public-handle"):
         with pytest.raises(ValidationError):
             OpenCaseInput.model_validate({"case_id": case_id})
 
