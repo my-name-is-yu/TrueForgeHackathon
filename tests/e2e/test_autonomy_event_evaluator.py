@@ -694,7 +694,17 @@ def test_rejects_revision_without_matching_single_attribute_outcome() -> None:
 
 
 def test_accepts_no_separate_pre_revision_task() -> None:
-    events = [event for event in _successful_events() if event.get("id") != "baseline"]
+    original_events = _successful_events()
+    events = [
+        event
+        for event in original_events
+        if event["event"].get("tool_call_id") != "baseline"
+        and all(
+            call.get("id") != "baseline"
+            for call in event["event"].get("tool_calls", [])
+        )
+    ]
+    assert len(events) == len(original_events) - 2
 
     evidence = evaluate_autonomy_events(events)
 
