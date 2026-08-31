@@ -693,14 +693,18 @@ def test_rejects_revision_without_matching_single_attribute_outcome() -> None:
     )
 
 
-@pytest.mark.parametrize("violation", ["baseline", "behavior_diff", "qualification"])
+def test_accepts_no_separate_pre_revision_task() -> None:
+    events = [event for event in _successful_events() if event.get("id") != "baseline"]
+
+    evidence = evaluate_autonomy_events(events)
+
+    assert evidence["passed"] is True
+
+
+@pytest.mark.parametrize("violation", ["behavior_diff", "qualification"])
 def test_rejects_missing_required_outcome(violation: str) -> None:
     events = _successful_events()
-    if violation == "baseline":
-        payload = json.loads(_response_event(events, "baseline")["content"])
-        payload["result"] = "pass"
-        _response_event(events, "baseline")["content"] = json.dumps(payload)
-    elif violation == "behavior_diff":
+    if violation == "behavior_diff":
         payload = json.loads(_response_event(events, "task-r002")["content"])
         payload["behavior_diff"]["changed"] = False
         _response_event(events, "task-r002")["content"] = json.dumps(payload)

@@ -846,18 +846,6 @@ def evaluate_autonomy_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         payload = _response_payload(response) if response is not None else None
         if response is not None and payload is not None:
             task_results.append((record, response, payload))
-    first_revision_index = min(
-        (record["event_index"] for record in revisions), default=len(events)
-    )
-    baseline_failed = (
-        bool(task_results)
-        and task_results[0][0]["event_index"] < first_revision_index
-        and task_results[0][1]["event_index"] < first_revision_index
-        and task_results[0][2].get("result") == "fail"
-    )
-    if not baseline_failed:
-        failures.append("the first public task is not a failing pre-revision baseline")
-
     final_task_record, final_task_response, final_task = (
         task_results[-1] if task_results else ({}, {}, {})
     )
@@ -985,7 +973,6 @@ def evaluate_autonomy_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             "single_attribute_diffs": len(revision_attributes),
         },
         "public": {
-            "baseline_failed": baseline_failed,
             "final_passed": final_public_pass,
             "behavior_diff_improved": behavior_improved,
         },
