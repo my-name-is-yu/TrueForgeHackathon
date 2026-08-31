@@ -103,8 +103,8 @@ The event evaluator accepts additional exploration, differing valid call orders,
 invalid requests. It requires causal temporal relationships rather than a recipe:
 
 - each committed child follows a completed current-base experiment;
-- successful Code Interpreter output reports the corresponding trace's run ID, hypothesis ID,
-  and trace hash before the child;
+- a completed Code Interpreter call reports the corresponding trace's run ID, hypothesis ID,
+  trace hash, row/time bounds, and per-signal sums derived from every row before the child;
 - the revision response proves one matching canonical diff;
 - the final public head passes with a changed `public_pass` comparison;
 - qualification returns public `1/1` and hidden `3/3`;

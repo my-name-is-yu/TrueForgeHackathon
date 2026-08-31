@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import xml.etree.ElementTree as ET
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -24,7 +25,9 @@ from openai.types.responses.response_code_interpreter_tool_call import OutputLog
 from openai.types.responses.response_prompt_param import ResponsePromptParam
 
 from asset_autopsy.agents_runner import (
+    CodeInterpreterRecord,
     EXACT_PROMPT,
+    RunTranscript,
     build_agent,
     collect_run_transcript,
     evaluate_autonomy_run,
@@ -250,15 +253,31 @@ class ScriptedRepairModel(Model):
             )
         if step == 4:
             experiment = self.outputs["run_experiment"]
+            trace = experiment["trace"]
+            rows = trace["rows"]
+            keys = sorted(rows[0]["values"])
             attestation = {
-                key: experiment[key]
-                for key in ("run_id", "hypothesis_id", "trace_sha256")
+                "analysis_status": "completed",
+                "run_id": experiment["run_id"],
+                "hypothesis_id": experiment["hypothesis_id"],
+                "trace_sha256": experiment["trace_sha256"],
+                "trace_row_count": len(rows),
+                "trace_first_time_s": rows[0]["time_s"],
+                "trace_last_time_s": rows[-1]["time_s"],
+                "trace_value_sums": {
+                    key: math.fsum(float(row["values"][key]) for row in rows)
+                    for key in keys
+                },
             }
             return ModelResponse(
                 output=[
                     ResponseCodeInterpreterToolCall(
                         id="ci_axis",
-                        code=f"print({json.dumps(attestation)!r})",
+                        code=(
+                            f"trace = {json.dumps(trace)}\n"
+                            "# Compute row count, time bounds, and every per-signal sum.\n"
+                            "print(analyze(trace))"
+                        ),
                         container_id="container_test",
                         outputs=[OutputLogs(logs=json.dumps(attestation), type="logs")],
                         status="completed",
@@ -383,3 +402,36 @@ def test_agents_sdk_closes_the_real_mcp_service_loop_and_stops_before_publish(
     assert service.publish_invocation_count == 0
     assert service.store.get_case(CASE_ID).qualification_state == "passed"
     assert service.store.verify_ledger()
+
+    shallow_transcript = RunTranscript(
+        tools=transcript.tools,
+        code_interpreter=(
+            CodeInterpreterRecord(
+                index=transcript.code_interpreter[0].index,
+                payload={
+                    "type": "code_interpreter_call",
+                    "status": "completed",
+                    "outputs": [
+                        {
+                            "type": "logs",
+                            "logs": json.dumps(
+                                {
+                                    "run_id": model.outputs["run_experiment"]["run_id"],
+                                    "hypothesis_id": model.outputs["run_experiment"][
+                                        "hypothesis_id"
+                                    ],
+                                    "trace_sha256": model.outputs["run_experiment"][
+                                        "trace_sha256"
+                                    ],
+                                }
+                            ),
+                        }
+                    ],
+                },
+            ),
+        ),
+        final_output=transcript.final_output,
+    )
+    assert (
+        evaluate_autonomy_run(shallow_transcript, approval_request)["passed"] is False
+    )
