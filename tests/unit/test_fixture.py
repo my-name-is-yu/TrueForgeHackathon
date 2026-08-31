@@ -84,7 +84,7 @@ def test_loading_rejects_a_disk_fixture_that_differs_from_the_embedded_asset(
         raise AssertionError("changed fixture was accepted")
 
 
-@pytest.mark.phase0_upstream
+@pytest.mark.upstream_live
 def test_real_pinned_mcp_calibrates_the_root_fixture_as_a_public_failure(
     tmp_path,
 ) -> None:
@@ -108,3 +108,29 @@ def test_real_pinned_mcp_calibrates_the_root_fixture_as_a_public_failure(
     assert values["settling_time_s"] is None
     assert values["joint_limit_violation_count"] == 0.0
     assert values["non_finite_count"] == 0.0
+
+
+@pytest.mark.cgl
+@pytest.mark.upstream_live
+def test_real_pinned_mcp_renders_the_current_fixture(tmp_path) -> None:
+    service = AssetAutopsyService(tmp_path)
+
+    result = asyncio.run(
+        service.run_task(
+            RunTaskInput(
+                case_id=CASE_ID,
+                revision_id="r000",
+                scenario_id="public_center",
+                capture="metrics_and_filmstrip",
+            )
+        )
+    )
+
+    filmstrips = [
+        artifact for artifact in result.artifacts if artifact.kind == "filmstrip"
+    ]
+    assert result.warnings == []
+    assert len(filmstrips) == 1
+    assert service.store.objects.read_bytes(filmstrips[0].sha256).startswith(
+        b"\x89PNG\r\n\x1a\n"
+    )

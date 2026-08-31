@@ -38,12 +38,8 @@ class FakeRunner:
 
 class FakeService:
     def __init__(self) -> None:
-        self.provisioned = 0
         self.fixture = SimpleNamespace(asset_xml=b'<mujoco model="startup-smoke"/>')
         self.runner = FakeRunner()
-
-    def provision_demo_case(self) -> None:
-        self.provisioned += 1
 
     async def _fail(self, _request: Any) -> Any:
         raise RuntimeError("/private/secret <mujoco>hidden</mujoco>")
@@ -176,7 +172,6 @@ def test_startup_preflight_failure_is_sanitized_and_never_binds(
 
     assert captured.value.code == expected_code
     assert binds == []
-    assert service.provisioned == 0
     assert len(service.runner.validated) == 1
     message = str(captured.value)
     assert len(message) < 120
@@ -207,7 +202,6 @@ def test_fixture_smoke_rejection_never_builds_or_binds(
 
     assert captured.value.code == "MCP_FIXTURE_SMOKE_FAILED"
     assert binds == []
-    assert service.provisioned == 0
 
 
 def test_valid_preflight_starts_only_on_the_configured_loopback(
@@ -227,16 +221,14 @@ def test_valid_preflight_starts_only_on_the_configured_loopback(
     serve(service, config)
 
     assert service.runner.validated == ['<mujoco model="startup-smoke"/>']
-    assert service.provisioned == 1
     assert len(binds) == 1
     assert binds[0]["host"] == "127.0.0.1"
     assert binds[0]["port"] == 8712
 
 
 def test_exact_strict_tool_schemas_and_annotations() -> None:
-    service, facade = make_facade()
+    _, facade = make_facade()
     tools = asyncio.run(facade.mcp.list_tools())
-    assert service.provisioned == 1
     assert [tool.name for tool in tools] == list(TOOL_NAMES)
     assert all(tool.inputSchema.get("additionalProperties") is False for tool in tools)
     assert {

@@ -405,19 +405,6 @@ def apply_one_attribute_patch(
     )
 
 
-def apply_patch(
-    base_xml: bytes,
-    patch: AttributePatch | Mapping[str, object],
-    *,
-    expected_base_sha256: str,
-) -> PatchedArtifact:
-    return apply_one_attribute_patch(
-        base_xml=base_xml,
-        expected_base_sha256=expected_base_sha256,
-        patch=patch,
-    )
-
-
 __all__ = [
     "CanonicalChange",
     "MAX_XML_BYTES",
@@ -426,7 +413,6 @@ __all__ = [
     "PatchedArtifact",
     "PatcherError",
     "apply_one_attribute_patch",
-    "apply_patch",
     "canonical_document_diff",
     "provision_fixture",
 ]

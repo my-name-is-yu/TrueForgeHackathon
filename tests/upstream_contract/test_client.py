@@ -1532,7 +1532,7 @@ def test_timeout_primary_survives_bounded_blocking_cleanup() -> None:
     asyncio.run(check())
 
 
-@pytest.mark.phase0_upstream
+@pytest.mark.upstream_live
 def test_real_client_validation_returns_only_the_compile_decision() -> None:
     from asset_autopsy.mujoco_client import PinnedMujocoClient
 
@@ -1553,7 +1553,7 @@ def test_real_client_validation_returns_only_the_compile_decision() -> None:
     asyncio.run(check())
 
 
-@pytest.mark.phase0_upstream
+@pytest.mark.upstream_live
 def test_real_client_runner_returns_requested_steps() -> None:
     from asset_autopsy.mujoco_client import PinnedMujocoClient
 

@@ -321,7 +321,6 @@ src/asset_autopsy/
 tests/
   e2e/
   integration/
-  phase0/
   unit/
   upstream_contract/
 ```
@@ -336,15 +335,12 @@ From a fresh checkout:
 ```bash
 npm ci
 uv sync --frozen
-uv run pytest tests/phase0/upstream -q
-uv run pytest tests/phase0/trueforge -q
 uv run pytest -q
 git diff --check
 ```
 
-The Phase 0 suites prove their historical upstream and TrueForge boundaries; they are not a
-substitute for the SC1 real-model run. To exercise that gate, start the normal saved TrueForge
-runtime and the developer driver in separate terminals:
+The local suite is not a substitute for the SC1 real-model run. To exercise that gate, start the
+normal saved TrueForge runtime and the developer driver in separate terminals:
 
 ```bash
 npm run trueforge
