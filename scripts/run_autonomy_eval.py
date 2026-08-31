@@ -16,25 +16,29 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import uvicorn
+from agents import Runner
 
+from asset_autopsy.agents_runner import (
+    DEFAULT_MODEL,
+    EXACT_PROMPT,
+    RunTranscript,
+    build_agent,
+    approval_request_from_result,
+    collect_run_transcript,
+    create_mcp_connection,
+    evaluate_autonomy_run,
+    run_config,
+)
 from asset_autopsy.fixture import CASE_ID
 from asset_autopsy.mcp_server import MCPRuntimeConfig, create_mcp_facade
 from asset_autopsy.service import AssetAutopsyService
 from asset_autopsy.storage import StorageError
-from asset_autopsy.trueforge_client import (
-    DEFAULT_MODEL,
-    EXACT_PROMPT,
-    TrueForgeClient,
-    TrueForgeError,
-    evaluate_autonomy_events,
-)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_PATH = ROOT / "evidence" / "autonomy-eval.json"
 BLOCKER_PATH = ROOT / "evidence" / "autonomy-blocker.json"
-TRUEFORGE_URL = "http://localhost:8790"
-ORIGIN = "http://localhost:8790"
+ORIGIN = "http://localhost:8712"
 ATTEMPT_COUNT = 3
 SUCCESS_THRESHOLD = 2
 
@@ -46,9 +50,6 @@ class _FacadeServer:
                 app,
                 host=config.host,
                 port=config.port,
-                # TrueForge keeps the Streamable HTTP GET connection open. The
-                # bounded shutdown below cancels that expected long-lived task;
-                # keep the evidence runner's output focused on its JSON result.
                 log_level="critical",
                 access_log=False,
                 timeout_graceful_shutdown=2,
@@ -56,7 +57,7 @@ class _FacadeServer:
         )
         self._thread = threading.Thread(
             target=self._server.run,
-            name="asset-autopsy-autonomy-mcp",
+            name="asset-autopsy-agents-mcp",
             daemon=True,
         )
 
@@ -112,15 +113,14 @@ def _commit_sha() -> str:
             changed_paths.append(path)
     if changed_paths:
         raise RuntimeError("the autonomy evaluation source is not clean at HEAD")
-    result = subprocess.run(
+    value = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=ROOT,
         check=True,
         capture_output=True,
         text=True,
         timeout=10,
-    )
-    value = result.stdout.strip()
+    ).stdout.strip()
     if len(value) != 40 or any(
         character not in "0123456789abcdef" for character in value
     ):
@@ -138,162 +138,51 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _raw_events_are_clear(
-    events: list[Mapping[str, Any]],
+def _expanded_values(value: Any, *, depth: int = 0) -> list[Any]:
+    if depth > 8:
+        return []
+    values = [value]
+    if isinstance(value, Mapping):
+        for item in value.values():
+            values.extend(_expanded_values(item, depth=depth + 1))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            values.extend(_expanded_values(item, depth=depth + 1))
+    return values
+
+
+def _raw_boundary_clear(
+    transcript: RunTranscript,
     *,
     bearer: str,
     data_root: Path,
     private_payloads: tuple[Mapping[str, Any], ...],
-    public_payloads: tuple[Mapping[str, Any], ...] = (),
 ) -> bool:
-    hidden_keys = {
-        "target_qpos",
-        "initial_qpos",
-        "target_body_position",
-        "duration_steps",
-        "hold_steps",
-    }
-
-    def contains_hidden_key(value: Any) -> bool:
-        if isinstance(value, Mapping):
-            return any(
-                key in hidden_keys or contains_hidden_key(item)
-                for key, item in value.items()
-            )
-        if isinstance(value, list):
-            return any(contains_hidden_key(item) for item in value)
-        if isinstance(value, str):
-            try:
-                decoded = json.loads(value)
-            except json.JSONDecodeError:
-                return False
-            return decoded != value and contains_hidden_key(decoded)
+    raw = json.dumps(transcript, default=str, sort_keys=True, ensure_ascii=True)
+    prohibited = [bearer, str(data_root), "<mujoco", "xml_string"]
+    prohibited.extend(
+        encoded
+        for payload in private_payloads
+        for encoded in (
+            json.dumps(payload, sort_keys=True),
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        )
+    )
+    if any(value in raw for value in prohibited):
         return False
-
-    def expanded_values(value: Any, *, depth: int = 0) -> list[Any]:
-        if depth > 8:
-            return []
-        values = [value]
-        if isinstance(value, Mapping):
-            for item in value.values():
-                values.extend(expanded_values(item, depth=depth + 1))
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                values.extend(expanded_values(item, depth=depth + 1))
-        elif isinstance(value, str):
-            try:
-                decoded = json.loads(value)
-            except json.JSONDecodeError:
-                return values
-            if decoded != value:
-                values.extend(expanded_values(decoded, depth=depth + 1))
-        return values
-
-    private_values = expanded_values(private_payloads)
-    public_values = expanded_values(public_payloads)
-    public_vectors = {
-        tuple(float(item) for item in value)
-        for value in public_values
-        if isinstance(value, (list, tuple))
-        and len(value) > 1
-        and all(
-            isinstance(item, (int, float)) and not isinstance(item, bool)
-            for item in value
-        )
-    }
-    private_vectors = {
-        tuple(float(item) for item in value)
-        for value in private_values
-        if isinstance(value, (list, tuple))
-        and len(value) > 1
-        and all(
-            isinstance(item, (int, float)) and not isinstance(item, bool)
-            for item in value
-        )
-    } - public_vectors
-    public_numeric_values = {
+    private_scalars = {
         value
-        for value in public_values
-        if (
-            isinstance(value, int)
-            and not isinstance(value, bool)
-            or isinstance(value, float)
-            and not value.is_integer()
-        )
+        for payload in private_payloads
+        for value in _expanded_values(payload)
+        if isinstance(value, float) and not value.is_integer()
     }
-    private_numeric_sentinels = {
-        value
-        for value in private_values
-        if (
-            isinstance(value, int)
-            and not isinstance(value, bool)
-            or isinstance(value, float)
-            and not value.is_integer()
-        )
-    } - public_numeric_values
-    event_values = expanded_values(events)
-    leaked_vector = any(
-        tuple(float(item) for item in value) in private_vectors
-        for value in event_values
-        if isinstance(value, (list, tuple))
-        and len(value) > 1
-        and all(
-            isinstance(item, (int, float)) and not isinstance(item, bool)
-            for item in value
-        )
-    )
-    leaked_scalar = any(
-        value in private_numeric_sentinels
-        for value in event_values
-        if isinstance(value, (int, float)) and not isinstance(value, bool)
-    )
-
-    raw = json.dumps(events, sort_keys=True, ensure_ascii=True)
-    prohibited = [
-        bearer,
-        str(data_root),
-        "<mujoco",
-        "xml_string",
-        *(
-            encoded
-            for payload in private_payloads
-            for encoded in (
-                json.dumps(payload, sort_keys=True),
-                json.dumps(payload, sort_keys=True, separators=(",", ":")),
-            )
-        ),
-    ]
-    sentinel_token_leaked = any(
+    return not any(
         re.search(
             rf"(?<![0-9.eE+-]){re.escape(json.dumps(value))}(?![0-9.eE+-])",
             raw,
         )
-        is not None
-        for value in private_numeric_sentinels
+        for value in private_scalars
     )
-    return (
-        not contains_hidden_key(events)
-        and not leaked_vector
-        and not leaked_scalar
-        and not sentinel_token_leaked
-        and all(value not in raw for value in prohibited)
-    )
-
-
-def _terminal_failure_category(turn: Mapping[str, Any]) -> str:
-    status = TrueForgeClient.turn_status(turn)
-    state = turn.get("state")
-    message = state.get("message") if isinstance(state, Mapping) else None
-    normalized = message.lower() if isinstance(message, str) else ""
-    if status == "done":
-        return "none"
-    if status == "error" and ("rate limit" in normalized or "429" in normalized):
-        return "provider_rate_limit"
-    if status in {"error", "failed"}:
-        return "provider_or_harness_error"
-    if status in {"cancelled", "canceled"}:
-        return "turn_cancelled"
-    return "unexpected_terminal_state"
 
 
 def _runtime_state_gates(
@@ -303,19 +192,10 @@ def _runtime_state_gates(
     service: AssetAutopsyService,
 ) -> dict[str, bool]:
     tool_order = evidence.get("tool_order")
-    event_sequence = (
-        [name for name in tool_order if name != "publish_revision"]
-        if isinstance(tool_order, list)
-        else []
-    )
-    invoked_tool_order = evidence.get("invoked_tool_order", tool_order)
-    invoked_sequence = (
-        [name for name in invoked_tool_order if name != "publish_revision"]
-        if isinstance(invoked_tool_order, list)
-        else []
-    )
-    event_counts = Counter(event_sequence)
-    invoked_counts = Counter(invoked_sequence)
+    public_sequence = tool_order if isinstance(tool_order, list) else []
+    mcp_sequence = [name for name in public_sequence if name != "publish_revision"]
+    event_counts = Counter(public_sequence)
+    mcp_counts = Counter(mcp_sequence)
     service_counts = Counter(
         {name: count for name, count in service.invocation_counts.items() if count}
     )
@@ -324,20 +204,6 @@ def _runtime_state_gates(
     )
     ledger = service.store.ledger_events(CASE_ID)
     event_types = Counter(event.event_type for event in ledger)
-    task_and_experiment_calls = sum(
-        event_counts[name] for name in ("run_task", "run_experiment")
-    )
-    run_events = sum(
-        event_types[name]
-        for name in ("TASK_COMPLETED", "EXPERIMENT_COMPLETED", "EXPERIMENT_FAILED")
-    )
-    sandbox = evidence.get("sandbox")
-    sandbox_runs = sandbox.get("runs") if isinstance(sandbox, Mapping) else None
-    sandbox_evidence = (
-        [item for item in sandbox_runs if isinstance(item, Mapping)]
-        if isinstance(sandbox_runs, list)
-        else []
-    )
     revisions = service.store.list_revisions(CASE_ID)
     child_revisions = revisions[1:]
     experiment_events = [
@@ -345,41 +211,43 @@ def _runtime_state_gates(
         for event in ledger
         if event.event_type in {"EXPERIMENT_COMPLETED", "EXPERIMENT_FAILED"}
     ]
+    analysis = evidence.get("analysis")
+    analysis_runs = analysis.get("runs") if isinstance(analysis, Mapping) else None
+    analysis_evidence = (
+        [item for item in analysis_runs if isinstance(item, Mapping)]
+        if isinstance(analysis_runs, list)
+        else []
+    )
 
     def evidence_ledger_pair(item: Mapping[str, Any]) -> tuple[int, int] | None:
         eligible_indexes = item.get("eligible_experiment_indexes")
         revision_index = item.get("revision_index")
         if (
             not isinstance(eligible_indexes, list)
-            or not eligible_indexes
+            or len(eligible_indexes) != 1
             or not isinstance(revision_index, int)
             or isinstance(revision_index, bool)
             or not 0 <= revision_index < len(child_revisions)
-            or any(
-                not isinstance(index, int)
-                or isinstance(index, bool)
-                or not 0 <= index < len(experiment_events)
-                for index in eligible_indexes
-            )
-            or len(set(eligible_indexes)) != len(eligible_indexes)
         ):
             return None
-        matches = []
-        for experiment_index in eligible_indexes:
-            event = experiment_events[experiment_index]
-            run_id = event.payload.get("run_id")
-            hypothesis_id = event.payload.get("hypothesis_id")
-            if (
-                event.event_type == "EXPERIMENT_COMPLETED"
-                and isinstance(run_id, str)
-                and isinstance(hypothesis_id, str)
-                and item.get("run_id_hash") == _sha256_text(run_id)[:12]
-                and item.get("hypothesis_id_hash") == _sha256_text(hypothesis_id)[:12]
-            ):
-                matches.append((experiment_index, event, run_id))
-        if len(matches) != 1:
+        experiment_index = eligible_indexes[0]
+        if (
+            not isinstance(experiment_index, int)
+            or isinstance(experiment_index, bool)
+            or not 0 <= experiment_index < len(experiment_events)
+        ):
             return None
-        experiment_index, event, run_id = matches[0]
+        event = experiment_events[experiment_index]
+        run_id = event.payload.get("run_id")
+        hypothesis_id = event.payload.get("hypothesis_id")
+        if (
+            event.event_type != "EXPERIMENT_COMPLETED"
+            or not isinstance(run_id, str)
+            or not isinstance(hypothesis_id, str)
+            or item.get("run_id_hash") != _sha256_text(run_id)[:12]
+            or item.get("hypothesis_id_hash") != _sha256_text(hypothesis_id)[:12]
+        ):
+            return None
         revision = child_revisions[revision_index]
         if (
             revision.probe_run_id != run_id
@@ -392,26 +260,31 @@ def _runtime_state_gates(
             return None
         if not (
             run.passed
-            and isinstance(run.trace_sha256, str)
-            and len(run.trace_sha256) == 64
-            and item.get("trace_sha256") == run.trace_sha256
+            and run.trace_sha256 == item.get("trace_sha256")
             and run.revision_id == revision.parent_revision_id
         ):
             return None
         return experiment_index, revision_index
 
-    evidence_pairs = [evidence_ledger_pair(item) for item in sandbox_evidence]
-    resolved_pairs = [pair for pair in evidence_pairs if pair is not None]
-
+    resolved_pairs = [
+        pair
+        for item in analysis_evidence
+        if (pair := evidence_ledger_pair(item)) is not None
+    ]
+    run_events = sum(
+        event_types[name]
+        for name in ("TASK_COMPLETED", "EXPERIMENT_COMPLETED", "EXPERIMENT_FAILED")
+    )
     return {
-        "facade_sequence_matches_events": facade.recorder.sequence == invoked_sequence,
-        "facade_counts_match_events": facade_counts == invoked_counts,
-        "service_counts_match_events": service_counts == invoked_counts,
-        "ledger_run_counts_match": run_events == task_and_experiment_calls,
-        "ledger_experiment_evidence_matches": (
+        "facade_sequence_matches_run": facade.recorder.sequence == mcp_sequence,
+        "facade_counts_match_run": facade_counts == mcp_counts,
+        "service_counts_match_run": service_counts == mcp_counts,
+        "ledger_run_counts_match": run_events
+        == event_counts["run_task"] + event_counts["run_experiment"],
+        "ledger_analysis_evidence_matches": (
             len(experiment_events) == event_counts["run_experiment"]
-            and len(sandbox_evidence) == event_counts["create_revision"]
-            and len(resolved_pairs) == len(sandbox_evidence)
+            and len(analysis_evidence) == event_counts["create_revision"]
+            and len(resolved_pairs) == len(child_revisions)
             and len({pair[0] for pair in resolved_pairs}) == len(resolved_pairs)
             and len({pair[1] for pair in resolved_pairs}) == len(resolved_pairs)
         ),
@@ -420,12 +293,28 @@ def _runtime_state_gates(
             and event_types["REVISION_CREATED"] == event_counts["create_revision"]
         ),
         "ledger_qualification_once": (
-            event_counts["verify_revision"] >= 1
+            event_counts["verify_revision"] == 1
             and event_types["QUALIFICATION_RESERVED"] == 1
             and event_types["QUALIFICATION_PASSED"] == 1
             and event_types["QUALIFICATION_FAILED"] == 0
         ),
     }
+
+
+async def _execute_agent(
+    config: MCPRuntimeConfig,
+    *,
+    group_id: str,
+):
+    connection = create_mcp_connection(config)
+    async with connection:
+        agent = build_agent(connection)
+        return await Runner.run(
+            agent,
+            EXACT_PROMPT,
+            max_turns=30,
+            run_config=run_config(group_id=group_id),
+        )
 
 
 def _safe_attempt_failure(
@@ -434,36 +323,26 @@ def _safe_attempt_failure(
     error: Exception,
     commit_sha: str | None,
 ) -> dict[str, Any]:
-    if isinstance(error, TrueForgeError):
-        reason = str(error)
-        details = {"http_status": error.status}
-    else:
-        reason = "The autonomy attempt did not complete its required gate."
-        details = {"error_type": type(error).__name__}
     return {
         "attempt_index": attempt_index,
         "status": "failed",
         "stage": stage,
-        "reason": reason,
-        "details": details,
+        "reason": "The autonomy attempt did not complete its required gate.",
+        "details": {"error_type": type(error).__name__},
         "commit_sha": commit_sha,
         "recorded_at": datetime.now(UTC).isoformat(),
     }
 
 
 def _event_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    analysis = evidence.get("analysis")
+    runs = analysis.get("runs") if isinstance(analysis, Mapping) else []
     return {
         "passed": evidence.get("passed") is True,
         "failures": list(evidence.get("failures", [])),
-        "rejected_attempts": evidence.get("rejected_attempts", {}),
-        "experiment_count": evidence.get("experiment_count", 0),
-        "revision_count": evidence.get("revision_count", 0),
-        "large_tool_response": evidence.get("large_tool_response", {}),
-        "sandbox": evidence.get("sandbox", {}),
-        "revisions": evidence.get("revisions", {}),
-        "public": evidence.get("public", {}),
-        "hidden": evidence.get("hidden", {}),
-        "approval": evidence.get("approval", {}),
+        "tool_counts": dict(evidence.get("tool_counts", {})),
+        "analysis_count": len(runs) if isinstance(runs, list) else 0,
+        "approval_required": evidence.get("approval") is not None,
     }
 
 
@@ -482,7 +361,7 @@ def _run_attempt(attempt_index: int, commit_sha: str) -> dict[str, Any]:
     try:
         bearer = secrets.token_urlsafe(32)
         with tempfile.TemporaryDirectory(
-            prefix=f"asset-autopsy-autonomy-{attempt_index}-"
+            prefix=f"asset-autopsy-agents-{attempt_index}-"
         ) as temporary:
             data_root = Path(temporary)
             service = AssetAutopsyService(data_root)
@@ -492,52 +371,28 @@ def _run_attempt(attempt_index: int, commit_sha: str) -> dict[str, Any]:
             )
             facade = asyncio.run(create_mcp_facade(service, config))
             private_payloads = tuple(service.hidden_verifier._scenario_payloads)
-            scenario = service.fixture.public_scenario
-            public_payloads = (
-                {
-                    "target_qpos": scenario.target_qpos,
-                    "initial_qpos": scenario.initial_qpos,
-                    "target_body_position": scenario.target_body_position,
-                    "duration_steps": scenario.duration_steps,
-                    "hold_steps": scenario.hold_steps,
-                },
-            )
-
+            stage = "model_turn"
             with _FacadeServer(facade.app, config):
-                client = TrueForgeClient(TRUEFORGE_URL, timeout_seconds=30.0)
-                stage = "provision"
-                provision = client.provision_autonomy(
-                    bearer=bearer,
-                    origin=ORIGIN,
-                    model=DEFAULT_MODEL,
+                result = asyncio.run(
+                    _execute_agent(
+                        config,
+                        group_id=f"{commit_sha[:12]}-{attempt_index}",
+                    )
                 )
-                stage = "session"
-                session = client.create_session()
-                session_id = str(session["id"])
-                turn = client.create_turn(session_id, EXACT_PROMPT)
-                turn_id = str(turn["id"])
-                stage = "model_turn"
-                terminal = client.wait_for_turn(
-                    session_id,
-                    turn_id,
-                    timeout_seconds=900.0,
-                )
-                events = client.list_turn_events(session_id, turn_id)
 
             stage = "evidence_gate"
-            evidence = evaluate_autonomy_events(events)
-            turn_status = client.turn_status(terminal)
+            transcript = collect_run_transcript(result)
+            approval_request = approval_request_from_result(result)
+            evidence = evaluate_autonomy_run(transcript, approval_request)
             case = service.store.get_case(CASE_ID)
             service.store.verify_ledger()
             gates = {
-                "turn_done": turn_status == "done",
-                "event_contract": evidence["passed"] is True,
-                "raw_boundary_clear": _raw_events_are_clear(
-                    events,
+                "agent_contract": evidence["passed"] is True,
+                "raw_boundary_clear": _raw_boundary_clear(
+                    transcript,
                     bearer=bearer,
                     data_root=data_root,
                     private_payloads=private_payloads,
-                    public_payloads=public_payloads,
                 ),
                 "facade_publish_calls": facade.recorder.counts["publish_revision"] == 0,
                 "service_publish_calls": service.publish_invocation_count == 0,
@@ -552,11 +407,7 @@ def _run_attempt(attempt_index: int, commit_sha: str) -> dict[str, Any]:
                     "status": "failed",
                     "stage": stage,
                     "reason": "failed gates: " + ", ".join(failed),
-                    "details": {
-                        "failed_gates": failed,
-                        "turn_status": turn_status,
-                        "terminal_category": _terminal_failure_category(terminal),
-                    },
+                    "details": {"failed_gates": failed},
                     "commit_sha": commit_sha,
                     "recorded_at": datetime.now(UTC).isoformat(),
                     "gates": gates,
@@ -566,7 +417,6 @@ def _run_attempt(attempt_index: int, commit_sha: str) -> dict[str, Any]:
                         "publish_invocations": service.publish_invocation_count,
                     },
                 }
-
             return {
                 "attempt_index": attempt_index,
                 "status": "passed",
@@ -574,15 +424,12 @@ def _run_attempt(attempt_index: int, commit_sha: str) -> dict[str, Any]:
                 "commit_sha": commit_sha,
                 "prompt_sha256": _sha256_text(EXACT_PROMPT),
                 "model": DEFAULT_MODEL,
-                "trueforge": {
-                    "session_id_hash": _sha256_text(session_id),
-                    "turn_id_hash": _sha256_text(turn_id),
-                    "turn_status": turn_status,
-                    "agent_action": provision.agent_action,
-                    "agent_manifest_sha256": provision.agent_manifest_sha256,
-                    "hackathon_starter_sha256": provision.hackathon_starter_sha256,
-                    "models_sha256": provision.models_sha256,
-                    "tool_schema_sha256": provision.tool_schema_sha256,
+                "agents_sdk": {
+                    "last_response_id_hash": _sha256_text(
+                        result.last_response_id or "none"
+                    ),
+                    "approval_boundary": "local_function_tool_stop",
+                    "trace_sensitive_data": False,
                 },
                 "gates": gates,
                 "events": _event_summary(evidence),
@@ -598,15 +445,14 @@ def _run_attempt(attempt_index: int, commit_sha: str) -> dict[str, Any]:
 def _blocker_payload(
     *, commit_sha: str | None, attempts: list[Mapping[str, Any]]
 ) -> dict[str, Any]:
-    aggregate = _aggregate_attempts(attempts)
     return {
-        "schema_version": "asset-autopsy-autonomy-blocker/v1",
+        "schema_version": "asset-autopsy-agents-blocker/v1",
         "status": "blocked",
         "recorded_at": datetime.now(UTC).isoformat(),
         "commit_sha": commit_sha,
         "model": DEFAULT_MODEL,
         "prompt_sha256": _sha256_text(EXACT_PROMPT),
-        "summary": aggregate,
+        "summary": _aggregate_attempts(attempts),
         "attempts": attempts,
         "reproduction": "uv run python scripts/run_autonomy_eval.py",
     }
@@ -616,22 +462,14 @@ def run() -> dict[str, Any]:
     commit_sha: str | None = None
     attempts: list[Mapping[str, Any]] = []
     try:
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise RuntimeError("OPENAI_API_KEY is required")
         commit_sha = _commit_sha()
     except Exception as error:
         attempts.append(_safe_attempt_failure(0, "startup", error, commit_sha))
         blocker = _blocker_payload(commit_sha=commit_sha, attempts=attempts)
-        try:
-            EVIDENCE_PATH.unlink(missing_ok=True)
-        except OSError:
-            raise RuntimeError(
-                "The autonomy evaluation could not invalidate stale evidence."
-            ) from None
-        try:
-            _write_json(BLOCKER_PATH, blocker)
-        except Exception:
-            raise RuntimeError(
-                "The autonomy evaluation could not record its sanitized blocker."
-            ) from None
+        EVIDENCE_PATH.unlink(missing_ok=True)
+        _write_json(BLOCKER_PATH, blocker)
         raise RuntimeError("The autonomy evaluation could not start safely.") from None
 
     for attempt_index in range(1, ATTEMPT_COUNT + 1):
@@ -640,7 +478,7 @@ def run() -> dict[str, Any]:
     aggregate = _aggregate_attempts(attempts)
     if aggregate["status"] == "passed":
         payload = {
-            "schema_version": "asset-autopsy-autonomy-evidence/v1",
+            "schema_version": "asset-autopsy-agents-evidence/v1",
             "status": "passed",
             "recorded_at": datetime.now(UTC).isoformat(),
             "commit_sha": commit_sha,
@@ -649,38 +487,19 @@ def run() -> dict[str, Any]:
             "summary": aggregate,
             "attempts": attempts,
         }
-        try:
-            EVIDENCE_PATH.unlink(missing_ok=True)
-            BLOCKER_PATH.unlink(missing_ok=True)
-        except OSError:
-            raise RuntimeError(
-                "The autonomy evaluation could not invalidate stale artifacts."
-            ) from None
-        try:
-            _write_json(EVIDENCE_PATH, payload)
-        except Exception:
-            raise RuntimeError(
-                "The autonomy evaluation could not record its sanitized evidence."
-            ) from None
+        EVIDENCE_PATH.unlink(missing_ok=True)
+        BLOCKER_PATH.unlink(missing_ok=True)
+        _write_json(EVIDENCE_PATH, payload)
         return payload
 
-    try:
-        EVIDENCE_PATH.unlink(missing_ok=True)
-    except OSError:
-        raise RuntimeError(
-            "The autonomy evaluation could not invalidate stale evidence."
-        ) from None
+    EVIDENCE_PATH.unlink(missing_ok=True)
     blocker = _blocker_payload(commit_sha=commit_sha, attempts=attempts)
-    try:
-        _write_json(BLOCKER_PATH, blocker)
-    except Exception:
-        raise RuntimeError(
-            "The autonomy evaluation could not record its sanitized blocker."
-        ) from None
+    _write_json(BLOCKER_PATH, blocker)
     raise RuntimeError(
-        "The autonomy evaluation did not reach two successful attempts."
-    ) from None
+        f"The autonomy evaluation reached only {aggregate['attempts_succeeded']}/"
+        f"{ATTEMPT_COUNT} successful attempts."
+    )
 
 
 if __name__ == "__main__":
-    print(json.dumps(run(), indent=2, sort_keys=True, ensure_ascii=True))
+    print(json.dumps(run(), indent=2, sort_keys=True))

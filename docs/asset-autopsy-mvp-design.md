@@ -30,8 +30,8 @@ This is a narrow proof for one existing MuJoCo asset, not a general robot-design
 
 ## Responsibility boundaries
 
-TrueForge owns the Sol model loop, generic Sandbox, Large Tool Response handling, session state,
-and approval pause. The Streamable HTTP facade owns transport authentication, strict public
+The OpenAI Agents SDK owns the Sol model loop, hosted Code Interpreter, tracing, run state, and
+approval interruption. The Streamable HTTP facade owns transport authentication, strict public
 schemas, tool annotations, and sanitized error mapping. `AssetAutopsyService` owns the fixture,
 budgets, evidence lineage, patch policy, public evaluation, and hidden qualification. A private
 commit-pinned MuJoCo MCP child owns physics execution.
@@ -95,15 +95,15 @@ it reruns or retrieves the matching parent condition and returns a machine-valid
 ## Autonomy evaluation
 
 `scripts/run_autonomy_eval.py` runs three independent goal-only attempts. Each receives a new
-temporary data root, service, bearer, and TrueForge session. The saved agent is provisioned with
-serial tool calls, high reasoning effort, generic Sandbox access, Large Tool Response, and human
-approval for `publish_revision`.
+temporary data root, service, bearer, and Agents SDK run. The agent is provisioned with serial
+tool calls, high reasoning effort, hosted Code Interpreter, sensitive trace data disabled, and a
+local function tool that requires approval for `publish_revision`.
 
 The event evaluator accepts additional exploration, differing valid call orders, and corrected
 invalid requests. It requires causal temporal relationships rather than a recipe:
 
 - each committed child follows a completed current-base experiment;
-- successful Sandbox output reports the corresponding offloaded trace's run ID, hypothesis ID,
+- successful Code Interpreter output reports the corresponding trace's run ID, hypothesis ID,
   and trace hash before the child;
 - the revision response proves one matching canonical diff;
 - the final public head passes with a changed `public_pass` comparison;
@@ -113,9 +113,9 @@ invalid requests. It requires causal temporal relationships rather than a recipe
 - no private value crosses the raw event boundary.
 
 At least two of the three attempts must satisfy every gate. The evidence artifact contains the
-exact Git commit, model, prompt hash, AgentSpec hash, tool-schema hash, per-attempt gate results,
-tool counts, revision and experiment counts, and hashed evidence identifiers. It contains no raw
-trace, credential, private path, fixture XML, or hidden scenario.
+exact Git commit, model, prompt hash, per-attempt gate results, tool counts, revision and experiment
+counts, and hashed evidence identifiers. It contains no raw trace, credential, private path,
+fixture XML, or hidden scenario.
 
 ## Verification
 
@@ -128,7 +128,7 @@ uv run ruff format --check .
 git diff --check
 ```
 
-After committing the exact candidate and starting the configured TrueForge runtime:
+After committing the exact candidate, with `OPENAI_API_KEY` set:
 
 ```bash
 uv run python scripts/run_autonomy_eval.py

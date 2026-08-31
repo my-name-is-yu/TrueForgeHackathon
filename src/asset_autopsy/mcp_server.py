@@ -488,7 +488,7 @@ def _annotations(
     )
 
 
-def trueforge_tool_input_schema(model: type[BaseModel]) -> dict[str, Any]:
+def public_tool_input_schema(model: type[BaseModel]) -> dict[str, Any]:
     schema = model.model_json_schema(by_alias=True)
     definitions = schema.pop("$defs", {})
     if not isinstance(definitions, dict):
@@ -542,7 +542,7 @@ def _enforce_strict_tool_arguments(mcp: FastMCP) -> None:
             **{**dict(model.model_config), "extra": "forbid"}
         )
         model.model_rebuild(force=True)
-        tool.parameters = trueforge_tool_input_schema(public_model)
+        tool.parameters = public_tool_input_schema(public_model)
 
 
 async def create_mcp_facade(
@@ -651,7 +651,7 @@ async def create_mcp_facade(
         description=(
             "Test a preregistered causal hypothesis on one exact revision with "
             "agent-selected controls and observables. A completed trace returns the "
-            "hypothesis and run IDs plus its trace hash; successful Sandbox analysis "
+            "hypothesis and run IDs plus its trace hash; successful Code Interpreter analysis "
             "reports all three to establish evidence for a revision."
         ),
         annotations=_annotations(read_only=False, destructive=False, idempotent=False),
@@ -788,5 +788,6 @@ __all__ = [
     "TOOL_NAMES",
     "create_mcp_facade",
     "preflight_mcp_startup",
+    "public_tool_input_schema",
     "serve",
 ]

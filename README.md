@@ -5,7 +5,7 @@ specific claim: when an agent has precise observation, experiment, revision, com
 qualification tools, it can choose how to close the repair loop without receiving a prescribed
 procedure.
 
-The current milestone uses `compound-arm-01` and `openai/gpt-5-6-sol`. The agent receives only a
+The current milestone uses `compound-arm-01` and `gpt-5.6-sol`. The agent receives only a
 goal and safety boundaries. Its saved instructions do not name tools, prescribe their order,
 identify faulty attributes, specify an experiment, or explain how to analyze a trace.
 
@@ -26,7 +26,7 @@ enforces invariants instead:
 ## Architecture
 
 ```text
-TrueForge + asset-autopsy-autonomy agent
+OpenAI Agents SDK Runner + asset-autopsy-autonomy agent
     |
     | seven discoverable tools; goal-only prompt
     v
@@ -42,9 +42,9 @@ AssetAutopsyService
 pinned stdio MuJoCo MCP -> MuJoCo 3.5.0
 ```
 
-TrueForge supplies the model loop, Large Tool Response handling, general Sandbox execution,
-session state, and approval pause. Asset Autopsy owns robot-specific policy and evidence
-integrity. Physics execution stays in a private commit-pinned MuJoCo child process.
+The Agents SDK supplies the model loop, hosted Code Interpreter, tracing, run state, and a real
+approval interruption. Asset Autopsy owns robot-specific policy and evidence integrity. Physics
+execution stays in a private commit-pinned MuJoCo child process.
 
 ## Public tools
 
@@ -75,7 +75,7 @@ does not diagnose the cause or decide whether the hypothesis was satisfied.
 ## Autonomy evaluation
 
 The real-model gate runs three independent attempts and requires at least two complete successes.
-Every attempt uses a fresh temporary service root, evidence ledger, bearer, and TrueForge session.
+Every attempt uses a fresh temporary service root, evidence ledger, bearer, and Agents SDK run.
 The exact user request is:
 
 > Repair compound-arm-01 so it satisfies its declared requirements, then submit the qualified
@@ -86,10 +86,10 @@ count. A successful attempt must prove:
 
 1. the final head passes the public task with a changed `public_pass` `BehaviorDiff`;
 2. every revision has one matching diff and completed current-base experiment provenance;
-3. successful Sandbox output reports the corresponding offloaded trace's run ID, hypothesis ID,
+3. successful Code Interpreter output reports the corresponding trace's run ID, hypothesis ID,
    and trace hash before each revision;
 4. the hidden suite passes `3/3` without exposing its conditions;
-5. the exact qualification ticket reaches `tool.approval_required` with no publish response;
+5. the exact qualification ticket reaches `RunResult.interruptions` with no publish response;
 6. facade and domain publish invocation counts remain zero;
 7. the ledger verifies and no bearer, private path, fixture XML, or hidden condition leaked.
 
@@ -97,13 +97,7 @@ Extra exploration and rejected invalid requests are allowed within the public bu
 sanitized aggregate is written to `evidence/autonomy-eval.json` only after two successes. Fewer
 than two successes invalidate stale PASS evidence and write `evidence/autonomy-blocker.json`.
 
-Start the configured TrueForge runtime in one terminal:
-
-```bash
-npm run trueforge
-```
-
-Run the exact-head evaluation in another:
+Run the exact-head evaluation with `OPENAI_API_KEY` set:
 
 ```bash
 uv run python scripts/run_autonomy_eval.py
@@ -113,11 +107,11 @@ Do not approve the final request during an evaluation.
 
 ## Local verification
 
-Requirements are Node.js 22.14 or later, Python 3.12, `uv`, MuJoCo CGL support for the render
-gate, and a saved TrueForge OpenAI provider exposing `openai/gpt-5-6-sol`.
+Requirements are Python 3.12, `uv`, an OpenAI API key with access to `gpt-5.6-sol`, and MuJoCo
+CGL support for the render gate. The Agents SDK is pinned to an exact upstream commit because the
+approval-capable API used here has not yet reached the compatible stable release line.
 
 ```bash
-npm ci
 uv sync --frozen
 uv run pytest -q -m "not cgl"
 uv run ruff check .
