@@ -94,7 +94,7 @@ from .task_evaluation import PASS_LIMITS, TASK_METRIC_ORDER, TaskEvaluation
 
 TOTAL_RUN_BUDGET = 10
 EXPERIMENT_BUDGET = 5
-REVISION_BUDGET = 2
+REVISION_BUDGET = 4
 QUALIFICATION_BUDGET = 1
 _CODE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
@@ -1045,9 +1045,9 @@ class AssetAutopsyService:
         raise self._error(
             request_id,
             "PUBLICATION_DEFERRED",
-            "Post-approval publication materialization is deferred for SC1.",
+            "Post-approval publication materialization is deferred for this evaluation.",
             False,
-            "Do not retry publication; treat the approval request as the SC1 endpoint.",
+            "Do not retry publication; treat the approval request as the evaluation endpoint.",
         )
 
     def _provision_demo_case(self) -> None:

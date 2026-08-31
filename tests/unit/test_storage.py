@@ -354,7 +354,7 @@ def test_object_store_hashes_external_payload_atomically(tmp_path: Path) -> None
         store.objects.read_bytes(digest)
 
 
-def test_object_size_limit_covers_the_active_sc1_artifact_ceiling() -> None:
+def test_object_size_limit_covers_the_active_asset_autopsy_artifact_ceiling() -> None:
     assert MAX_OBJECT_BYTES == 64 * 1024 * 1024
 
 

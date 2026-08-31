@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from asset_autopsy.trueforge_client import evaluate_sc1_events
+from asset_autopsy.trueforge_client import evaluate_autonomy_events
 
 
 CASE_ID = "case_compound-arm-01"
@@ -417,7 +417,7 @@ def _set_arguments(
 def test_accepts_semantically_valid_sandbox_programs_without_source_or_stdout_shape(
     style: str,
 ) -> None:
-    evidence = evaluate_sc1_events(_successful_events(style))
+    evidence = evaluate_autonomy_events(_successful_events(style))
 
     assert evidence["passed"] is True
     assert evidence["failures"] == []
@@ -464,7 +464,7 @@ def test_accepts_additional_exploration_without_a_fixed_experiment_count() -> No
         _tool_response("sandbox-exploration", "exploration complete"),
     ]
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is True
     assert evidence["experiment_count"] == 3
@@ -516,7 +516,7 @@ def test_excludes_domain_error_retry_from_successful_revision_evidence() -> None
         ),
     ]
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is True
     assert evidence["revision_count"] == 2
@@ -531,7 +531,7 @@ def test_rejects_revision_without_large_tool_response_provenance() -> None:
     events = _successful_events()
     _response_event(events, "experiment-1")["content"] = "inline experiment result"
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False
     assert (
@@ -548,7 +548,7 @@ def test_rejects_unrelated_successful_exec_as_revision_evidence() -> None:
         {"intent": "Inspect the sandbox environment.", "command": "pwd"},
     )
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False
     assert (
@@ -569,7 +569,7 @@ def test_rejects_exec_that_references_a_different_experiment_path() -> None:
         ),
     )
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False
     assert (
@@ -624,7 +624,7 @@ def test_rejects_revision_without_successful_sandbox_outcome(
             content if isinstance(content, str) else json.dumps(content)
         )
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False
     assert (
@@ -642,7 +642,7 @@ def test_accepts_trueforge_local_sandbox_zero_exit_code() -> None:
         }
     )
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is True
 
@@ -653,7 +653,7 @@ def test_rejects_experiment_from_a_different_revision_base() -> None:
     arguments["revision_id"] = "r999"
     _set_arguments(events, "experiment-1", arguments)
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False
     assert (
@@ -668,7 +668,7 @@ def test_rejects_revision_without_cited_run_identity() -> None:
     arguments.pop("basis_experiment_run_id")
     _set_arguments(events, "revision-1", arguments)
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False
     assert (
@@ -684,7 +684,7 @@ def test_rejects_revision_without_matching_single_attribute_outcome() -> None:
         {"schema_version": "asset-autopsy/v1", "revision_id": "r001"}
     )
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False
     assert (
@@ -709,7 +709,7 @@ def test_rejects_missing_required_outcome(violation: str) -> None:
         payload["holdout_result"]["passed"] = 2
         _response_event(events, "verify")["content"] = json.dumps(payload)
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False
 
@@ -754,6 +754,6 @@ def test_rejects_publication_that_does_not_pause_at_qualified_approval(
             )
         )
 
-    evidence = evaluate_sc1_events(events)
+    evidence = evaluate_autonomy_events(events)
 
     assert evidence["passed"] is False

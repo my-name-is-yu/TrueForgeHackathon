@@ -1,6 +1,6 @@
-# SC1 storage contract
+# Asset Autopsy storage contract
 
-SC1 accepts one size ceiling for every content-addressed object:
+Asset Autopsy accepts one size ceiling for every content-addressed object:
 `MAX_OBJECT_BYTES = 67,108,864` bytes (64 MiB). This covers the fixed MJCF,
 canonical manifests and results, bounded experiment traces, partial-run evidence,
 and the existing 64 MiB decoded-image ceiling. Object kinds do not have separate
@@ -32,7 +32,7 @@ It does not traverse or claim synchronization of ancestors above the configured
 object root. On-disk SQLite connections use WAL journal mode and
 `synchronous = FULL` for ledger transactions.
 
-The object store and SQLite are separate stores. SC1 does not provide an atomic
+The object store and SQLite are separate stores. Asset Autopsy does not provide an atomic
 commit across them: an interruption may leave an unreferenced valid object.
 Before a ledger mutation commits, every referenced object is streamed and checked,
 and later corruption is detected on verification or read. These operations do not

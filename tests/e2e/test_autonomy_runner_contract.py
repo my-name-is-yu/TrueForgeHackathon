@@ -13,16 +13,17 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from asset_autopsy.storage import CaseRecord  # noqa: E402
-from run_sc1_e2e import (  # noqa: E402
-    _EvidenceGateFailure,
+from run_autonomy_eval import (  # noqa: E402
+    _event_summary,
     _case_is_qualified,
     _commit_sha,
+    _aggregate_attempts,
     _raw_events_are_clear,
     _runtime_state_gates,
-    _safe_blocker,
+    _safe_attempt_failure,
     _terminal_failure_category,
 )
-import run_sc1_e2e as e2e_runner  # noqa: E402
+import run_autonomy_eval as e2e_runner  # noqa: E402
 
 
 def test_raw_event_gate_rejects_private_boundary_material() -> None:
@@ -40,12 +41,12 @@ def test_raw_event_gate_rejects_private_boundary_material() -> None:
     assert _raw_events_are_clear(
         safe,
         bearer="secret-bearer-value",
-        data_root=Path("/private/tmp/sc1-private"),
+        data_root=Path("/private/tmp/autonomy-private"),
         private_payloads=private,
     )
     for content in (
         "secret-bearer-value",
-        "/private/tmp/sc1-private/evidence.sqlite",
+        "/private/tmp/autonomy-private/evidence.sqlite",
         '<mujoco model="secret"/>',
         json.dumps(private[0]),
         json.dumps({"unrelated_name": private[0]["initial_qpos"]}),
@@ -55,7 +56,7 @@ def test_raw_event_gate_rejects_private_boundary_material() -> None:
         assert not _raw_events_are_clear(
             [{"event": {"type": "tool.response", "content": content}}],
             bearer="secret-bearer-value",
-            data_root=Path("/private/tmp/sc1-private"),
+            data_root=Path("/private/tmp/autonomy-private"),
             private_payloads=private,
         )
 
@@ -71,7 +72,7 @@ def test_raw_event_gate_detects_private_integer_scalars_with_token_boundaries() 
         assert not _raw_events_are_clear(
             [{"event": {"type": "tool.response", "content": content}}],
             bearer="secret-bearer-value",
-            data_root=Path("/private/tmp/sc1-private"),
+            data_root=Path("/private/tmp/autonomy-private"),
             private_payloads=private,
         )
 
@@ -84,7 +85,7 @@ def test_raw_event_gate_detects_private_integer_scalars_with_token_boundaries() 
         assert _raw_events_are_clear(
             [{"event": {"type": "tool.response", "content": content}}],
             bearer="secret-bearer-value",
-            data_root=Path("/private/tmp/sc1-private"),
+            data_root=Path("/private/tmp/autonomy-private"),
             private_payloads=private,
         )
 
@@ -96,14 +97,14 @@ def test_raw_event_gate_allows_values_shared_with_the_public_scenario() -> None:
     assert _raw_events_are_clear(
         [{"event": {"type": "tool.response", "content": "repr(row)[:1000]"}}],
         bearer="secret-bearer-value",
-        data_root=Path("/private/tmp/sc1-private"),
+        data_root=Path("/private/tmp/autonomy-private"),
         private_payloads=private,
         public_payloads=public,
     )
     assert not _raw_events_are_clear(
         [{"event": {"type": "tool.response", "content": "value=0.123456789"}}],
         bearer="secret-bearer-value",
-        data_root=Path("/private/tmp/sc1-private"),
+        data_root=Path("/private/tmp/autonomy-private"),
         private_payloads=private,
         public_payloads=public,
     )
@@ -133,7 +134,9 @@ def test_commit_sha_rejects_dirty_or_untracked_execution_source(monkeypatch) -> 
     monkeypatch.setattr(
         e2e_runner.subprocess,
         "run",
-        lambda *args, **kwargs: SimpleNamespace(stdout="?? scripts/run_sc1_e2e.py\n"),
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="?? scripts/run_autonomy_eval.py\n"
+        ),
     )
 
     with pytest.raises(RuntimeError, match="not clean at HEAD"):
@@ -145,8 +148,8 @@ def test_commit_sha_allows_only_generated_evidence_outputs(monkeypatch) -> None:
         (
             SimpleNamespace(
                 stdout=(
-                    " M evidence/sc1-evidence.json\n"
-                    "?? evidence/sc1-blocker.json\n"
+                    " M evidence/autonomy-eval.json\n"
+                    "?? evidence/autonomy-blocker.json\n"
                     "?? src/asset_autopsy/__pycache__/service.cpython-312.pyc\n"
                 )
             ),
@@ -165,8 +168,8 @@ def test_commit_sha_allows_only_generated_evidence_outputs(monkeypatch) -> None:
 def test_startup_commit_failure_removes_stale_evidence_and_records_null_sha(
     monkeypatch, tmp_path
 ) -> None:
-    evidence_path = tmp_path / "sc1-evidence.json"
-    blocker_path = tmp_path / "sc1-blocker.json"
+    evidence_path = tmp_path / "autonomy-eval.json"
+    blocker_path = tmp_path / "autonomy-blocker.json"
     evidence_path.write_text('{"status":"passed"}\n', encoding="utf-8")
 
     def fail_commit_sha() -> str:
@@ -181,11 +184,9 @@ def test_startup_commit_failure_removes_stale_evidence_and_records_null_sha(
 
     blocker = json.loads(blocker_path.read_text(encoding="utf-8"))
     rendered = json.dumps(blocker, sort_keys=True)
-    assert (
-        str(caught.value) == "The SC1 evidence run did not complete its required gate."
-    )
+    assert str(caught.value) == "The autonomy evaluation could not start safely."
     assert not evidence_path.exists()
-    assert blocker["stage"] == "startup"
+    assert blocker["attempts"][0]["stage"] == "startup"
     assert blocker["commit_sha"] is None
     assert "secret checkout failure" not in rendered
     assert "/private/repository" not in rendered
@@ -194,8 +195,8 @@ def test_startup_commit_failure_removes_stale_evidence_and_records_null_sha(
 def test_startup_bearer_failure_records_the_available_commit(
     monkeypatch, tmp_path
 ) -> None:
-    evidence_path = tmp_path / "sc1-evidence.json"
-    blocker_path = tmp_path / "sc1-blocker.json"
+    evidence_path = tmp_path / "autonomy-eval.json"
+    blocker_path = tmp_path / "autonomy-blocker.json"
     evidence_path.write_text('{"status":"passed"}\n', encoding="utf-8")
 
     def fail_bearer(_length: int) -> str:
@@ -212,10 +213,12 @@ def test_startup_bearer_failure_records_the_available_commit(
     blocker = json.loads(blocker_path.read_text(encoding="utf-8"))
     rendered = json.dumps(blocker, sort_keys=True)
     assert (
-        str(caught.value) == "The SC1 evidence run did not complete its required gate."
+        str(caught.value)
+        == "The autonomy evaluation did not reach two successful attempts."
     )
     assert not evidence_path.exists()
-    assert blocker["stage"] == "startup"
+    assert len(blocker["attempts"]) == 3
+    assert {attempt["stage"] for attempt in blocker["attempts"]} == {"startup"}
     assert blocker["commit_sha"] == "a" * 40
     assert "secret entropy failure" not in rendered
     assert "/private/random" not in rendered
@@ -224,8 +227,8 @@ def test_startup_bearer_failure_records_the_available_commit(
 def test_stale_evidence_is_removed_before_a_blocker_write_failure(
     monkeypatch, tmp_path
 ) -> None:
-    evidence_path = tmp_path / "sc1-evidence.json"
-    blocker_path = tmp_path / "sc1-blocker.json"
+    evidence_path = tmp_path / "autonomy-eval.json"
+    blocker_path = tmp_path / "autonomy-blocker.json"
     evidence_path.write_text('{"status":"passed"}\n', encoding="utf-8")
 
     def fail_commit_sha() -> str:
@@ -246,7 +249,8 @@ def test_stale_evidence_is_removed_before_a_blocker_write_failure(
         e2e_runner.run()
 
     assert (
-        str(caught.value) == "The SC1 evidence run did not complete its required gate."
+        str(caught.value)
+        == "The autonomy evaluation could not record its sanitized blocker."
     )
     assert not evidence_path.exists()
 
@@ -373,21 +377,22 @@ def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -
     ]
 
 
-def test_blocker_redacts_untrusted_exception_text() -> None:
-    blocker = _safe_blocker(
+def test_attempt_failure_redacts_untrusted_exception_text() -> None:
+    blocker = _safe_attempt_failure(
+        1,
         "model_turn",
         RuntimeError("secret raw upstream response /private/tmp/private.xml"),
         "a" * 40,
     )
 
     rendered = json.dumps(blocker, sort_keys=True)
-    assert blocker["status"] == "blocked"
+    assert blocker["status"] == "failed"
     assert blocker["stage"] == "model_turn"
     assert "secret raw upstream" not in rendered
     assert "/private/tmp/private.xml" not in rendered
 
 
-def test_evidence_gate_blocker_records_only_sanitized_terminal_category() -> None:
+def test_terminal_failure_category_redacts_provider_detail() -> None:
     terminal = {
         "state": {
             "status": "error",
@@ -395,20 +400,99 @@ def test_evidence_gate_blocker_records_only_sanitized_terminal_category() -> Non
         }
     }
     category = _terminal_failure_category(terminal)
-    blocker = _safe_blocker(
-        "evidence_gate",
-        _EvidenceGateFailure(
-            ["turn_done", "event_contract"],
-            turn_status="error",
-            terminal_category=category,
-        ),
-        "a" * 40,
+    assert category == "provider_rate_limit"
+    assert "/private/tmp/private.xml" not in category
+
+
+def test_aggregate_requires_two_of_three_successful_attempts() -> None:
+    passed = {"status": "passed"}
+    failed = {"status": "failed"}
+
+    assert _aggregate_attempts([passed, passed, failed]) == {
+        "status": "passed",
+        "attempts_total": 3,
+        "attempts_succeeded": 2,
+        "success_threshold": 2,
+    }
+    assert _aggregate_attempts([passed, failed, failed])["status"] == "blocked"
+
+
+def test_event_summary_omits_raw_tool_order_but_keeps_counts_and_hashes() -> None:
+    summary = _event_summary(
+        {
+            "passed": True,
+            "failures": [],
+            "tool_order": ["open_case", "run_task"],
+            "experiment_count": 2,
+            "revision_count": 2,
+            "sandbox": {"runs": [{"run_id_hash": "abc123"}]},
+        }
     )
 
-    assert blocker["details"] == {
-        "error_type": "_EvidenceGateFailure",
-        "failed_gates": ["turn_done", "event_contract"],
-        "turn_status": "error",
-        "terminal_category": "provider_rate_limit",
+    assert "tool_order" not in summary
+    assert summary["experiment_count"] == 2
+    assert summary["revision_count"] == 2
+    assert summary["sandbox"] == {"runs": [{"run_id_hash": "abc123"}]}
+
+
+def test_run_writes_evidence_only_after_two_successful_attempts(
+    monkeypatch, tmp_path
+) -> None:
+    evidence_path = tmp_path / "autonomy-eval.json"
+    blocker_path = tmp_path / "autonomy-blocker.json"
+    outcomes = iter(("passed", "failed", "passed"))
+    monkeypatch.setattr(e2e_runner, "EVIDENCE_PATH", evidence_path)
+    monkeypatch.setattr(e2e_runner, "BLOCKER_PATH", blocker_path)
+    monkeypatch.setattr(e2e_runner, "_commit_sha", lambda: "a" * 40)
+    monkeypatch.setattr(
+        e2e_runner,
+        "_run_attempt",
+        lambda index, commit_sha: {
+            "attempt_index": index,
+            "status": next(outcomes),
+            "commit_sha": commit_sha,
+        },
+    )
+
+    result = e2e_runner.run()
+
+    assert result["summary"] == {
+        "status": "passed",
+        "attempts_total": 3,
+        "attempts_succeeded": 2,
+        "success_threshold": 2,
     }
-    assert "/private/tmp/private.xml" not in json.dumps(blocker, sort_keys=True)
+    assert json.loads(evidence_path.read_text())["status"] == "passed"
+    assert not blocker_path.exists()
+
+
+def test_run_invalidates_stale_pass_when_only_one_attempt_succeeds(
+    monkeypatch, tmp_path
+) -> None:
+    evidence_path = tmp_path / "autonomy-eval.json"
+    blocker_path = tmp_path / "autonomy-blocker.json"
+    evidence_path.write_text('{"status":"passed"}\n', encoding="utf-8")
+    outcomes = iter(("failed", "passed", "failed"))
+    monkeypatch.setattr(e2e_runner, "EVIDENCE_PATH", evidence_path)
+    monkeypatch.setattr(e2e_runner, "BLOCKER_PATH", blocker_path)
+    monkeypatch.setattr(e2e_runner, "_commit_sha", lambda: "a" * 40)
+    monkeypatch.setattr(
+        e2e_runner,
+        "_run_attempt",
+        lambda index, commit_sha: {
+            "attempt_index": index,
+            "status": next(outcomes),
+            "commit_sha": commit_sha,
+        },
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="did not reach two successful attempts",
+    ):
+        e2e_runner.run()
+
+    assert not evidence_path.exists()
+    blocker = json.loads(blocker_path.read_text())
+    assert blocker["summary"]["attempts_succeeded"] == 1
+    assert blocker["status"] == "blocked"

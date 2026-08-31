@@ -1359,7 +1359,7 @@ def test_publish_input_requires_a_successful_same_case_ticket() -> None:
         )
 
 
-@pytest.mark.parametrize("diff_count", [1, 2])
+@pytest.mark.parametrize("diff_count", [1, 2, 3, 4])
 def test_promotion_ticket_accepts_each_qualifiable_diff_count(diff_count: int) -> None:
     ticket = _promotion_ticket_payload()
     ticket["canonical_diff"] = [
@@ -1376,7 +1376,7 @@ def test_promotion_ticket_accepts_each_qualifiable_diff_count(diff_count: int) -
     )
 
 
-@pytest.mark.parametrize("diff_count", [0, 3])
+@pytest.mark.parametrize("diff_count", [0, 5])
 def test_promotion_ticket_rejects_diff_counts_outside_revision_budget(
     diff_count: int,
 ) -> None:
@@ -1578,7 +1578,7 @@ def _open_case_payload() -> dict[str, object]:
         "remaining_budgets": {
             "runs_remaining": 10,
             "experiments_remaining": 5,
-            "revisions_remaining": 2,
+            "revisions_remaining": 4,
             "qualification_remaining": 1,
         },
         "revision_history": [{"revision_id": "r000", "asset_sha256": "1" * 64}],
