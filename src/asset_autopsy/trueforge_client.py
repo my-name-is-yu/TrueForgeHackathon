@@ -634,21 +634,6 @@ def _large_tool_response_path(record: Mapping[str, Any]) -> str | None:
     return match.group(1).rstrip(".\"')") if match is not None else None
 
 
-def _exec_arguments_read_path(arguments: Mapping[str, Any], path: str) -> bool:
-    quoted_path = (
-        "(?:" + "|".join((re.escape(repr(path)), re.escape(json.dumps(path)))) + ")"
-    )
-    readers = (
-        rf"\bopen\(\s*{quoted_path}(?:\s*,\s*['\"]r[b+t]*['\"])?\s*\)",
-        rf"\bPath\(\s*{quoted_path}\s*\)\.(?:read_text|read_bytes)\(\s*\)",
-    )
-    return any(
-        isinstance(program, str)
-        and any(re.search(pattern, program) is not None for pattern in readers)
-        for program in (arguments.get("code"), arguments.get("command"))
-    )
-
-
 def _sandbox_response_succeeded(record: Mapping[str, Any]) -> bool:
     event = record.get("event")
     if not isinstance(event, Mapping) or event.get("is_error") is True:
@@ -730,9 +715,6 @@ def evaluate_autonomy_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         if response is None or response["event_index"] <= record["event_index"]:
             failures.append(f"{record['name']} lacks an ordered tool response")
 
-    experiment_indexes = {
-        record["id"]: index for index, record in enumerate(experiments)
-    }
     offloaded_experiments = sum(
         1
         for experiment in experiments
@@ -740,71 +722,89 @@ def evaluate_autonomy_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         and _large_tool_response_path(response) is not None
     )
     sandbox_evidence: list[dict[str, Any]] = []
-    selected_experiments: set[str] = set()
     revision_attributes: list[str] = []
     for revision_index, revision in enumerate(revisions):
         arguments = _call_arguments(revision["call"])
         base_revision_id = arguments.get("base_revision_id")
         basis_hypothesis_id = arguments.get("basis_hypothesis_id")
         basis_run_id = arguments.get("basis_experiment_run_id")
-        matching_evidence: (
-            tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None
-        ) = None
-        for experiment in reversed(experiments):
-            if experiment["id"] in selected_experiments:
-                continue
+        eligible_experiments: list[tuple[int, dict[str, Any]]] = []
+        for experiment_index, experiment in enumerate(experiments):
             experiment_arguments = _call_arguments(experiment["call"])
             experiment_response = responses.get(experiment["id"])
-            offloaded_path = (
-                _large_tool_response_path(experiment_response)
-                if experiment_response is not None
-                else None
-            )
             if (
-                experiment_arguments.get("revision_id") != base_revision_id
-                or experiment_response is None
-                or experiment_response["event_index"] <= experiment["event_index"]
-                or experiment_response["event_index"] >= revision["event_index"]
-                or offloaded_path is None
+                experiment_arguments.get("revision_id") == base_revision_id
+                and experiment_response is not None
+                and experiment_response["event_index"] > experiment["event_index"]
+                and experiment_response["event_index"] < revision["event_index"]
+                and _large_tool_response_path(experiment_response) is not None
             ):
-                continue
-            successful_execs = []
-            for exec_record in exec_calls:
-                exec_response = responses.get(exec_record["id"])
-                if (
-                    exec_record["event_index"] > experiment_response["event_index"]
-                    and exec_record["event_index"] < revision["event_index"]
-                    and exec_response is not None
-                    and exec_response["event_index"] > exec_record["event_index"]
-                    and exec_response["event_index"] < revision["event_index"]
-                    and _exec_arguments_read_path(
-                        _call_arguments(exec_record["call"]), offloaded_path
-                    )
-                    and _sandbox_response_succeeded(exec_response)
-                ):
-                    successful_execs.append((exec_record, exec_response))
-            if successful_execs:
-                exec_record, exec_response = successful_execs[-1]
-                matching_evidence = (experiment, exec_record, exec_response)
-                break
-        if matching_evidence is None:
-            failures.append(
-                "a revision lacks successful Sandbox analysis of a preceding offloaded current-base experiment"
-            )
-        elif not isinstance(basis_run_id, str) or not isinstance(
+                eligible_experiments.append((experiment_index, experiment_response))
+        matching_evidence: tuple[dict[str, Any], str, list[int]] | None = None
+        if not isinstance(basis_run_id, str) or not isinstance(
             basis_hypothesis_id, str
         ):
             failures.append("a revision lacks cited experiment provenance")
         else:
-            experiment, _, exec_response = matching_evidence
-            selected_experiments.add(experiment["id"])
+            successful_execs = []
+            for exec_record in exec_calls:
+                exec_response = responses.get(exec_record["id"])
+                attestations = (
+                    [
+                        candidate
+                        for candidate in _json_objects(
+                            unwrap_event(exec_response).get("content")
+                        )
+                        if candidate.get("run_id") == basis_run_id
+                        and candidate.get("hypothesis_id") == basis_hypothesis_id
+                        and isinstance(candidate.get("trace_sha256"), str)
+                        and re.fullmatch(r"[0-9a-f]{64}", candidate["trace_sha256"])
+                        is not None
+                    ]
+                    if exec_response is not None
+                    else []
+                )
+                eligible_indexes = [
+                    experiment_index
+                    for experiment_index, experiment_response in eligible_experiments
+                    if experiment_response["event_index"] < exec_record["event_index"]
+                ]
+                if (
+                    eligible_indexes
+                    and exec_record["event_index"] < revision["event_index"]
+                    and exec_response is not None
+                    and exec_response["event_index"] > exec_record["event_index"]
+                    and exec_response["event_index"] < revision["event_index"]
+                    and attestations
+                    and _sandbox_response_succeeded(exec_response)
+                ):
+                    successful_execs.append(
+                        (
+                            exec_response,
+                            attestations[-1]["trace_sha256"],
+                            eligible_indexes,
+                        )
+                    )
+            if successful_execs:
+                matching_evidence = successful_execs[-1]
+        if (
+            matching_evidence is None
+            and isinstance(basis_run_id, str)
+            and isinstance(basis_hypothesis_id, str)
+        ):
+            failures.append(
+                "a revision lacks successful Sandbox analysis of a preceding offloaded current-base experiment"
+            )
+        elif matching_evidence is not None:
+            exec_response, trace_sha256, eligible_indexes = matching_evidence
             sandbox_evidence.append(
                 {
                     "revision_index": revision_index,
-                    "experiment_index": experiment_indexes[experiment["id"]],
+                    "eligible_experiment_indexes": eligible_indexes,
                     "event_index": exec_response["event_index"],
                     "run_id_hash": _short_hash(basis_run_id),
                     "hypothesis_id_hash": _short_hash(basis_hypothesis_id),
+                    "trace_sha256": trace_sha256,
                 }
             )
 
@@ -969,9 +969,12 @@ def evaluate_autonomy_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             "runs": [
                 {
                     "revision_index": evidence["revision_index"],
-                    "experiment_index": evidence["experiment_index"],
+                    "eligible_experiment_indexes": evidence[
+                        "eligible_experiment_indexes"
+                    ],
                     "run_id_hash": evidence["run_id_hash"],
                     "hypothesis_id_hash": evidence["hypothesis_id_hash"],
+                    "trace_sha256": evidence["trace_sha256"],
                 }
                 for evidence in sandbox_evidence
             ],

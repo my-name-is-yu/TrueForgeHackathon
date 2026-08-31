@@ -13,6 +13,8 @@ CASE_ID = "case_compound-arm-01"
 ASSET_R000 = "a" * 64
 ASSET_R001 = "b" * 64
 ASSET_R002 = "c" * 64
+TRACE_AXIS_SHA256 = "1" * 64
+TRACE_DAMPING_SHA256 = "2" * 64
 
 
 def _run_task_arguments(revision_id: str) -> dict[str, Any]:
@@ -182,7 +184,12 @@ def _analysis_arguments(style: str, path: str, signal: str) -> dict[str, Any]:
                 "from pathlib import Path\n"
                 f"data = json.loads(Path({path!r}).read_text())\n"
                 f"values = [row['values'][{signal!r}] for row in data['trace']['rows']]\n"
-                "print(max(values) - min(values))\n"
+                "print(json.dumps({\n"
+                "    'run_id': data['run_id'],\n"
+                "    'hypothesis_id': data['hypothesis_id'],\n"
+                "    'trace_sha256': data['trace_sha256'],\n"
+                "    'analysis': max(values) - min(values),\n"
+                "}, sort_keys=True))\n"
             ),
         }
     return {
@@ -191,23 +198,36 @@ def _analysis_arguments(style: str, path: str, signal: str) -> dict[str, Any]:
             'python -c "import json,statistics; '
             f"p=json.load(open('{path}')); "
             f"v=[r['values']['{signal}'] for r in p['trace']['rows']]; "
-            'print(statistics.fmean(v))"'
+            "print(json.dumps({'run_id':p['run_id'],'hypothesis_id':p['hypothesis_id'],"
+            "'trace_sha256':p['trace_sha256'],'analysis':statistics.fmean(v)},"
+            'sort_keys=True))"'
         ),
     }
 
 
-def _analysis_response(style: str, run_id: str) -> Any:
+def _analysis_response(
+    style: str, run_id: str, hypothesis_id: str, trace_sha256: str
+) -> Any:
+    attestation = json.dumps(
+        {
+            "run_id": run_id,
+            "hypothesis_id": hypothesis_id,
+            "trace_sha256": trace_sha256,
+            "analysis": 0.125,
+        },
+        sort_keys=True,
+    )
     if style == "python_code":
         return {
             "status": "success",
             "exit_code": 0,
-            "stdout": f"analyzed public trace for {run_id}",
+            "stdout": attestation,
         }
     return {
         "success": True,
         "response": {
             "exitCode": 0,
-            "result": f"analysis completed for public experiment {run_id}",
+            "result": attestation,
         },
     }
 
@@ -255,7 +275,15 @@ def _successful_events(style: str = "python_code") -> list[dict[str, Any]]:
             "exec",
             _analysis_arguments(style, trace_one, "body_position:end_effector:z"),
         ),
-        _tool_response("sandbox-1", _analysis_response(style, "run_axis_evidence")),
+        _tool_response(
+            "sandbox-1",
+            _analysis_response(
+                style,
+                "run_axis_evidence",
+                "hyp_axis_evidence",
+                TRACE_AXIS_SHA256,
+            ),
+        ),
         _model_call(
             "revision-1",
             "create_revision",
@@ -316,7 +344,15 @@ def _successful_events(style: str = "python_code") -> list[dict[str, Any]]:
             "exec",
             _analysis_arguments(style, trace_two, "qvel:joint_c"),
         ),
-        _tool_response("sandbox-2", _analysis_response(style, "run_damping_evidence")),
+        _tool_response(
+            "sandbox-2",
+            _analysis_response(
+                style,
+                "run_damping_evidence",
+                "hyp_damping_evidence",
+                TRACE_DAMPING_SHA256,
+            ),
+        ),
         _model_call(
             "revision-2",
             "create_revision",
@@ -414,7 +450,7 @@ def _set_arguments(
 
 
 @pytest.mark.parametrize("style", ["python_code", "shell_command"])
-def test_accepts_semantically_valid_sandbox_programs_without_source_or_stdout_shape(
+def test_accepts_semantically_valid_sandbox_programs_with_trace_attestation(
     style: str,
 ) -> None:
     evidence = evaluate_autonomy_events(_successful_events(style))
@@ -547,6 +583,9 @@ def test_rejects_unrelated_successful_exec_as_revision_evidence() -> None:
         "sandbox-1",
         {"intent": "Inspect the sandbox environment.", "command": "pwd"},
     )
+    _response_event(events, "sandbox-1")["content"] = json.dumps(
+        {"status": "success", "exit_code": 0, "stdout": "/sandbox"}
+    )
 
     evidence = evaluate_autonomy_events(events)
 
@@ -557,22 +596,20 @@ def test_rejects_unrelated_successful_exec_as_revision_evidence() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        {
-            "intent": "Analyze /sandbox/large_tool_responses/experiment-axis.json.",
-            "command": "true",
-        },
+def test_rejects_open_without_consumed_trace_provenance() -> None:
+    events = _successful_events()
+    _set_arguments(
+        events,
+        "sandbox-1",
         {
             "intent": "Analyze the offloaded experiment.",
-            "command": "echo /sandbox/large_tool_responses/experiment-axis.json",
+            "language": "python",
+            "code": "open('/sandbox/large_tool_responses/experiment-axis.json')",
         },
-    ],
-)
-def test_rejects_exec_that_does_not_read_trace(arguments: dict[str, Any]) -> None:
-    events = _successful_events()
-    _set_arguments(events, "sandbox-1", arguments)
+    )
+    _response_event(events, "sandbox-1")["content"] = json.dumps(
+        {"status": "success", "exit_code": 0, "stdout": "analysis complete"}
+    )
 
     evidence = evaluate_autonomy_events(events)
 
@@ -583,7 +620,28 @@ def test_rejects_exec_that_does_not_read_trace(arguments: dict[str, Any]) -> Non
     )
 
 
-def test_rejects_exec_that_references_a_different_experiment_path() -> None:
+def test_accepts_valid_reader_without_literal_path() -> None:
+    events = _successful_events()
+    _set_arguments(
+        events,
+        "sandbox-1",
+        {
+            "intent": "Analyze the offloaded experiment.",
+            "language": "python",
+            "code": (
+                "import json\n"
+                "from trace_reader import analyze\n"
+                "print(json.dumps(analyze()))"
+            ),
+        },
+    )
+
+    evidence = evaluate_autonomy_events(events)
+
+    assert evidence["passed"] is True
+
+
+def test_rejects_sandbox_output_from_a_different_experiment() -> None:
     events = _successful_events()
     _set_arguments(
         events,
@@ -593,6 +651,14 @@ def test_rejects_exec_that_references_a_different_experiment_path() -> None:
             "/sandbox/large_tool_responses/experiment-damping.json",
             "qvel:joint_c",
         ),
+    )
+    _response_event(events, "sandbox-1")["content"] = json.dumps(
+        _analysis_response(
+            "python_code",
+            "run_damping_evidence",
+            "hyp_damping_evidence",
+            TRACE_DAMPING_SHA256,
+        )
     )
 
     evidence = evaluate_autonomy_events(events)
@@ -631,6 +697,10 @@ def test_rejects_exec_that_references_a_different_experiment_path() -> None:
             {"success": True, "response": {"result": "analysis complete"}},
         ),
         (
+            "missing_provenance",
+            {"status": "success", "exit_code": 0, "stdout": "analysis complete"},
+        ),
+        (
             "conflicting_exit_codes",
             {"success": True, "response": {"exit_code": None, "exitCode": 1}},
         ),
@@ -662,10 +732,12 @@ def test_rejects_revision_without_successful_sandbox_outcome(
 def test_accepts_trueforge_local_sandbox_zero_exit_code() -> None:
     events = _successful_events()
     _response_event(events, "sandbox-1")["content"] = json.dumps(
-        {
-            "success": True,
-            "response": {"exitCode": 0, "result": "analysis complete"},
-        }
+        _analysis_response(
+            "shell_command",
+            "run_axis_evidence",
+            "hyp_axis_evidence",
+            TRACE_AXIS_SHA256,
+        )
     )
 
     evidence = evaluate_autonomy_events(events)

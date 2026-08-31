@@ -318,11 +318,12 @@ def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -
             "runs": [
                 {
                     "revision_index": index,
-                    "experiment_index": index,
+                    "eligible_experiment_indexes": [index],
                     "run_id_hash": e2e_runner._sha256_text(run_id)[:12],
                     "hypothesis_id_hash": e2e_runner._sha256_text(
                         hypothesis_ids[index]
                     )[:12],
+                    "trace_sha256": trace_hashes[run_id],
                 }
                 for index, run_id in enumerate(run_ids)
             ]
@@ -348,6 +349,11 @@ def test_runtime_state_gates_reconcile_events_with_facade_service_and_ledger() -
     evidence["sandbox"]["runs"][1]["run_id_hash"] = e2e_runner._sha256_text(run_ids[1])[
         :12
     ]
+    evidence["sandbox"]["runs"][1]["trace_sha256"] = "c" * 64
+    assert not _runtime_state_gates(evidence, facade=facade, service=service)[
+        "ledger_experiment_evidence_matches"
+    ]
+    evidence["sandbox"]["runs"][1]["trace_sha256"] = trace_hashes[run_ids[1]]
     trace_hashes[run_ids[1]] = None
     assert not _runtime_state_gates(evidence, facade=facade, service=service)[
         "ledger_experiment_evidence_matches"

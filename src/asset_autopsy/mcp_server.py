@@ -651,7 +651,8 @@ async def create_mcp_facade(
         description=(
             "Test a preregistered causal hypothesis on one exact revision with "
             "agent-selected controls and observables. A completed trace returns the "
-            "hypothesis and run IDs that can support a revision."
+            "hypothesis and run IDs plus its trace hash; successful Sandbox analysis "
+            "reports all three to establish evidence for a revision."
         ),
         annotations=_annotations(read_only=False, destructive=False, idempotent=False),
         structured_output=True,

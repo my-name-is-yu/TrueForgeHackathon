@@ -346,42 +346,62 @@ def _runtime_state_gates(
         if event.event_type in {"EXPERIMENT_COMPLETED", "EXPERIMENT_FAILED"}
     ]
 
-    def evidence_matches_ledger(item: Mapping[str, Any]) -> bool:
-        experiment_index = item.get("experiment_index")
+    def evidence_ledger_pair(item: Mapping[str, Any]) -> tuple[int, int] | None:
+        eligible_indexes = item.get("eligible_experiment_indexes")
         revision_index = item.get("revision_index")
         if (
-            not isinstance(experiment_index, int)
-            or isinstance(experiment_index, bool)
+            not isinstance(eligible_indexes, list)
+            or not eligible_indexes
             or not isinstance(revision_index, int)
             or isinstance(revision_index, bool)
-            or not 0 <= experiment_index < len(experiment_events)
             or not 0 <= revision_index < len(child_revisions)
+            or any(
+                not isinstance(index, int)
+                or isinstance(index, bool)
+                or not 0 <= index < len(experiment_events)
+                for index in eligible_indexes
+            )
+            or len(set(eligible_indexes)) != len(eligible_indexes)
         ):
-            return False
-        event = experiment_events[experiment_index]
+            return None
+        matches = []
+        for experiment_index in eligible_indexes:
+            event = experiment_events[experiment_index]
+            run_id = event.payload.get("run_id")
+            hypothesis_id = event.payload.get("hypothesis_id")
+            if (
+                event.event_type == "EXPERIMENT_COMPLETED"
+                and isinstance(run_id, str)
+                and isinstance(hypothesis_id, str)
+                and item.get("run_id_hash") == _sha256_text(run_id)[:12]
+                and item.get("hypothesis_id_hash") == _sha256_text(hypothesis_id)[:12]
+            ):
+                matches.append((experiment_index, event, run_id))
+        if len(matches) != 1:
+            return None
+        experiment_index, event, run_id = matches[0]
         revision = child_revisions[revision_index]
-        run_id = event.payload.get("run_id")
-        hypothesis_id = event.payload.get("hypothesis_id")
         if (
-            event.event_type != "EXPERIMENT_COMPLETED"
-            or not isinstance(run_id, str)
-            or not isinstance(hypothesis_id, str)
-            or item.get("run_id_hash") != _sha256_text(run_id)[:12]
-            or item.get("hypothesis_id_hash") != _sha256_text(hypothesis_id)[:12]
-            or revision.probe_run_id != run_id
+            revision.probe_run_id != run_id
             or revision.hypothesis_event_id != event.payload.get("hypothesis_event_id")
         ):
-            return False
+            return None
         try:
             run = service.store.get_run(run_id)
         except StorageError:
-            return False
-        return (
+            return None
+        if not (
             run.passed
             and isinstance(run.trace_sha256, str)
             and len(run.trace_sha256) == 64
+            and item.get("trace_sha256") == run.trace_sha256
             and run.revision_id == revision.parent_revision_id
-        )
+        ):
+            return None
+        return experiment_index, revision_index
+
+    evidence_pairs = [evidence_ledger_pair(item) for item in sandbox_evidence]
+    resolved_pairs = [pair for pair in evidence_pairs if pair is not None]
 
     return {
         "facade_sequence_matches_events": facade.recorder.sequence == invoked_sequence,
@@ -391,14 +411,9 @@ def _runtime_state_gates(
         "ledger_experiment_evidence_matches": (
             len(experiment_events) == event_counts["run_experiment"]
             and len(sandbox_evidence) == event_counts["create_revision"]
-            and len(
-                {
-                    (item.get("experiment_index"), item.get("revision_index"))
-                    for item in sandbox_evidence
-                }
-            )
-            == len(sandbox_evidence)
-            and all(evidence_matches_ledger(item) for item in sandbox_evidence)
+            and len(resolved_pairs) == len(sandbox_evidence)
+            and len({pair[0] for pair in resolved_pairs}) == len(resolved_pairs)
+            and len({pair[1] for pair in resolved_pairs}) == len(resolved_pairs)
         ),
         "ledger_revision_count_matches": (
             len(child_revisions) == event_types["REVISION_CREATED"]
