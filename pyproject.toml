@@ -1,7 +1,7 @@
 [project]
 name = "asset-autopsy"
 version = "0.0.0"
-description = "Phase 0 integration probes for Asset Autopsy"
+description = "Tools-first 3D asset repair harness"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "mcp==1.26.0",
@@ -34,6 +34,5 @@ allow-direct-references = true
 testpaths = ["tests"]
 markers = [
     "cgl: requires a CGL-capable real Mac with a working MuJoCo renderer",
-    "phase0_upstream: requires the pinned local MuJoCo MCP stdio server",
-    "phase0_trueforge: requires the pinned local TrueForge 0.1.4 runtime",
+    "upstream_live: requires the pinned local MuJoCo MCP stdio server",
 ]

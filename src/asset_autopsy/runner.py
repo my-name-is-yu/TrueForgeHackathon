@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -94,9 +93,6 @@ class ConstantSegment:
             raise ValueError(f"n_steps must be between 1 and {MAX_STEPS}")
         if not all(_number(value) for value in self.ctrl):
             raise ValueError("ctrl must contain finite numbers")
-
-
-ControllerSegment = ConstantSegment
 
 
 @dataclass(frozen=True)
@@ -390,25 +386,8 @@ class DeterministicRunner:
         )
 
 
-async def run_deterministic(
-    configuration: RunConfiguration,
-    *,
-    client: PinnedMujocoClient | None = None,
-) -> RunRecord:
-    return await DeterministicRunner(client).run(configuration)
-
-
-def run_deterministic_sync(
-    configuration: RunConfiguration,
-    *,
-    client: PinnedMujocoClient | None = None,
-) -> RunRecord:
-    return asyncio.run(run_deterministic(configuration, client=client))
-
-
 __all__ = [
     "ConstantSegment",
-    "ControllerSegment",
     "DeterministicRunner",
     "MAX_SEGMENTS",
     "MAX_TOTAL_STEPS",
@@ -416,6 +395,4 @@ __all__ = [
     "RunConfiguration",
     "RunRecord",
     "SegmentRecord",
-    "run_deterministic",
-    "run_deterministic_sync",
 ]

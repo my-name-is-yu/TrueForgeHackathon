@@ -493,19 +493,6 @@ def unwrap_event(item: Mapping[str, Any]) -> Mapping[str, Any]:
     return event if isinstance(event, Mapping) else item
 
 
-def model_tool_calls(events: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    calls: list[Mapping[str, Any]] = []
-    for item in events:
-        event = unwrap_event(item)
-        if event.get("type") != "model.message":
-            continue
-        tool_calls = event.get("tool_calls")
-        if not isinstance(tool_calls, list):
-            continue
-        calls.extend(call for call in tool_calls if isinstance(call, Mapping))
-    return calls
-
-
 def tool_call_name(call: Mapping[str, Any]) -> str:
     function = call.get("function")
     return str(function.get("name", "")) if isinstance(function, Mapping) else ""
@@ -526,18 +513,6 @@ def approval_call_ids(events: Iterable[Mapping[str, Any]]) -> list[str]:
             if isinstance(call, Mapping) and isinstance(call.get("id"), str)
         )
     return ids
-
-
-def tool_responses(events: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
-    responses: dict[str, Mapping[str, Any]] = {}
-    for item in events:
-        event = unwrap_event(item)
-        if event.get("type") != "tool.response":
-            continue
-        call_id = event.get("tool_call_id")
-        if isinstance(call_id, str):
-            responses[call_id] = event
-    return responses
 
 
 def _call_records(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1033,8 +1008,6 @@ __all__ = [
     "build_agent_spec",
     "canonical_sha256",
     "evaluate_sc1_events",
-    "model_tool_calls",
     "tool_call_name",
-    "tool_responses",
     "unwrap_event",
 ]

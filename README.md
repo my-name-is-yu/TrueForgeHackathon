@@ -144,10 +144,9 @@ to `main`. It does not load provider secrets or run the real-model evidence driv
 therefore does not establish the CGL render gate; both real-Mac commands above remain required
 before the post-merge exact-`main` evidence run.
 
-The Phase 0 TrueForge test exercises its original transport placeholder and historical measured
-boundary. The SC1 contract is the generic `run_experiment` flow implemented by the current
-domain, MCP, integration, and E2E event-evaluator tests. Neither Phase 0 nor a fully green local
-suite is a claim that the saved real model completed SC1.
+The SC1 contract is the generic `run_experiment` flow implemented by the current domain, MCP,
+integration, and E2E event-evaluator tests. A fully green local suite is not a claim that the
+saved real model completed SC1.
 
 ## Run the real one-prompt gate
 

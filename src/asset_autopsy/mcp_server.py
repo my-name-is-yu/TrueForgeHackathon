@@ -546,9 +546,6 @@ async def create_mcp_facade(
     recorder: InvocationRecorder | None = None,
 ) -> MCPFacade:
     await preflight_mcp_startup(service)
-    provision = getattr(service, "provision_demo_case", None)
-    if callable(provision):
-        provision()
     calls = recorder or InvocationRecorder()
     transport_security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
