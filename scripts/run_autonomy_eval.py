@@ -20,7 +20,7 @@ import uvicorn
 from asset_autopsy.fixture import CASE_ID
 from asset_autopsy.mcp_server import MCPRuntimeConfig, create_mcp_facade
 from asset_autopsy.service import AssetAutopsyService
-from asset_autopsy.storage import CaseRecord, StorageError
+from asset_autopsy.storage import StorageError
 from asset_autopsy.trueforge_client import (
     DEFAULT_MODEL,
     EXACT_PROMPT,
@@ -280,10 +280,6 @@ def _raw_events_are_clear(
     )
 
 
-def _case_is_qualified(case: CaseRecord) -> bool:
-    return case.qualification_state == "passed"
-
-
 def _terminal_failure_category(turn: Mapping[str, Any]) -> str:
     status = TrueForgeClient.turn_status(turn)
     state = turn.get("state")
@@ -530,7 +526,7 @@ def _run_attempt(attempt_index: int, commit_sha: str) -> dict[str, Any]:
                 ),
                 "facade_publish_calls": facade.recorder.counts["publish_revision"] == 0,
                 "service_publish_calls": service.publish_invocation_count == 0,
-                "qualification_passed": _case_is_qualified(case),
+                "qualification_passed": case.qualification_state == "passed",
                 "ledger_verified": True,
                 **_runtime_state_gates(evidence, facade=facade, service=service),
             }

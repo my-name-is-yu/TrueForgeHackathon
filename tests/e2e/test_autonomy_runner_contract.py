@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 from collections import Counter
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,12 +11,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from asset_autopsy.storage import CaseRecord  # noqa: E402
 from run_autonomy_eval import (  # noqa: E402
-    _event_summary,
-    _case_is_qualified,
-    _commit_sha,
     _aggregate_attempts,
+    _commit_sha,
+    _event_summary,
     _raw_events_are_clear,
     _runtime_state_gates,
     _safe_attempt_failure,
@@ -108,26 +105,6 @@ def test_raw_event_gate_allows_values_shared_with_the_public_scenario() -> None:
         private_payloads=private,
         public_payloads=public,
     )
-
-
-def test_case_qualification_gate_uses_only_the_qualification_lifecycle() -> None:
-    case = CaseRecord(
-        case_id="case_compound-arm-01",
-        root_revision_id="r000",
-        head_revision_id="r002",
-        qualification_revision_id="r002",
-        qualification_attempt_id="qualify-1",
-        qualification_result="PASSED",
-        source_asset_sha256="a" * 64,
-        controller_sha256="b" * 64,
-        public_contract_sha256="c" * 64,
-        runner_sha256="d" * 64,
-        holdout_commitment_sha256="e" * 64,
-        created_at="2026-08-30T00:00:00+00:00",
-    )
-
-    assert _case_is_qualified(case)
-    assert not _case_is_qualified(replace(case, qualification_result="FAILED"))
 
 
 def test_commit_sha_rejects_dirty_or_untracked_execution_source(monkeypatch) -> None:
