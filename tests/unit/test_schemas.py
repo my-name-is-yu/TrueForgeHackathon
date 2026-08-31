@@ -652,14 +652,6 @@ def test_run_experiment_output_exposes_identity_and_typed_selected_signals() -> 
     )
 
 
-def test_named_experiment_trace_crosses_trueforge_ltr_threshold() -> None:
-    result = RunExperimentOutput.model_validate(_run_experiment_output_payload())
-
-    # TrueForge 0.1.4 estimates one token per four characters and offloads an
-    # individual tool response at 6,000 tokens. The MCP envelope only adds size.
-    assert len(result.model_dump_json()) >= 24_000
-
-
 def test_run_experiment_output_rejects_old_run_identifier() -> None:
     payload = _run_experiment_output_payload()
     payload["experiment_run_id"] = payload.pop("run_id")

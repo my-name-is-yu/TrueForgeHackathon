@@ -14,8 +14,8 @@ from asset_autopsy.mcp_server import (
     MCPStartupError,
     TOOL_NAMES,
     create_mcp_facade,
+    public_tool_input_schema,
     serve,
-    trueforge_tool_input_schema,
 )
 from asset_autopsy.mujoco_client import UpstreamToolError
 from asset_autopsy.schemas import (
@@ -418,7 +418,7 @@ def test_validation_feedback_names_only_public_paths_and_safe_error_types() -> N
         {"$ref": "https://example.invalid/schema"},
     ],
 )
-def test_trueforge_tool_schema_rejects_unresolvable_references(
+def test_public_tool_schema_rejects_unresolvable_references(
     schema: dict[str, Any],
 ) -> None:
     class InvalidModel:
@@ -428,7 +428,7 @@ def test_trueforge_tool_schema_rejects_unresolvable_references(
             return schema
 
     with pytest.raises(RuntimeError):
-        trueforge_tool_input_schema(cast(Any, InvalidModel))
+        public_tool_input_schema(cast(Any, InvalidModel))
 
 
 def test_validation_feedback_is_bounded_and_reports_missing_public_fields() -> None:

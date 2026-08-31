@@ -7,6 +7,7 @@ dependencies = [
     "mcp==1.26.0",
     "mujoco==3.5.0",
     "mujoco-mcp-server @ git+https://github.com/Rongxuan-Zhou/mujoco-mcp-server.git@ce9bed80ec3698d7b778230abc21f2228a3ce94b",
+    "openai-agents",
     "starlette==1.6.0",
     "uvicorn==0.52.4",
 ]
@@ -19,6 +20,9 @@ test = [
 
 [tool.uv]
 default-groups = ["test"]
+
+[tool.uv.sources]
+openai-agents = { git = "https://github.com/openai/openai-agents-python.git", rev = "89c02c828ee8510fe9a84ee6675608193aa13b02" }
 
 [build-system]
 requires = ["hatchling==1.27.0"]
