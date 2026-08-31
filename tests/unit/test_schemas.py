@@ -50,6 +50,17 @@ def test_public_surface_has_seven_inputs_and_six_success_outputs() -> None:
     ]
 
 
+def test_public_case_handle_is_normalized_to_the_canonical_case_id() -> None:
+    assert (
+        OpenCaseInput.model_validate({"case_id": "compound-arm-01"}).case_id
+        == "case_compound-arm-01"
+    )
+    assert (
+        OpenCaseInput.model_validate({"case_id": "case_compound-arm-01"}).case_id
+        == "case_compound-arm-01"
+    )
+
+
 def test_unknown_fields_are_rejected_at_the_top_level_and_in_a_patch() -> None:
     with pytest.raises(ValidationError):
         OpenCaseInput.model_validate({"case_id": "case_demo", "private": "value"})

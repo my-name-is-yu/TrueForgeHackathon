@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, Sequence, TypeAlias
 from pydantic import (
     AllowInfNan,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     Strict,
@@ -32,14 +33,22 @@ if TYPE_CHECKING:
 
 SCHEMA_VERSION = "asset-autopsy/v1"
 
+
+def _canonical_case_id(value: object) -> object:
+    if isinstance(value, str) and not value.startswith("case_"):
+        return f"case_{value}"
+    return value
+
+
 CaseId: TypeAlias = Annotated[
     str,
     StringConstraints(
         strict=True,
         min_length=6,
         max_length=96,
-        pattern=r"^case_[A-Za-z0-9][A-Za-z0-9_-]*$",
+        pattern=r"^(?:case_)?[A-Za-z0-9][A-Za-z0-9_-]*$",
     ),
+    BeforeValidator(_canonical_case_id),
 ]
 RevisionId: TypeAlias = Annotated[
     str,

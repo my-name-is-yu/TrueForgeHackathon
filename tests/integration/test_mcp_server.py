@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -231,6 +232,10 @@ def test_exact_strict_tool_schemas_and_annotations() -> None:
     tools = asyncio.run(facade.mcp.list_tools())
     assert [tool.name for tool in tools] == list(TOOL_NAMES)
     assert all(tool.inputSchema.get("additionalProperties") is False for tool in tools)
+    open_case = next(tool for tool in tools if tool.name == "open_case")
+    case_id_pattern = open_case.inputSchema["properties"]["case_id"]["pattern"]
+    assert re.fullmatch(case_id_pattern, "compound-arm-01")
+    assert re.fullmatch(case_id_pattern, "case_compound-arm-01")
     assert {
         tool.name
         for tool in tools
