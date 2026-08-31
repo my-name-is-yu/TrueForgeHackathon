@@ -959,11 +959,11 @@ def test_full_two_revision_service_flow_qualifies_and_publication_is_deferred_wi
         )
     assert deferred.value.code == "PUBLICATION_DEFERRED"
     assert deferred.value.safe_message == (
-        "Post-approval publication materialization is deferred for SC1."
+        "Post-approval publication materialization is deferred for this evaluation."
     )
     assert deferred.value.retryable is False
     assert deferred.value.next_action == (
-        "Do not retry publication; treat the approval request as the SC1 endpoint."
+        "Do not retry publication; treat the approval request as the evaluation endpoint."
     )
     assert service.publish_invocation_count == 1
     assert files(Path(tmp_path)) == before_files

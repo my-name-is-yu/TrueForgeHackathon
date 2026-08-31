@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -231,6 +232,11 @@ def test_exact_strict_tool_schemas_and_annotations() -> None:
     tools = asyncio.run(facade.mcp.list_tools())
     assert [tool.name for tool in tools] == list(TOOL_NAMES)
     assert all(tool.inputSchema.get("additionalProperties") is False for tool in tools)
+    open_case = next(tool for tool in tools if tool.name == "open_case")
+    case_id_pattern = open_case.inputSchema["properties"]["case_id"]["pattern"]
+    assert re.fullmatch(case_id_pattern, "compound-arm-01")
+    assert re.fullmatch(case_id_pattern, "case_compound-arm-01")
+    assert not re.fullmatch(case_id_pattern, "other-public-handle")
     assert {
         tool.name
         for tool in tools
@@ -241,10 +247,21 @@ def test_exact_strict_tool_schemas_and_annotations() -> None:
         for tool in tools
         if tool.annotations is not None and tool.annotations.readOnlyHint is True
     } == {"open_case", "inspect_asset"}
+    descriptions = {tool.name: tool.description or "" for tool in tools}
+    assert "current immutable revision head" in descriptions["open_case"]
+    assert "one exact revision" in descriptions["inspect_asset"]
+    assert "same-condition parent BehaviorDiff" in descriptions["run_task"]
+    assert "hypothesis and run IDs" in descriptions["run_experiment"]
+    assert (
+        "completed current-base hypothesis/run IDs" in descriptions["create_revision"]
+    )
+    assert (
+        "single private three-scenario qualification" in descriptions["verify_revision"]
+    )
     publish = next(tool for tool in tools if tool.name == "publish_revision")
     assert publish.description == (
-        "Request approval for the exact qualified revision; SC1 defers "
-        "post-approval materialization."
+        "Request human approval for the exact revision and asset hash in a successful "
+        "qualification ticket. No materialization occurs before approval."
     )
     assert set(publish.inputSchema["required"]) == {"case_id", "promotion_ticket"}
     assert publish.outputSchema is None

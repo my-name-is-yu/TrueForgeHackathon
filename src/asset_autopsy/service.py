@@ -1045,9 +1045,9 @@ class AssetAutopsyService:
         raise self._error(
             request_id,
             "PUBLICATION_DEFERRED",
-            "Post-approval publication materialization is deferred for SC1.",
+            "Post-approval publication materialization is deferred for this evaluation.",
             False,
-            "Do not retry publication; treat the approval request as the SC1 endpoint.",
+            "Do not retry publication; treat the approval request as the evaluation endpoint.",
         )
 
     def _provision_demo_case(self) -> None:

@@ -219,15 +219,19 @@ class _SanitizedFastMCP(FastMCP):
 
 def _http_header_bytes(value: str, *, name: str) -> bytes:
     if not isinstance(value, str):
-        raise ValueError(f"SC1 MCP {name} must be a safe Latin-1 HTTP header value")
+        raise ValueError(
+            f"Asset Autopsy MCP {name} must be a safe Latin-1 HTTP header value"
+        )
     try:
         encoded = value.encode("latin-1")
     except UnicodeEncodeError:
         raise ValueError(
-            f"SC1 MCP {name} must be a safe Latin-1 HTTP header value"
+            f"Asset Autopsy MCP {name} must be a safe Latin-1 HTTP header value"
         ) from None
     if any(byte < 0x20 or 0x7F <= byte <= 0x9F for byte in encoded):
-        raise ValueError(f"SC1 MCP {name} must be a safe Latin-1 HTTP header value")
+        raise ValueError(
+            f"Asset Autopsy MCP {name} must be a safe Latin-1 HTTP header value"
+        )
     return encoded
 
 
@@ -242,16 +246,16 @@ class MCPRuntimeConfig:
 
     def __post_init__(self) -> None:
         if self.host != "127.0.0.1":
-            raise ValueError("SC1 MCP must bind to 127.0.0.1")
+            raise ValueError("Asset Autopsy MCP must bind to 127.0.0.1")
         if type(self.port) is not int or not 1 <= self.port <= 65535:
-            raise ValueError("SC1 MCP port is invalid")
+            raise ValueError("Asset Autopsy MCP port is invalid")
         if (
             not isinstance(self.bearer_token, str)
             or len(self.bearer_token) < 16
             or any(character.isspace() for character in self.bearer_token)
         ):
             raise ValueError(
-                "SC1 MCP bearer must be a non-whitespace secret of at least 16 characters"
+                "Asset Autopsy MCP bearer must be a non-whitespace secret of at least 16 characters"
             )
         authorization_header = _http_header_bytes(
             f"Bearer {self.bearer_token}", name="bearer"
@@ -260,9 +264,9 @@ class MCPRuntimeConfig:
         if not self.allowed_origin.startswith(
             ("http://localhost:", "http://127.0.0.1:")
         ):
-            raise ValueError("SC1 MCP Origin must be a loopback HTTP origin")
+            raise ValueError("Asset Autopsy MCP Origin must be a loopback HTTP origin")
         if "/" in self.allowed_origin.removeprefix("http://"):
-            raise ValueError("SC1 MCP Origin must not include a path")
+            raise ValueError("Asset Autopsy MCP Origin must not include a path")
         object.__setattr__(self, "_authorization_header", authorization_header)
         object.__setattr__(self, "_origin_header", origin_header)
 
@@ -346,7 +350,9 @@ class MCPStartupError(RuntimeError):
             else "MCP_STARTUP_PREFLIGHT_FAILED"
         )
         self.code = safe_code
-        super().__init__(f"{self.code}: SC1 MCP startup preflight failed safely.")
+        super().__init__(
+            f"{self.code}: Asset Autopsy MCP startup preflight failed safely."
+        )
 
 
 async def preflight_mcp_startup(service: AssetAutopsyServiceProtocol) -> None:
@@ -553,7 +559,7 @@ async def create_mcp_facade(
         allowed_origins=[config.allowed_origin],
     )
     mcp = _SanitizedFastMCP(
-        name="asset-autopsy-sc1",
+        name="asset-autopsy-autonomy",
         instructions="Bounded 3D asset observation, experimentation, revision, and qualification tools.",
         host=config.host,
         port=config.port,
@@ -580,7 +586,10 @@ async def create_mcp_facade(
 
     @mcp.tool(
         name="open_case",
-        description="Read the pre-provisioned case contract, budgets, topology, head, and patch policy.",
+        description=(
+            "Read the declared requirements, observable topology, current immutable "
+            "revision head, remaining budgets, and permitted one-attribute patch policy."
+        ),
         annotations=_annotations(read_only=True, destructive=False, idempotent=True),
         structured_output=True,
     )
@@ -592,7 +601,10 @@ async def create_mcp_facade(
 
     @mcp.tool(
         name="inspect_asset",
-        description="Inspect authored and compiled values without fault labels, hidden values, or repair advice.",
+        description=(
+            "Inspect authored and compiled values for one exact revision without "
+            "fault labels, hidden values, or repair advice."
+        ),
         annotations=_annotations(read_only=True, destructive=False, idempotent=True),
         structured_output=True,
     )
@@ -611,7 +623,10 @@ async def create_mcp_facade(
 
     @mcp.tool(
         name="run_task",
-        description="Run the fixed public scenario; child revisions include same-condition parent BehaviorDiff.",
+        description=(
+            "Measure one exact revision against the declared public scenario. Child "
+            "revisions include a same-condition parent BehaviorDiff for comparison."
+        ),
         annotations=_annotations(read_only=False, destructive=False, idempotent=False),
         structured_output=True,
     )
@@ -633,7 +648,12 @@ async def create_mcp_facade(
 
     @mcp.tool(
         name="run_experiment",
-        description="Preregister a competing causal hypothesis, then run one bounded agent-defined experiment.",
+        description=(
+            "Test a preregistered causal hypothesis on one exact revision with "
+            "agent-selected controls and observables. A completed trace returns the "
+            "hypothesis and run IDs plus its trace hash; successful Sandbox analysis "
+            "reports all three to establish evidence for a revision."
+        ),
         annotations=_annotations(read_only=False, destructive=False, idempotent=False),
         structured_output=True,
     )
@@ -664,7 +684,11 @@ async def create_mcp_facade(
 
     @mcp.tool(
         name="create_revision",
-        description="Create one immutable child revision by changing one allowed MJCF joint attribute.",
+        description=(
+            "Create one immutable child of the current head by changing one permitted "
+            "joint attribute. The base hash and completed current-base hypothesis/run "
+            "IDs bind the change to its evidence."
+        ),
         annotations=_annotations(read_only=False, destructive=False, idempotent=True),
         structured_output=True,
     )
@@ -697,7 +721,11 @@ async def create_mcp_facade(
 
     @mcp.tool(
         name="verify_revision",
-        description="Run the public gate and one private three-scenario qualification; return aggregates only.",
+        description=(
+            "Qualify the current public-passing head. Recheck the public requirement "
+            "and consume the case's single private three-scenario qualification; "
+            "return aggregates without hidden conditions."
+        ),
         annotations=_annotations(read_only=False, destructive=False, idempotent=True),
         structured_output=True,
     )
@@ -720,7 +748,10 @@ async def create_mcp_facade(
 
     @mcp.tool(
         name="publish_revision",
-        description="Request approval for the exact qualified revision; SC1 defers post-approval materialization.",
+        description=(
+            "Request human approval for the exact revision and asset hash in a "
+            "successful qualification ticket. No materialization occurs before approval."
+        ),
         annotations=_annotations(read_only=False, destructive=True, idempotent=True),
         structured_output=False,
     )

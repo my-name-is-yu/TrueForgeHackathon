@@ -14,23 +14,19 @@ from .mcp_server import TOOL_NAMES, trueforge_tool_input_schema
 from .schemas import TOOL_INPUT_MODELS
 
 
-AGENT_NAME = "asset-autopsy-sc1"
-MCP_SERVER_NAME = "asset-autopsy-sc1"
+AGENT_NAME = "asset-autopsy-autonomy"
+MCP_SERVER_NAME = "asset-autopsy-autonomy"
 DEFAULT_MODEL = "openai/gpt-5-6-sol"
 EXACT_PROMPT = (
-    "Autopsy compound-arm-01. Do not change its controller or tests. "
-    "Qualify and publish the repaired asset."
+    "Repair compound-arm-01 so it satisfies its declared requirements, then submit "
+    "the qualified revision for human approval."
 )
 
-AGENT_INSTRUCTIONS = """Repair and qualify the pre-provisioned Asset Autopsy asset compound-arm-01 without changing its controller or tests. Use the public Asset Autopsy tools to establish a failing baseline, investigate competing causal explanations, analyze offloaded experiment evidence in the TrueForge Sandbox, and make evidence-backed revisions.
+AGENT_INSTRUCTIONS = """Act as an autonomous robot-design agent. Use only the public capabilities and public evidence available in this session.
 
-Use only public tool responses and public offloaded artifacts. For Asset Autopsy, direct tools—not Sandbox Code Mode—are the authoritative interface. Before a direct run_experiment response literally contains "Result saved to:", do not call Sandbox exec, mcp-client, schema-inference commands, or filesystem searches for any reason. run_task and inspect_asset artifact URIs are audit metadata, not Sandbox files, and never permit Sandbox use. If run_experiment is rejected or returns no saved path, correct and retry that direct tool call without Sandbox. After "Result saved to:" appears, use Sandbox only to analyze that exact path. Do not use Sandbox to rediscover tool schemas or invoke Asset Autopsy tools. Do not use or request fixture XML, host paths, URLs, seeds, timesteps, hidden targets, hidden traces, credentials, or private runtime data. Treat authored patterns and element names as hypotheses rather than diagnoses.
+Preserve the controller, tests, declared contract, pinned runner, and private qualification data. Do not request or expose credentials, host-private data, or hidden qualification conditions. Do not fabricate evidence, weaken a requirement, or bypass human approval.
 
-open_case is authoritative for the public scenario, remaining budgets, topology, head, allowed patch attributes, and policy. Choose the investigation and repair strategy. Before revising, read exact provenance IDs from an exit-0 Sandbox analysis of the completed current-base experiment; never infer them or proceed after failed analysis. Evidence must distinguish the patch target from another element and its attribute from an alternative; repeated values are not a template. Preserve one-attribute lineage.
-
-Success is observable: the public baseline fails; each revision follows successful Sandbox analysis of its offloaded completed experiment; the final public task passes with a changed public_pass BehaviorDiff; qualification reports public 1/1 and hidden 3/3; and the publication request uses that qualification ticket. Stop at the publication approval request without approving it or continuing past it.
-
-Do not ask the user questions or offer to continue later. If the goal cannot be completed within the public boundary, remaining budgets, or tool contract, give a concise evidence-based blocker instead of fabricating evidence, weakening a constraint, or invoking Asset Autopsy tools through Sandbox."""
+Choose how to investigate, change, and verify the asset. If the goal cannot be completed within the public contract and available budgets, report the evidence-based blocker."""
 
 
 class TrueForgeError(RuntimeError):
@@ -132,7 +128,7 @@ class TrueForgeClient:
         self.base_url = base_url.rstrip("/")
         if self.base_url not in {"http://127.0.0.1:8790", "http://localhost:8790"}:
             raise ValueError(
-                "SC1 TrueForge must use the normal loopback standalone runtime"
+                "Asset Autopsy evaluation must use the normal loopback TrueForge runtime"
             )
         self.timeout_seconds = timeout_seconds
         self._transport = transport or self._urllib_transport
@@ -222,14 +218,14 @@ class TrueForgeClient:
 
     def _put_mcp_server(self, *, mcp_url: str, bearer: str, origin: str) -> None:
         if mcp_url != "http://127.0.0.1:8712/mcp":
-            raise ValueError("SC1 MCP connector URL is fixed")
+            raise ValueError("Asset Autopsy MCP connector URL is fixed")
         if len(bearer) < 16:
-            raise ValueError("SC1 MCP bearer is invalid")
+            raise ValueError("Asset Autopsy MCP bearer is invalid")
         manifest = {
             "type": "remote",
             "name": MCP_SERVER_NAME,
             "url": mcp_url,
-            "description": "Asset Autopsy SC1 bounded 3D repair tools",
+            "description": "Asset Autopsy bounded robot repair tools",
             "auth": {
                 "type": "header",
                 "headers": {"Authorization": f"Bearer {bearer}", "Origin": origin},
@@ -251,7 +247,7 @@ class TrueForgeClient:
         names = [tool.get("name") for tool in tools]
         if names != list(TOOL_NAMES):
             raise TrueForgeError(
-                "The saved MCP connector does not expose the exact SC1 tools."
+                "The saved MCP connector does not expose the exact Asset Autopsy tools."
             )
         for tool in tools:
             name = tool["name"]
@@ -264,7 +260,7 @@ class TrueForgeClient:
             expected_schema.pop("title", None)
             if actual_schema != expected_schema:
                 raise TrueForgeError(
-                    "An MCP tool input schema differs from the SC1 contract."
+                    "An MCP tool input schema differs from the Asset Autopsy contract."
                 )
             annotations = tool.get("annotations")
             if (
@@ -273,11 +269,11 @@ class TrueForgeClient:
                 != _TOOL_ANNOTATIONS[name]
             ):
                 raise TrueForgeError(
-                    "An MCP tool annotation differs from the SC1 contract."
+                    "An MCP tool annotation differs from the Asset Autopsy contract."
                 )
         return canonical_sha256(tools)
 
-    def provision_sc1(
+    def provision_autonomy(
         self,
         *,
         bearer: str,
@@ -328,7 +324,9 @@ class TrueForgeClient:
         else:
             agent_id = current.get("id")
             if not isinstance(agent_id, str) or not agent_id:
-                raise TrueForgeError("The SC1 saved agent has an invalid immutable id.")
+                raise TrueForgeError(
+                    "The Asset Autopsy saved agent has an invalid immutable id."
+                )
             response = self._request(
                 "PUT",
                 f"/api/v1/agents/{quote(agent_id, safe='')}",
@@ -337,13 +335,17 @@ class TrueForgeClient:
             action = "updated"
         agent = _data(response)
         if not isinstance(agent, Mapping) or agent.get("name") != AGENT_NAME:
-            raise TrueForgeError("TrueForge did not return the dedicated SC1 agent.")
+            raise TrueForgeError(
+                "TrueForge did not return the dedicated Asset Autopsy agent."
+            )
         agent_id = agent.get("id")
         if not isinstance(agent_id, str) or not agent_id:
-            raise TrueForgeError("TrueForge returned an invalid SC1 agent id.")
+            raise TrueForgeError(
+                "TrueForge returned an invalid Asset Autopsy agent id."
+            )
         if agent.get("manifest") != desired:
             raise TrueForgeError(
-                "The resolved SC1 AgentSpec differs from the required spec."
+                "The resolved Asset Autopsy AgentSpec differs from the required spec."
             )
 
         agents_after = self.list_agents()
@@ -353,7 +355,9 @@ class TrueForgeClient:
             or persisted.get("id") != agent_id
             or persisted.get("manifest") != desired
         ):
-            raise TrueForgeError("The dedicated SC1 agent was not persisted exactly.")
+            raise TrueForgeError(
+                "The dedicated Asset Autopsy agent was not persisted exactly."
+            )
         starter_after = self._named_agent(agents_after, "hackathon-starter")
         if (
             starter_after is None
@@ -387,7 +391,7 @@ class TrueForgeClient:
         )
         session = _data(payload)
         if not isinstance(session, Mapping) or not isinstance(session.get("id"), str):
-            raise TrueForgeError("TrueForge returned an invalid SC1 session.")
+            raise TrueForgeError("TrueForge returned an invalid Asset Autopsy session.")
         return session
 
     def create_turn(
@@ -395,7 +399,7 @@ class TrueForgeClient:
     ) -> Mapping[str, Any]:
         if prompt != EXACT_PROMPT:
             raise ValueError(
-                "SC1 evidence runs accept only the fixed one-prompt request"
+                "Autonomy evaluations accept only the fixed goal-only request"
             )
         payload = self._request(
             "POST",
@@ -409,7 +413,7 @@ class TrueForgeClient:
         )
         turn = _data(payload)
         if not isinstance(turn, Mapping) or not isinstance(turn.get("id"), str):
-            raise TrueForgeError("TrueForge returned an invalid SC1 turn.")
+            raise TrueForgeError("TrueForge returned an invalid Asset Autopsy turn.")
         return turn
 
     def get_turn(self, session_id: str, turn_id: str) -> Mapping[str, Any]:
@@ -449,7 +453,9 @@ class TrueForgeClient:
             }:
                 return turn
             time.sleep(0.5)
-        raise TrueForgeError("The SC1 turn exceeded the bounded evidence timeout.")
+        raise TrueForgeError(
+            "The Asset Autopsy turn exceeded the bounded evidence timeout."
+        )
 
     def list_turn_events(
         self, session_id: str, turn_id: str
@@ -628,24 +634,6 @@ def _large_tool_response_path(record: Mapping[str, Any]) -> str | None:
     return match.group(1).rstrip(".\"')") if match is not None else None
 
 
-def _exec_arguments_reference_path(value: Any, path: str, *, depth: int = 0) -> bool:
-    if depth > 8:
-        return False
-    if isinstance(value, str):
-        return path in value
-    if isinstance(value, Mapping):
-        return any(
-            _exec_arguments_reference_path(child, path, depth=depth + 1)
-            for child in value.values()
-        )
-    if isinstance(value, list):
-        return any(
-            _exec_arguments_reference_path(child, path, depth=depth + 1)
-            for child in value
-        )
-    return False
-
-
 def _sandbox_response_succeeded(record: Mapping[str, Any]) -> bool:
     event = record.get("event")
     if not isinstance(event, Mapping) or event.get("is_error") is True:
@@ -674,7 +662,7 @@ def _sandbox_response_succeeded(record: Mapping[str, Any]) -> bool:
     return successful_exit
 
 
-def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
+def evaluate_autonomy_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
     calls = _call_records(events)
     responses = _response_records(events)
     all_public_calls = [record for record in calls if record["name"] in TOOL_NAMES]
@@ -727,9 +715,6 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         if response is None or response["event_index"] <= record["event_index"]:
             failures.append(f"{record['name']} lacks an ordered tool response")
 
-    experiment_indexes = {
-        record["id"]: index for index, record in enumerate(experiments)
-    }
     offloaded_experiments = sum(
         1
         for experiment in experiments
@@ -737,71 +722,89 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
         and _large_tool_response_path(response) is not None
     )
     sandbox_evidence: list[dict[str, Any]] = []
-    selected_experiments: set[str] = set()
     revision_attributes: list[str] = []
     for revision_index, revision in enumerate(revisions):
         arguments = _call_arguments(revision["call"])
         base_revision_id = arguments.get("base_revision_id")
         basis_hypothesis_id = arguments.get("basis_hypothesis_id")
         basis_run_id = arguments.get("basis_experiment_run_id")
-        matching_evidence: (
-            tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None
-        ) = None
-        for experiment in reversed(experiments):
-            if experiment["id"] in selected_experiments:
-                continue
+        eligible_experiments: list[tuple[int, dict[str, Any]]] = []
+        for experiment_index, experiment in enumerate(experiments):
             experiment_arguments = _call_arguments(experiment["call"])
             experiment_response = responses.get(experiment["id"])
-            offloaded_path = (
-                _large_tool_response_path(experiment_response)
-                if experiment_response is not None
-                else None
-            )
             if (
-                experiment_arguments.get("revision_id") != base_revision_id
-                or experiment_response is None
-                or experiment_response["event_index"] <= experiment["event_index"]
-                or experiment_response["event_index"] >= revision["event_index"]
-                or offloaded_path is None
+                experiment_arguments.get("revision_id") == base_revision_id
+                and experiment_response is not None
+                and experiment_response["event_index"] > experiment["event_index"]
+                and experiment_response["event_index"] < revision["event_index"]
+                and _large_tool_response_path(experiment_response) is not None
             ):
-                continue
-            successful_execs = []
-            for exec_record in exec_calls:
-                exec_response = responses.get(exec_record["id"])
-                if (
-                    exec_record["event_index"] > experiment_response["event_index"]
-                    and exec_record["event_index"] < revision["event_index"]
-                    and exec_response is not None
-                    and exec_response["event_index"] > exec_record["event_index"]
-                    and exec_response["event_index"] < revision["event_index"]
-                    and _exec_arguments_reference_path(
-                        _call_arguments(exec_record["call"]), offloaded_path
-                    )
-                    and _sandbox_response_succeeded(exec_response)
-                ):
-                    successful_execs.append((exec_record, exec_response))
-            if successful_execs:
-                exec_record, exec_response = successful_execs[-1]
-                matching_evidence = (experiment, exec_record, exec_response)
-                break
-        if matching_evidence is None:
-            failures.append(
-                "a revision lacks successful Sandbox analysis of a preceding offloaded current-base experiment"
-            )
-        elif not isinstance(basis_run_id, str) or not isinstance(
+                eligible_experiments.append((experiment_index, experiment_response))
+        matching_evidence: tuple[dict[str, Any], str, list[int]] | None = None
+        if not isinstance(basis_run_id, str) or not isinstance(
             basis_hypothesis_id, str
         ):
             failures.append("a revision lacks cited experiment provenance")
         else:
-            experiment, _, exec_response = matching_evidence
-            selected_experiments.add(experiment["id"])
+            successful_execs = []
+            for exec_record in exec_calls:
+                exec_response = responses.get(exec_record["id"])
+                attestations = (
+                    [
+                        candidate
+                        for candidate in _json_objects(
+                            unwrap_event(exec_response).get("content")
+                        )
+                        if candidate.get("run_id") == basis_run_id
+                        and candidate.get("hypothesis_id") == basis_hypothesis_id
+                        and isinstance(candidate.get("trace_sha256"), str)
+                        and re.fullmatch(r"[0-9a-f]{64}", candidate["trace_sha256"])
+                        is not None
+                    ]
+                    if exec_response is not None
+                    else []
+                )
+                eligible_indexes = [
+                    experiment_index
+                    for experiment_index, experiment_response in eligible_experiments
+                    if experiment_response["event_index"] < exec_record["event_index"]
+                ]
+                if (
+                    eligible_indexes
+                    and exec_record["event_index"] < revision["event_index"]
+                    and exec_response is not None
+                    and exec_response["event_index"] > exec_record["event_index"]
+                    and exec_response["event_index"] < revision["event_index"]
+                    and attestations
+                    and _sandbox_response_succeeded(exec_response)
+                ):
+                    successful_execs.append(
+                        (
+                            exec_response,
+                            attestations[-1]["trace_sha256"],
+                            eligible_indexes,
+                        )
+                    )
+            if successful_execs:
+                matching_evidence = successful_execs[-1]
+        if (
+            matching_evidence is None
+            and isinstance(basis_run_id, str)
+            and isinstance(basis_hypothesis_id, str)
+        ):
+            failures.append(
+                "a revision lacks successful Sandbox analysis of a preceding offloaded current-base experiment"
+            )
+        elif matching_evidence is not None:
+            exec_response, trace_sha256, eligible_indexes = matching_evidence
             sandbox_evidence.append(
                 {
                     "revision_index": revision_index,
-                    "experiment_index": experiment_indexes[experiment["id"]],
+                    "eligible_experiment_indexes": eligible_indexes,
                     "event_index": exec_response["event_index"],
                     "run_id_hash": _short_hash(basis_run_id),
                     "hypothesis_id_hash": _short_hash(basis_hypothesis_id),
+                    "trace_sha256": trace_sha256,
                 }
             )
 
@@ -834,24 +837,29 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             continue
         revision_attributes.append(f"{target_name}.{attribute}")
 
+    publish_id = publish_calls[0]["id"] if len(publish_calls) == 1 else None
+    published_ticket = (
+        _call_arguments(publish_calls[0]["call"]).get("promotion_ticket")
+        if len(publish_calls) == 1
+        else None
+    )
+    published_revision_id = (
+        published_ticket.get("revision_id")
+        if isinstance(published_ticket, Mapping)
+        else None
+    )
     task_results: list[tuple[dict[str, Any], dict[str, Any], Mapping[str, Any]]] = []
     for record in task_calls:
         response = responses.get(record["id"])
         payload = _response_payload(response) if response is not None else None
-        if response is not None and payload is not None:
+        if (
+            response is not None
+            and payload is not None
+            and _call_arguments(record["call"]).get("revision_id")
+            == published_revision_id
+            and payload.get("revision_id") == published_revision_id
+        ):
             task_results.append((record, response, payload))
-    first_revision_index = min(
-        (record["event_index"] for record in revisions), default=len(events)
-    )
-    baseline_failed = (
-        bool(task_results)
-        and task_results[0][0]["event_index"] < first_revision_index
-        and task_results[0][1]["event_index"] < first_revision_index
-        and task_results[0][2].get("result") == "fail"
-    )
-    if not baseline_failed:
-        failures.append("the first public task is not a failing pre-revision baseline")
-
     final_task_record, final_task_response, final_task = (
         task_results[-1] if task_results else ({}, {}, {})
     )
@@ -877,12 +885,6 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             "the final post-revision public task lacks an improved passing BehaviorDiff"
         )
 
-    publish_id = publish_calls[0]["id"] if len(publish_calls) == 1 else None
-    published_ticket = (
-        _call_arguments(publish_calls[0]["call"]).get("promotion_ticket")
-        if len(publish_calls) == 1
-        else None
-    )
     qualifying_response: dict[str, Any] | None = None
     hidden_pass = False
     for verify in verify_calls:
@@ -967,9 +969,12 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             "runs": [
                 {
                     "revision_index": evidence["revision_index"],
-                    "experiment_index": evidence["experiment_index"],
+                    "eligible_experiment_indexes": evidence[
+                        "eligible_experiment_indexes"
+                    ],
                     "run_id_hash": evidence["run_id_hash"],
                     "hypothesis_id_hash": evidence["hypothesis_id_hash"],
+                    "trace_sha256": evidence["trace_sha256"],
                 }
                 for evidence in sandbox_evidence
             ],
@@ -979,7 +984,6 @@ def evaluate_sc1_events(events: list[Mapping[str, Any]]) -> dict[str, Any]:
             "single_attribute_diffs": len(revision_attributes),
         },
         "public": {
-            "baseline_failed": baseline_failed,
             "final_passed": final_public_pass,
             "behavior_diff_improved": behavior_improved,
         },
@@ -1007,7 +1011,7 @@ __all__ = [
     "approval_call_ids",
     "build_agent_spec",
     "canonical_sha256",
-    "evaluate_sc1_events",
+    "evaluate_autonomy_events",
     "tool_call_name",
     "unwrap_event",
 ]

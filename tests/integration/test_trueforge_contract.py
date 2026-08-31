@@ -10,6 +10,8 @@ from asset_autopsy.schemas import TOOL_INPUT_MODELS
 from asset_autopsy.trueforge_client import (
     AGENT_NAME,
     DEFAULT_MODEL,
+    EXACT_PROMPT,
+    MCP_SERVER_NAME,
     TrueForgeClient,
     TrueForgeError,
     build_agent_spec,
@@ -40,14 +42,16 @@ def _tools() -> list[dict[str, Any]]:
 
 
 class ProvisionTransport:
-    def __init__(self, *, existing_sc1: Mapping[str, Any] | None = None) -> None:
+    def __init__(self, *, existing_autonomy: Mapping[str, Any] | None = None) -> None:
         self.calls: list[tuple[str, str, Mapping[str, Any] | None]] = []
         self.starter = {
             "id": "agent-starter",
             "name": "hackathon-starter",
             "manifest": {"model": {"name": "openai/gpt-5-4-mini"}},
         }
-        self.sc1 = dict(existing_sc1) if existing_sc1 is not None else None
+        self.autonomy = (
+            dict(existing_autonomy) if existing_autonomy is not None else None
+        )
 
     def __call__(
         self,
@@ -77,8 +81,8 @@ class ProvisionTransport:
             }
         if (method, path) == ("GET", "/api/v1/agents"):
             agents = [self.starter]
-            if self.sc1 is not None:
-                agents.append(self.sc1)
+            if self.autonomy is not None:
+                agents.append(self.autonomy)
             return 200, {"data": agents}
         if (method, path) == ("PUT", "/api/v1/settings/mcp-servers"):
             assert payload is not None
@@ -86,20 +90,23 @@ class ProvisionTransport:
             assert manifest["name"] == AGENT_NAME
             assert manifest["url"] == "http://127.0.0.1:8712/mcp"
             return 200, {"data": {"name": AGENT_NAME}}
-        if (method, path) == ("GET", "/api/v1/mcp-servers/asset-autopsy-sc1/tools"):
+        if (method, path) == (
+            "GET",
+            f"/api/v1/mcp-servers/{MCP_SERVER_NAME}/tools",
+        ):
             return 200, {"data": _tools()}
         if (method, path) == ("POST", "/api/v1/agents"):
             assert payload is not None
-            self.sc1 = {
-                "id": "agent-sc1",
+            self.autonomy = {
+                "id": "agent-autonomy",
                 "name": payload["name"],
                 "manifest": payload["manifest"],
             }
-            return 201, {"data": self.sc1}
-        if method == "PUT" and path == "/api/v1/agents/agent-sc1":
-            assert payload is not None and self.sc1 is not None
-            self.sc1 = {**self.sc1, "manifest": payload["manifest"]}
-            return 200, {"data": self.sc1}
+            return 201, {"data": self.autonomy}
+        if method == "PUT" and path == "/api/v1/agents/agent-autonomy":
+            assert payload is not None and self.autonomy is not None
+            self.autonomy = {**self.autonomy, "manifest": payload["manifest"]}
+            return 200, {"data": self.autonomy}
         raise AssertionError(f"unexpected request: {method} {path}")
 
 
@@ -114,7 +121,7 @@ def test_agent_spec_is_the_exact_serial_approval_contract() -> None:
     }
     assert spec["mcp_servers"] == [
         {
-            "name": AGENT_NAME,
+            "name": MCP_SERVER_NAME,
             "enable_tools": list(TOOL_NAMES),
             "disable_tools": [],
             "preload_tools": [],
@@ -128,40 +135,36 @@ def test_agent_spec_is_the_exact_serial_approval_contract() -> None:
     assert config["context_management"]["large_tool_response"]["enabled"] is True
     assert "skills" not in spec
     instructions = spec["instructions"]
-    assert len(instructions) < 2_500
+    assert len(instructions) < 800
     for required_boundary in (
-        "Use only public tool responses and public offloaded artifacts.",
-        "remaining budgets",
-        "public scenario",
-        "allowed patch attributes",
-        "exit-0 Sandbox analysis",
-        "Evidence must distinguish the patch target from another element",
-        "Before a direct run_experiment response literally contains",
-        "run_task and inspect_asset artifact URIs are audit metadata",
-        "If run_experiment is rejected or returns no saved path",
-        "Do not use Sandbox to rediscover tool schemas",
-        "public 1/1 and hidden 3/3",
-        "Stop at the publication approval request",
-        "Do not ask the user questions",
+        "Use only the public capabilities and public evidence",
+        "Preserve the controller, tests, declared contract, pinned runner",
+        "Do not fabricate evidence",
+        "bypass human approval",
+        "Choose how to investigate, change, and verify",
     ):
         assert required_boundary in instructions
-    for removed_procedure in (
-        "mandatory evidence loop",
-        "Use this exact run_experiment structure",
-        '"revision_id":"REVISION_ID"',
-        "python - <<'PY'",
-        "candidate_attribute",
-        "only two revisions are available",
-        "request publish_revision exactly once",
+    for forbidden_procedure in (
+        *TOOL_NAMES,
+        "Sandbox",
+        "baseline",
+        "BehaviorDiff",
+        "public 1/1",
+        "hidden 3/3",
+        "Result saved to:",
     ):
-        assert removed_procedure not in instructions
+        assert forbidden_procedure not in instructions
+    assert EXACT_PROMPT == (
+        "Repair compound-arm-01 so it satisfies its declared requirements, then submit "
+        "the qualified revision for human approval."
+    )
 
 
 def test_provision_creates_only_dedicated_connector_and_agent() -> None:
     transport = ProvisionTransport()
     client = TrueForgeClient(transport=transport)
-    result = client.provision_sc1(bearer="runtime-bearer-token-value")
-    assert result.agent_id == "agent-sc1"
+    result = client.provision_autonomy(bearer="runtime-bearer-token-value")
+    assert result.agent_id == "agent-autonomy"
     assert result.agent_action == "created"
     writes = [(method, path) for method, path, _ in transport.calls if method != "GET"]
     assert writes == [
@@ -176,15 +179,15 @@ def test_provision_creates_only_dedicated_connector_and_agent() -> None:
     }
 
 
-def test_exact_existing_sc1_agent_is_a_noop() -> None:
+def test_exact_existing_autonomy_agent_is_a_noop() -> None:
     transport = ProvisionTransport(
-        existing_sc1={
-            "id": "agent-sc1",
+        existing_autonomy={
+            "id": "agent-autonomy",
             "name": AGENT_NAME,
             "manifest": build_agent_spec(),
         }
     )
-    result = TrueForgeClient(transport=transport).provision_sc1(
+    result = TrueForgeClient(transport=transport).provision_autonomy(
         bearer="runtime-bearer-token-value"
     )
     assert result.agent_action == "unchanged"
@@ -196,19 +199,19 @@ def test_exact_existing_sc1_agent_is_a_noop() -> None:
     assert agent_writes == []
 
 
-def test_changed_sc1_agent_updates_only_its_immutable_id() -> None:
+def test_changed_autonomy_agent_updates_only_its_immutable_id() -> None:
     transport = ProvisionTransport(
-        existing_sc1={
-            "id": "agent-sc1",
+        existing_autonomy={
+            "id": "agent-autonomy",
             "name": AGENT_NAME,
             "manifest": {"model": {"name": DEFAULT_MODEL}},
         }
     )
-    result = TrueForgeClient(transport=transport).provision_sc1(
+    result = TrueForgeClient(transport=transport).provision_autonomy(
         bearer="runtime-bearer-token-value"
     )
     assert result.agent_action == "updated"
-    assert ("PUT", "/api/v1/agents/agent-sc1") in [
+    assert ("PUT", "/api/v1/agents/agent-autonomy") in [
         (method, path) for method, path, _ in transport.calls
     ]
 
@@ -221,7 +224,7 @@ def test_provision_rejects_empty_tool_schemas() -> None:
     ) -> tuple[int, Mapping[str, Any]]:
         if (method, path) == (
             "GET",
-            "/api/v1/mcp-servers/asset-autopsy-sc1/tools",
+            f"/api/v1/mcp-servers/{MCP_SERVER_NAME}/tools",
         ):
             tools = _tools()
             for tool in tools:
@@ -233,8 +236,8 @@ def test_provision_rejects_empty_tool_schemas() -> None:
             return 200, {"data": tools}
         return transport(method, path, payload)
 
-    with pytest.raises(TrueForgeError, match="differs from the SC1 contract"):
-        TrueForgeClient(transport=empty_schemas).provision_sc1(
+    with pytest.raises(TrueForgeError, match="differs from the Asset Autopsy contract"):
+        TrueForgeClient(transport=empty_schemas).provision_autonomy(
             bearer="runtime-bearer-token-value"
         )
 
@@ -255,7 +258,7 @@ def test_provision_requires_the_agent_in_the_post_write_list() -> None:
         return result
 
     with pytest.raises(TrueForgeError, match="not persisted exactly"):
-        TrueForgeClient(transport=missing_after_write).provision_sc1(
+        TrueForgeClient(transport=missing_after_write).provision_autonomy(
             bearer="runtime-bearer-token-value"
         )
 
@@ -271,7 +274,7 @@ def test_provision_fails_before_writes_without_saved_model_or_starter() -> None:
         return transport(method, path, payload)
 
     with pytest.raises(TrueForgeError, match="saved OpenAI model"):
-        TrueForgeClient(transport=missing_model).provision_sc1(
+        TrueForgeClient(transport=missing_model).provision_autonomy(
             bearer="runtime-bearer-token-value"
         )
     assert all(method == "GET" for method, _, _ in transport.calls)

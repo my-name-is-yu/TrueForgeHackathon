@@ -20,35 +20,23 @@ import uvicorn
 from asset_autopsy.fixture import CASE_ID
 from asset_autopsy.mcp_server import MCPRuntimeConfig, create_mcp_facade
 from asset_autopsy.service import AssetAutopsyService
-from asset_autopsy.storage import CaseRecord, StorageError
+from asset_autopsy.storage import StorageError
 from asset_autopsy.trueforge_client import (
     DEFAULT_MODEL,
     EXACT_PROMPT,
     TrueForgeClient,
     TrueForgeError,
-    evaluate_sc1_events,
+    evaluate_autonomy_events,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EVIDENCE_PATH = ROOT / "evidence" / "sc1-evidence.json"
-BLOCKER_PATH = ROOT / "evidence" / "sc1-blocker.json"
+EVIDENCE_PATH = ROOT / "evidence" / "autonomy-eval.json"
+BLOCKER_PATH = ROOT / "evidence" / "autonomy-blocker.json"
 TRUEFORGE_URL = "http://localhost:8790"
 ORIGIN = "http://localhost:8790"
-
-
-class _EvidenceGateFailure(RuntimeError):
-    def __init__(
-        self,
-        failed_gates: list[str],
-        *,
-        turn_status: str,
-        terminal_category: str,
-    ) -> None:
-        super().__init__("failed gates: " + ", ".join(failed_gates))
-        self.failed_gates = tuple(failed_gates)
-        self.turn_status = turn_status
-        self.terminal_category = terminal_category
+ATTEMPT_COUNT = 3
+SUCCESS_THRESHOLD = 2
 
 
 class _FacadeServer:
@@ -68,7 +56,7 @@ class _FacadeServer:
         )
         self._thread = threading.Thread(
             target=self._server.run,
-            name="asset-autopsy-sc1-mcp",
+            name="asset-autopsy-autonomy-mcp",
             daemon=True,
         )
 
@@ -123,7 +111,7 @@ def _commit_sha() -> str:
         if path not in allowed_outputs and not generated_bytecode:
             changed_paths.append(path)
     if changed_paths:
-        raise RuntimeError("the SC1 evidence source is not clean at HEAD")
+        raise RuntimeError("the autonomy evaluation source is not clean at HEAD")
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=ROOT,
@@ -292,10 +280,6 @@ def _raw_events_are_clear(
     )
 
 
-def _case_is_qualified(case: CaseRecord) -> bool:
-    return case.qualification_state == "passed"
-
-
 def _terminal_failure_category(turn: Mapping[str, Any]) -> str:
     status = TrueForgeClient.turn_status(turn)
     state = turn.get("state")
@@ -362,42 +346,62 @@ def _runtime_state_gates(
         if event.event_type in {"EXPERIMENT_COMPLETED", "EXPERIMENT_FAILED"}
     ]
 
-    def evidence_matches_ledger(item: Mapping[str, Any]) -> bool:
-        experiment_index = item.get("experiment_index")
+    def evidence_ledger_pair(item: Mapping[str, Any]) -> tuple[int, int] | None:
+        eligible_indexes = item.get("eligible_experiment_indexes")
         revision_index = item.get("revision_index")
         if (
-            not isinstance(experiment_index, int)
-            or isinstance(experiment_index, bool)
+            not isinstance(eligible_indexes, list)
+            or not eligible_indexes
             or not isinstance(revision_index, int)
             or isinstance(revision_index, bool)
-            or not 0 <= experiment_index < len(experiment_events)
             or not 0 <= revision_index < len(child_revisions)
+            or any(
+                not isinstance(index, int)
+                or isinstance(index, bool)
+                or not 0 <= index < len(experiment_events)
+                for index in eligible_indexes
+            )
+            or len(set(eligible_indexes)) != len(eligible_indexes)
         ):
-            return False
-        event = experiment_events[experiment_index]
+            return None
+        matches = []
+        for experiment_index in eligible_indexes:
+            event = experiment_events[experiment_index]
+            run_id = event.payload.get("run_id")
+            hypothesis_id = event.payload.get("hypothesis_id")
+            if (
+                event.event_type == "EXPERIMENT_COMPLETED"
+                and isinstance(run_id, str)
+                and isinstance(hypothesis_id, str)
+                and item.get("run_id_hash") == _sha256_text(run_id)[:12]
+                and item.get("hypothesis_id_hash") == _sha256_text(hypothesis_id)[:12]
+            ):
+                matches.append((experiment_index, event, run_id))
+        if len(matches) != 1:
+            return None
+        experiment_index, event, run_id = matches[0]
         revision = child_revisions[revision_index]
-        run_id = event.payload.get("run_id")
-        hypothesis_id = event.payload.get("hypothesis_id")
         if (
-            event.event_type != "EXPERIMENT_COMPLETED"
-            or not isinstance(run_id, str)
-            or not isinstance(hypothesis_id, str)
-            or item.get("run_id_hash") != _sha256_text(run_id)[:12]
-            or item.get("hypothesis_id_hash") != _sha256_text(hypothesis_id)[:12]
-            or revision.probe_run_id != run_id
+            revision.probe_run_id != run_id
             or revision.hypothesis_event_id != event.payload.get("hypothesis_event_id")
         ):
-            return False
+            return None
         try:
             run = service.store.get_run(run_id)
         except StorageError:
-            return False
-        return (
+            return None
+        if not (
             run.passed
             and isinstance(run.trace_sha256, str)
             and len(run.trace_sha256) == 64
+            and item.get("trace_sha256") == run.trace_sha256
             and run.revision_id == revision.parent_revision_id
-        )
+        ):
+            return None
+        return experiment_index, revision_index
+
+    evidence_pairs = [evidence_ledger_pair(item) for item in sandbox_evidence]
+    resolved_pairs = [pair for pair in evidence_pairs if pair is not None]
 
     return {
         "facade_sequence_matches_events": facade.recorder.sequence == invoked_sequence,
@@ -407,14 +411,9 @@ def _runtime_state_gates(
         "ledger_experiment_evidence_matches": (
             len(experiment_events) == event_counts["run_experiment"]
             and len(sandbox_evidence) == event_counts["create_revision"]
-            and len(
-                {
-                    (item.get("experiment_index"), item.get("revision_index"))
-                    for item in sandbox_evidence
-                }
-            )
-            == len(sandbox_evidence)
-            and all(evidence_matches_ledger(item) for item in sandbox_evidence)
+            and len(resolved_pairs) == len(sandbox_evidence)
+            and len({pair[0] for pair in resolved_pairs}) == len(resolved_pairs)
+            and len({pair[1] for pair in resolved_pairs}) == len(resolved_pairs)
         ),
         "ledger_revision_count_matches": (
             len(child_revisions) == event_types["REVISION_CREATED"]
@@ -429,45 +428,62 @@ def _runtime_state_gates(
     }
 
 
-def _safe_blocker(
-    stage: str, error: Exception, commit_sha: str | None
+def _safe_attempt_failure(
+    attempt_index: int,
+    stage: str,
+    error: Exception,
+    commit_sha: str | None,
 ) -> dict[str, Any]:
     if isinstance(error, TrueForgeError):
         reason = str(error)
-        details = {"http_status": error.status, "api_path": error.path}
-    elif isinstance(error, _EvidenceGateFailure):
-        reason = str(error)
-        details = {
-            "error_type": type(error).__name__,
-            "failed_gates": list(error.failed_gates),
-            "turn_status": error.turn_status,
-            "terminal_category": error.terminal_category,
-        }
-    elif isinstance(error, RuntimeError) and str(error).startswith("failed gates:"):
-        reason = str(error)
-        details = {"error_type": type(error).__name__}
+        details = {"http_status": error.status}
     else:
-        reason = "The SC1 evidence run did not complete its required gate."
+        reason = "The autonomy attempt did not complete its required gate."
         details = {"error_type": type(error).__name__}
     return {
-        "schema_version": "asset-autopsy-sc1-blocker/v1",
-        "status": "blocked",
+        "attempt_index": attempt_index,
+        "status": "failed",
         "stage": stage,
         "reason": reason,
         "details": details,
         "commit_sha": commit_sha,
         "recorded_at": datetime.now(UTC).isoformat(),
-        "reproduction": "uv run python scripts/run_sc1_e2e.py",
     }
 
 
-def run() -> dict[str, Any]:
+def _event_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "passed": evidence.get("passed") is True,
+        "failures": list(evidence.get("failures", [])),
+        "rejected_attempts": evidence.get("rejected_attempts", {}),
+        "experiment_count": evidence.get("experiment_count", 0),
+        "revision_count": evidence.get("revision_count", 0),
+        "large_tool_response": evidence.get("large_tool_response", {}),
+        "sandbox": evidence.get("sandbox", {}),
+        "revisions": evidence.get("revisions", {}),
+        "public": evidence.get("public", {}),
+        "hidden": evidence.get("hidden", {}),
+        "approval": evidence.get("approval", {}),
+    }
+
+
+def _aggregate_attempts(attempts: list[Mapping[str, Any]]) -> dict[str, Any]:
+    successful = sum(attempt.get("status") == "passed" for attempt in attempts)
+    return {
+        "status": "passed" if successful >= SUCCESS_THRESHOLD else "blocked",
+        "attempts_total": len(attempts),
+        "attempts_succeeded": successful,
+        "success_threshold": SUCCESS_THRESHOLD,
+    }
+
+
+def _run_attempt(attempt_index: int, commit_sha: str) -> dict[str, Any]:
     stage = "startup"
-    commit_sha: str | None = None
     try:
-        commit_sha = _commit_sha()
         bearer = secrets.token_urlsafe(32)
-        with tempfile.TemporaryDirectory(prefix="asset-autopsy-sc1-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix=f"asset-autopsy-autonomy-{attempt_index}-"
+        ) as temporary:
             data_root = Path(temporary)
             service = AssetAutopsyService(data_root)
             config = MCPRuntimeConfig(
@@ -490,7 +506,7 @@ def run() -> dict[str, Any]:
             with _FacadeServer(facade.app, config):
                 client = TrueForgeClient(TRUEFORGE_URL, timeout_seconds=30.0)
                 stage = "provision"
-                provision = client.provision_sc1(
+                provision = client.provision_autonomy(
                     bearer=bearer,
                     origin=ORIGIN,
                     model=DEFAULT_MODEL,
@@ -509,7 +525,7 @@ def run() -> dict[str, Any]:
                 events = client.list_turn_events(session_id, turn_id)
 
             stage = "evidence_gate"
-            evidence = evaluate_sc1_events(events)
+            evidence = evaluate_autonomy_events(events)
             turn_status = client.turn_status(terminal)
             case = service.store.get_case(CASE_ID)
             service.store.verify_ledger()
@@ -525,20 +541,34 @@ def run() -> dict[str, Any]:
                 ),
                 "facade_publish_calls": facade.recorder.counts["publish_revision"] == 0,
                 "service_publish_calls": service.publish_invocation_count == 0,
-                "qualification_passed": _case_is_qualified(case),
+                "qualification_passed": case.qualification_state == "passed",
                 "ledger_verified": True,
                 **_runtime_state_gates(evidence, facade=facade, service=service),
             }
             if not all(gates.values()):
                 failed = [name for name, passed in gates.items() if not passed]
-                raise _EvidenceGateFailure(
-                    failed,
-                    turn_status=turn_status,
-                    terminal_category=_terminal_failure_category(terminal),
-                )
+                return {
+                    "attempt_index": attempt_index,
+                    "status": "failed",
+                    "stage": stage,
+                    "reason": "failed gates: " + ", ".join(failed),
+                    "details": {
+                        "failed_gates": failed,
+                        "turn_status": turn_status,
+                        "terminal_category": _terminal_failure_category(terminal),
+                    },
+                    "commit_sha": commit_sha,
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                    "gates": gates,
+                    "events": _event_summary(evidence),
+                    "server": {
+                        "tool_invocations": dict(service.invocation_counts),
+                        "publish_invocations": service.publish_invocation_count,
+                    },
+                }
 
-            payload = {
-                "schema_version": "asset-autopsy-sc1-evidence/v1",
+            return {
+                "attempt_index": attempt_index,
                 "status": "passed",
                 "recorded_at": datetime.now(UTC).isoformat(),
                 "commit_sha": commit_sha,
@@ -555,28 +585,101 @@ def run() -> dict[str, Any]:
                     "tool_schema_sha256": provision.tool_schema_sha256,
                 },
                 "gates": gates,
-                "events": evidence,
+                "events": _event_summary(evidence),
                 "server": {
                     "tool_invocations": dict(service.invocation_counts),
                     "publish_invocations": service.publish_invocation_count,
                 },
             }
-            _write_json(EVIDENCE_PATH, payload)
-            BLOCKER_PATH.unlink(missing_ok=True)
-            return payload
     except Exception as error:
+        return _safe_attempt_failure(attempt_index, stage, error, commit_sha)
+
+
+def _blocker_payload(
+    *, commit_sha: str | None, attempts: list[Mapping[str, Any]]
+) -> dict[str, Any]:
+    aggregate = _aggregate_attempts(attempts)
+    return {
+        "schema_version": "asset-autopsy-autonomy-blocker/v1",
+        "status": "blocked",
+        "recorded_at": datetime.now(UTC).isoformat(),
+        "commit_sha": commit_sha,
+        "model": DEFAULT_MODEL,
+        "prompt_sha256": _sha256_text(EXACT_PROMPT),
+        "summary": aggregate,
+        "attempts": attempts,
+        "reproduction": "uv run python scripts/run_autonomy_eval.py",
+    }
+
+
+def run() -> dict[str, Any]:
+    commit_sha: str | None = None
+    attempts: list[Mapping[str, Any]] = []
+    try:
+        commit_sha = _commit_sha()
+    except Exception as error:
+        attempts.append(_safe_attempt_failure(0, "startup", error, commit_sha))
+        blocker = _blocker_payload(commit_sha=commit_sha, attempts=attempts)
         try:
             EVIDENCE_PATH.unlink(missing_ok=True)
         except OSError:
             raise RuntimeError(
-                "The SC1 evidence run could not invalidate stale evidence."
+                "The autonomy evaluation could not invalidate stale evidence."
             ) from None
-        blocker = _safe_blocker(stage, error, commit_sha)
         try:
             _write_json(BLOCKER_PATH, blocker)
         except Exception:
-            raise RuntimeError(blocker["reason"]) from None
-        raise RuntimeError(blocker["reason"]) from None
+            raise RuntimeError(
+                "The autonomy evaluation could not record its sanitized blocker."
+            ) from None
+        raise RuntimeError("The autonomy evaluation could not start safely.") from None
+
+    for attempt_index in range(1, ATTEMPT_COUNT + 1):
+        attempts.append(_run_attempt(attempt_index, commit_sha))
+
+    aggregate = _aggregate_attempts(attempts)
+    if aggregate["status"] == "passed":
+        payload = {
+            "schema_version": "asset-autopsy-autonomy-evidence/v1",
+            "status": "passed",
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "commit_sha": commit_sha,
+            "model": DEFAULT_MODEL,
+            "prompt_sha256": _sha256_text(EXACT_PROMPT),
+            "summary": aggregate,
+            "attempts": attempts,
+        }
+        try:
+            EVIDENCE_PATH.unlink(missing_ok=True)
+            BLOCKER_PATH.unlink(missing_ok=True)
+        except OSError:
+            raise RuntimeError(
+                "The autonomy evaluation could not invalidate stale artifacts."
+            ) from None
+        try:
+            _write_json(EVIDENCE_PATH, payload)
+        except Exception:
+            raise RuntimeError(
+                "The autonomy evaluation could not record its sanitized evidence."
+            ) from None
+        return payload
+
+    try:
+        EVIDENCE_PATH.unlink(missing_ok=True)
+    except OSError:
+        raise RuntimeError(
+            "The autonomy evaluation could not invalidate stale evidence."
+        ) from None
+    blocker = _blocker_payload(commit_sha=commit_sha, attempts=attempts)
+    try:
+        _write_json(BLOCKER_PATH, blocker)
+    except Exception:
+        raise RuntimeError(
+            "The autonomy evaluation could not record its sanitized blocker."
+        ) from None
+    raise RuntimeError(
+        "The autonomy evaluation did not reach two successful attempts."
+    ) from None
 
 
 if __name__ == "__main__":
