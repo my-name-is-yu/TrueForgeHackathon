@@ -48,13 +48,11 @@ allowlist is `joint.axis`, `joint.damping`, `joint.armature`, and `joint.frictio
 | --- | ---: |
 | Task and experiment runs | 10 |
 | Agent-defined experiments | 5 |
-| Child revisions | 4 |
+| Child revisions | 2 |
 | Hidden qualification attempts | 1 |
 
-Four children allow a two-change repair plus bounded recovery. An inverse change is represented as
-a new child and requires the same current-base experiment and hypothesis provenance as any other
-change. History is never rewritten. A successful promotion ticket binds the complete one-to-four
-entry change history and the final asset hash.
+A successful promotion ticket binds the complete one-to-two entry change history and the final
+asset hash.
 
 ## Public capability contract
 

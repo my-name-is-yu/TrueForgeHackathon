@@ -348,73 +348,6 @@ def create_evidence_backed_revision_chain(
     )
 
 
-def append_armature_revision(
-    service: AssetAutopsyService,
-    head,
-    *,
-    expected_old_value: float,
-    new_value: float,
-):
-    run(
-        service.run_task(
-            RunTaskInput(
-                case_id=CASE_ID,
-                revision_id=head.revision_id,
-                scenario_id="public_center",
-                capture="metrics",
-            )
-        )
-    )
-    basis = run(
-        service.run_experiment(
-            experiment(
-                head.revision_id,
-                hypothesis("joint_a", "armature", "joint_b", "frictionloss"),
-            )
-        )
-    )
-    return run(
-        service.create_revision(
-            CreateRevisionInput(
-                case_id=CASE_ID,
-                base_revision_id=head.revision_id,
-                expected_base_sha256=head.asset_sha256,
-                basis_hypothesis_id=basis.hypothesis_id,
-                basis_experiment_run_id=basis.run_id,
-                patch=ScalarPatch(
-                    target=PatchTarget(kind="joint", name="joint_a"),
-                    attribute="armature",
-                    expected_old_value=expected_old_value,
-                    new_value=new_value,
-                ),
-                rationale="Test an evidence-backed reversible armature adjustment.",
-                expected_effect=ExpectedEffect(
-                    scenario_id="public_center",
-                    predicates=[
-                        Predicate(metric="hold_error_p95_m", op="lt", value=0.03)
-                    ],
-                ),
-            )
-        )
-    )
-
-
-def create_recovered_four_revision_chain(service: AssetAutopsyService):
-    r002 = create_evidence_backed_revision_chain(service, 2)
-    r003 = append_armature_revision(
-        service,
-        r002,
-        expected_old_value=0.02,
-        new_value=0.03,
-    )
-    return append_armature_revision(
-        service,
-        r003,
-        expected_old_value=0.03,
-        new_value=0.02,
-    )
-
-
 def service_state(service: AssetAutopsyService) -> dict[str, object]:
     opened = run(service.open_case(OpenCaseInput(case_id=CASE_ID)))
     case = service.store.get_case(CASE_ID)
@@ -721,10 +654,10 @@ def test_qualification_rejects_a_stale_non_head_revision(tmp_path) -> None:
     )
 
 
-def test_fifth_child_revision_is_rejected_at_the_budget_boundary(tmp_path) -> None:
+def test_third_child_revision_is_rejected_at_the_budget_boundary(tmp_path) -> None:
     runner = DeterministicFakeRunner()
     service = AssetAutopsyService(tmp_path, runner=runner)
-    head = create_recovered_four_revision_chain(service)
+    head = create_evidence_backed_revision_chain(service, 2)
     run(
         service.run_task(
             RunTaskInput(
@@ -757,10 +690,10 @@ def test_fifth_child_revision_is_rejected_at_the_budget_boundary(tmp_path) -> No
                     patch=ScalarPatch(
                         target=PatchTarget(kind="joint", name="joint_a"),
                         attribute="armature",
-                        expected_old_value=0.02,
-                        new_value=0.03,
+                        expected_old_value=0.01,
+                        new_value=0.02,
                     ),
-                    rationale="The revision budget must reject a fifth child.",
+                    rationale="The revision budget must reject a third child.",
                     expected_effect=ExpectedEffect(
                         scenario_id="public_center",
                         predicates=[
@@ -773,52 +706,7 @@ def test_fifth_child_revision_is_rejected_at_the_budget_boundary(tmp_path) -> No
 
     assert caught.value.code == "REVISION_BUDGET_EXHAUSTED"
     assert service_state(service) == before
-    assert len(runner.validated_xml) == 4
-
-
-def test_four_revision_inverse_history_qualifies_with_every_diff_bound(
-    tmp_path,
-) -> None:
-    service = AssetAutopsyService(tmp_path, runner=DeterministicFakeRunner())
-    head = create_recovered_four_revision_chain(service)
-    final_task = run(
-        service.run_task(
-            RunTaskInput(
-                case_id=CASE_ID,
-                revision_id=head.revision_id,
-                scenario_id="public_center",
-                capture="metrics",
-            )
-        )
-    )
-
-    assert head.revision_id == "r004"
-    assert final_task.result == "pass"
-    verified = run(
-        service.verify_revision(
-            VerifyRevisionInput(
-                case_id=CASE_ID,
-                revision_id=head.revision_id,
-                expected_asset_sha256=head.asset_sha256,
-            )
-        )
-    )
-
-    assert verified.promotion_ticket is not None
-    diffs = verified.promotion_ticket.canonical_diff
-    assert len(diffs) == 4
-    assert diffs[2].model_dump() == {
-        "target": "joint_a",
-        "attribute": "armature",
-        "before": "0.02",
-        "after": "0.03",
-    }
-    assert diffs[3].model_dump() == {
-        "target": "joint_a",
-        "attribute": "armature",
-        "before": "0.03",
-        "after": "0.02",
-    }
+    assert len(runner.validated_xml) == 2
 
 
 def test_full_two_revision_service_flow_qualifies_and_publication_is_deferred_without_side_effects(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import TYPE_CHECKING, Annotated, Literal, Sequence, TypeAlias
 
 from pydantic import (
@@ -32,10 +33,15 @@ if TYPE_CHECKING:
 
 
 SCHEMA_VERSION = "asset-autopsy/v1"
+_CASE_ID_PATTERN = r"^(?:case_)?[A-Za-z0-9][A-Za-z0-9_-]{0,90}$"
 
 
 def _canonical_case_id(value: object) -> object:
-    if isinstance(value, str) and not value.startswith("case_"):
+    if not isinstance(value, str):
+        return value
+    if re.fullmatch(_CASE_ID_PATTERN, value) is None:
+        raise ValueError("case_id is invalid")
+    if not value.startswith("case_"):
         return f"case_{value}"
     return value
 
@@ -44,9 +50,9 @@ CaseId: TypeAlias = Annotated[
     str,
     StringConstraints(
         strict=True,
-        min_length=6,
+        min_length=1,
         max_length=96,
-        pattern=r"^(?:case_)?[A-Za-z0-9][A-Za-z0-9_-]*$",
+        pattern=_CASE_ID_PATTERN,
     ),
     BeforeValidator(_canonical_case_id),
 ]
@@ -391,7 +397,7 @@ class PromotionTicket(StrictModel):
     case_id: CaseId
     revision_id: RevisionId
     asset_sha256: AssetHash
-    canonical_diff: list["CanonicalDiffEntry"] = Field(min_length=1, max_length=4)
+    canonical_diff: list["CanonicalDiffEntry"] = Field(min_length=1, max_length=2)
     public_result: "AggregateResult"
     holdout_result: "AggregateResult"
     export_name: Annotated[

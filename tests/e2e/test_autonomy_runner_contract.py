@@ -368,6 +368,19 @@ def test_attempt_failure_redacts_untrusted_exception_text() -> None:
     assert "secret raw upstream" not in rendered
     assert "/private/tmp/private.xml" not in rendered
 
+    provider_failure = _safe_attempt_failure(
+        2,
+        "model_turn",
+        e2e_runner.TrueForgeError(
+            "TrueForge request failed with HTTP 500.",
+            status=500,
+            path="/api/v1/sessions/private-session/turns/private-turn",
+        ),
+        "a" * 40,
+    )
+    assert provider_failure["details"] == {"http_status": 500}
+    assert "private-session" not in json.dumps(provider_failure, sort_keys=True)
+
 
 def test_terminal_failure_category_redacts_provider_detail() -> None:
     terminal = {
@@ -441,6 +454,43 @@ def test_run_writes_evidence_only_after_two_successful_attempts(
     }
     assert json.loads(evidence_path.read_text())["status"] == "passed"
     assert not blocker_path.exists()
+
+
+@pytest.mark.parametrize("failure", ["write", "blocker_unlink"])
+def test_success_persistence_failure_leaves_no_pass(
+    monkeypatch, tmp_path, failure: str
+) -> None:
+    evidence_path = tmp_path / "autonomy-eval.json"
+    blocker_path = tmp_path / "autonomy-blocker.json"
+    evidence_path.write_text('{"status":"passed"}\n', encoding="utf-8")
+    if failure == "blocker_unlink":
+        blocker_path.mkdir()
+    else:
+        blocker_path.write_text('{"status":"blocked"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(e2e_runner, "EVIDENCE_PATH", evidence_path)
+    monkeypatch.setattr(e2e_runner, "BLOCKER_PATH", blocker_path)
+    monkeypatch.setattr(e2e_runner, "_commit_sha", lambda: "a" * 40)
+    monkeypatch.setattr(
+        e2e_runner,
+        "_run_attempt",
+        lambda index, commit_sha: {
+            "attempt_index": index,
+            "status": "passed" if index < 3 else "failed",
+            "commit_sha": commit_sha,
+        },
+    )
+    if failure == "write":
+
+        def fail_write(_path, _payload) -> None:
+            raise OSError("write failed")
+
+        monkeypatch.setattr(e2e_runner, "_write_json", fail_write)
+
+    with pytest.raises(RuntimeError):
+        e2e_runner.run()
+
+    assert not evidence_path.exists()
 
 
 def test_run_invalidates_stale_pass_when_only_one_attempt_succeeds(

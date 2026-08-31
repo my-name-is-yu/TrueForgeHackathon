@@ -36,7 +36,7 @@ def test_service_preprovisions_the_demo_case_idempotently_and_exposes_no_diagnos
     assert opened.remaining_budgets.model_dump() == {
         "runs_remaining": 10,
         "experiments_remaining": 5,
-        "revisions_remaining": 4,
+        "revisions_remaining": 2,
         "qualification_remaining": 1,
     }
     scenario = opened.public_scenarios[0]

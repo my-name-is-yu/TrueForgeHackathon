@@ -94,7 +94,7 @@ from .task_evaluation import PASS_LIMITS, TASK_METRIC_ORDER, TaskEvaluation
 
 TOTAL_RUN_BUDGET = 10
 EXPERIMENT_BUDGET = 5
-REVISION_BUDGET = 4
+REVISION_BUDGET = 2
 QUALIFICATION_BUDGET = 1
 _CODE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 

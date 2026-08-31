@@ -421,7 +421,7 @@ def _safe_attempt_failure(
 ) -> dict[str, Any]:
     if isinstance(error, TrueForgeError):
         reason = str(error)
-        details = {"http_status": error.status, "api_path": error.path}
+        details = {"http_status": error.status}
     else:
         reason = "The autonomy attempt did not complete its required gate."
         details = {"error_type": type(error).__name__}
@@ -634,8 +634,19 @@ def run() -> dict[str, Any]:
             "summary": aggregate,
             "attempts": attempts,
         }
-        _write_json(EVIDENCE_PATH, payload)
-        BLOCKER_PATH.unlink(missing_ok=True)
+        try:
+            EVIDENCE_PATH.unlink(missing_ok=True)
+            BLOCKER_PATH.unlink(missing_ok=True)
+        except OSError:
+            raise RuntimeError(
+                "The autonomy evaluation could not invalidate stale artifacts."
+            ) from None
+        try:
+            _write_json(EVIDENCE_PATH, payload)
+        except Exception:
+            raise RuntimeError(
+                "The autonomy evaluation could not record its sanitized evidence."
+            ) from None
         return payload
 
     try:

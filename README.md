@@ -23,10 +23,6 @@ enforces invariants instead:
 - qualification uses one committed hidden suite and returns aggregates only;
 - publication stops at a human approval request before any domain side effect.
 
-The fixture permits four child revisions. A mistaken edit is not erased: the agent can create an
-evidence-backed inverse change as another immutable child. This keeps recovery inside the same
-causal evidence boundary.
-
 ## Architecture
 
 ```text
@@ -68,7 +64,7 @@ integrity. Physics execution stays in a private commit-pinned MuJoCo child proce
 | --- | ---: |
 | Public task and experiment runs | 10 |
 | Agent-defined experiments | 5 |
-| Immutable child revisions | 4 |
+| Immutable child revisions | 2 |
 | Hidden qualification attempts | 1 |
 
 `run_experiment` accepts one to sixteen constant-control segments totaling 256 to 100,000 steps
