@@ -273,11 +273,7 @@ class ScriptedRepairModel(Model):
                 output=[
                     ResponseCodeInterpreterToolCall(
                         id="ci_axis",
-                        code=(
-                            f"trace = {json.dumps(trace)}\n"
-                            "# Compute row count, time bounds, and every per-signal sum.\n"
-                            "print(analyze(trace))"
-                        ),
+                        code=(f"trace = {json.dumps(trace)}\nprint(analyze(trace))"),
                         container_id="container_test",
                         outputs=[OutputLogs(logs=json.dumps(attestation), type="logs")],
                         status="completed",
@@ -349,10 +345,11 @@ class ScriptedRepairModel(Model):
         self, *args: Any, **kwargs: Any
     ) -> AsyncIterator[TResponseStreamEvent]:
         del args, kwargs
+        events: tuple[TResponseStreamEvent, ...] = ()
 
         async def empty() -> AsyncIterator[TResponseStreamEvent]:
-            if False:
-                yield None  # type: ignore[misc]
+            for event in events:
+                yield event
 
         return empty()
 

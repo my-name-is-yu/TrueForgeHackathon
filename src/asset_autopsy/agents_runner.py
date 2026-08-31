@@ -65,7 +65,6 @@ async def _publish_revision(
     case_id: CaseId,
     promotion_ticket: PromotionTicket,
 ) -> str:
-    """Handle an approved request without claiming publication materialization."""
     del context
     request = PublishRevisionInput.model_validate(
         {"case_id": case_id, "promotion_ticket": promotion_ticket}

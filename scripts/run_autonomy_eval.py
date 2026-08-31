@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -167,7 +167,7 @@ def _raw_boundary_clear(
     private_payloads: tuple[Mapping[str, Any], ...],
     public_payloads: tuple[Mapping[str, Any], ...] = (),
 ) -> bool:
-    transcript_value = asdict(transcript) if is_dataclass(transcript) else transcript
+    transcript_value = asdict(transcript)
     hidden_keys = {
         "target_qpos",
         "initial_qpos",
