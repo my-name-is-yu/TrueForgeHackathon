@@ -14,7 +14,7 @@ from asset_autopsy.schemas import (
     OpenCaseOutput,
     OpenCaseInput,
     PatchPolicy,
-    PublishRevisionInput,
+    PromotionTicket,
     PublicEventSummary,
     RunExperimentInput,
     RunExperimentOutput,
@@ -28,8 +28,8 @@ from asset_autopsy.schemas import (
 )
 
 
-def test_public_surface_has_seven_inputs_and_six_success_outputs() -> None:
-    assert len(TOOL_INPUT_MODELS) == 7
+def test_public_surface_has_six_inputs_and_six_success_outputs() -> None:
+    assert len(TOOL_INPUT_MODELS) == 6
     assert len(TOOL_OUTPUT_MODELS) == 6
     assert [model.__name__ for model in TOOL_INPUT_MODELS] == [
         "OpenCaseInput",
@@ -38,7 +38,6 @@ def test_public_surface_has_seven_inputs_and_six_success_outputs() -> None:
         "RunExperimentInput",
         "CreateRevisionInput",
         "VerifyRevisionInput",
-        "PublishRevisionInput",
     ]
     assert [model.__name__ for model in TOOL_OUTPUT_MODELS] == [
         "OpenCaseOutput",
@@ -1338,16 +1337,9 @@ def _promotion_ticket_payload() -> dict[str, object]:
     }
 
 
-def test_publish_input_requires_a_successful_same_case_ticket() -> None:
+def test_promotion_ticket_requires_successful_qualification() -> None:
     ticket = _promotion_ticket_payload()
-    PublishRevisionInput.model_validate(
-        {"case_id": "case_demo", "promotion_ticket": ticket}
-    )
-
-    with pytest.raises(ValidationError):
-        PublishRevisionInput.model_validate(
-            {"case_id": "case_other", "promotion_ticket": ticket}
-        )
+    PromotionTicket.model_validate(ticket)
 
     failed_ticket = _promotion_ticket_payload()
     failed_ticket["public_result"] = {
@@ -1361,9 +1353,7 @@ def test_publish_input_requires_a_successful_same_case_ticket() -> None:
         "violated_clause_ids": ["reach_error"],
     }
     with pytest.raises(ValidationError):
-        PublishRevisionInput.model_validate(
-            {"case_id": "case_demo", "promotion_ticket": failed_ticket}
-        )
+        PromotionTicket.model_validate(failed_ticket)
 
 
 @pytest.mark.parametrize("diff_count", [1, 2])
@@ -1378,9 +1368,7 @@ def test_promotion_ticket_accepts_each_qualifiable_diff_count(diff_count: int) -
         }
         for index in range(diff_count)
     ]
-    PublishRevisionInput.model_validate(
-        {"case_id": "case_demo", "promotion_ticket": ticket}
-    )
+    PromotionTicket.model_validate(ticket)
 
 
 @pytest.mark.parametrize("diff_count", [0, 3])
@@ -1398,9 +1386,7 @@ def test_promotion_ticket_rejects_diff_counts_outside_revision_budget(
         for index in range(diff_count)
     ]
     with pytest.raises(ValidationError):
-        PublishRevisionInput.model_validate(
-            {"case_id": "case_demo", "promotion_ticket": ticket}
-        )
+        PromotionTicket.model_validate(ticket)
 
 
 def test_verify_revision_requires_successful_bound_promotion_ticket() -> None:

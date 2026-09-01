@@ -51,7 +51,6 @@ class FakeService:
     run_experiment = _fail
     create_revision = _fail
     verify_revision = _fail
-    publish_revision = _fail
 
 
 class RawToolErrorService(FakeService):
@@ -237,11 +236,10 @@ def test_exact_strict_tool_schemas_and_annotations() -> None:
     assert re.fullmatch(case_id_pattern, "compound-arm-01")
     assert re.fullmatch(case_id_pattern, "case_compound-arm-01")
     assert not re.fullmatch(case_id_pattern, "other-public-handle")
-    assert {
-        tool.name
+    assert not any(
+        tool.annotations is not None and tool.annotations.destructiveHint is True
         for tool in tools
-        if tool.annotations is not None and tool.annotations.destructiveHint is True
-    } == {"publish_revision"}
+    )
     assert {
         tool.name
         for tool in tools
@@ -258,14 +256,6 @@ def test_exact_strict_tool_schemas_and_annotations() -> None:
     assert (
         "single private three-scenario qualification" in descriptions["verify_revision"]
     )
-    publish = next(tool for tool in tools if tool.name == "publish_revision")
-    assert publish.description == (
-        "Request human approval for the exact revision and asset hash in a successful "
-        "qualification ticket. No materialization occurs before approval."
-    )
-    assert set(publish.inputSchema["required"]) == {"case_id", "promotion_ticket"}
-    assert publish.outputSchema is None
-
     experiment_schema = next(
         tool.inputSchema for tool in tools if tool.name == "run_experiment"
     )

@@ -421,17 +421,6 @@ class PromotionTicket(StrictModel):
         return self
 
 
-class PublishRevisionInput(StrictModel):
-    case_id: CaseId
-    promotion_ticket: PromotionTicket
-
-    @model_validator(mode="after")
-    def validate_ticket_case(self) -> PublishRevisionInput:
-        if self.promotion_ticket.case_id != self.case_id:
-            raise ValueError("promotion ticket case must match publication case")
-        return self
-
-
 class ArtifactRef(StrictModel):
     artifact_id: ArtifactId
     kind: Literal[
@@ -1429,7 +1418,6 @@ TOOL_INPUT_MODELS = (
     RunExperimentInput,
     CreateRevisionInput,
     VerifyRevisionInput,
-    PublishRevisionInput,
 )
 TOOL_OUTPUT_MODELS = (
     OpenCaseOutput,
@@ -1463,7 +1451,6 @@ __all__ = [
     "InspectAssetOutput",
     "OpenCaseInput",
     "OpenCaseOutput",
-    "PublishRevisionInput",
     "RunExperimentInput",
     "RunExperimentOutput",
     "RunTaskInput",

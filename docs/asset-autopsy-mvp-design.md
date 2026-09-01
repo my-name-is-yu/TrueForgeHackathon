@@ -1,54 +1,50 @@
-# Asset Autopsy autonomy milestone
+# Asset Autopsy Codex and WebMCP milestone
 
 Status: implemented design
 
-Date: 2026-08-31
+Date: 2026-09-01
 
 Primary case: `compound-arm-01`
 
 ## Product claim
 
-Asset Autopsy tests whether a robot-repair loop can become operationally closed without forcing a
-model through a scripted workflow. The agent receives a goal and protected boundaries. It chooses
-what to inspect, which competing explanation to test, how to excite the system, which signals to
-analyze, what single attribute to change, and when to verify.
+Asset Autopsy tests whether a human and Codex can design a robot through a shared visual and
+machine-operable environment without forcing a scripted workflow. Codex receives a goal and
+protected boundaries. It chooses what to inspect, which competing explanation to test, how to
+excite the system, which signals to analyze, what single attribute to change, and when to verify.
 
 The harness enforces identity, causality, bounded mutation, comparison, qualification, and human
-approval. It does not enforce a tool order or supply a diagnosis.
+acceptance. It does not enforce a tool order or supply a diagnosis.
 
 ```text
-goal-only request
-    <-> public observations and requirements
-    <-> agent-defined experiments and trace analysis
-    <-> immutable evidence-backed one-attribute revisions
-    <-> same-condition BehaviorDiff
+goal in Codex
+    <-> WebMCP observations and requirements
+    <-> agent-defined experiments and trace queries
+    <-> shared one-change draft
+    <-> immutable evidence-backed revisions and BehaviorDiff
     <-> one-shot hidden qualification
-    <-> human approval pause
+    <-> human-only Accept
 ```
 
 This is a narrow proof for one existing MuJoCo asset, not a general robot-design platform.
 
 ## Responsibility boundaries
 
-The OpenAI Agents SDK owns the Sol model loop, hosted Code Interpreter, tracing, run state, and
-approval interruption. The Streamable HTTP facade owns transport authentication, strict public
-schemas, tool annotations, and sanitized error mapping. `AssetAutopsyService` owns the fixture,
-budgets, evidence lineage, patch policy, public evaluation, and hidden qualification. A private
-commit-pinned MuJoCo MCP child owns physics execution.
-
-Neither the saved instructions nor the user prompt names an Asset Autopsy tool, a faulty element,
-an experiment, a trace-analysis method, an expected number of revisions, or a required order.
-
-The local Three.js workbench is a second client of the same service. It owns temporary
+The top-level Three.js workbench registers nine composable WebMCP capabilities and owns temporary
 visitor-isolated sessions, visible design state, a single shared uncommitted patch, subjective
-revision-bound feedback, and top-level WebMCP registration. Codex remains in the external
+revision-bound feedback, and the final human-only Accept action. Codex remains in the external
 conversation; the browser does not embed another agent or chat loop.
 
-The browser exposes nine composable capabilities rather than a repair recipe. Drafting never
-mutates the evidence ledger. `create_revision_from_draft` requires experiment evidence from the
-exact draft base, and `query_trace` gives agents bounded trace operations while the complete trace
-stays available to the visible UI. A successful hidden qualification locks editing. The final
-Accept action is a human-only UI endpoint and is not registered as WebMCP.
+`AssetAutopsyService` owns the fixture, budgets, evidence lineage, patch policy, public evaluation,
+and hidden qualification. A private commit-pinned MuJoCo MCP child owns physics execution. The
+generic six-tool Streamable HTTP MCP facade owns transport authentication, strict public schemas,
+tool annotations, and sanitized error mapping, but it does not run a model or expose acceptance.
+
+Drafting never mutates the evidence ledger. `create_revision_from_draft` requires experiment
+evidence from the exact draft base, and `query_trace` gives Codex bounded trace operations while
+the complete trace remains available to the visible UI. A successful hidden qualification locks
+editing. Accept validates the exact promotion ticket through the service and records only this
+temporary browser session's accepted state; it is not registered as WebMCP or Streamable HTTP MCP.
 
 ## Fixed case and budgets
 
@@ -62,30 +58,27 @@ allowlist is `joint.axis`, `joint.damping`, `joint.armature`, and `joint.frictio
 | Child revisions | 2 |
 | Hidden qualification attempts | 1 |
 
-A successful promotion ticket binds the complete one-to-two entry change history and the final
-asset hash.
+A successful promotion ticket binds the complete one-to-two entry change history and final asset
+hash. The ticket remains part of qualification because the human Accept boundary validates it.
 
-## Public capability contract
+## Capability contract
 
-- `open_case` exposes declared requirements, observable topology, current head, budgets, history,
-  and permitted changes.
-- `inspect_asset` exposes authored and compiled public values for an exact revision without fault
-  labels, raw XML, hidden data, or repair advice.
-- `run_task` evaluates the fixed public scenario. Child responses contain the parent comparison,
-  including first trace divergence, metric deltas, clause outcomes, and verdict.
-- `run_experiment` records a hypothesis, competing explanation, prediction, falsifier, complete
-  initial joint state, bounded control segments, and selected observables. A completed run returns
-  a 256-row named trace and provenance IDs without diagnosing the result.
-- `create_revision` accepts only the current head, exact base hash, completed finite current-base
-  experiment, owning hypothesis, and one allowlisted attribute patch.
-- `verify_revision` requires a public-passing current child, independently reruns the public case,
-  checks stored identities and lineage, and consumes the committed hidden suite once.
-- `publish_revision` is destructive and approval-gated. The accepted endpoint is the matching
-  approval request; post-approval materialization is intentionally absent.
+The WebMCP surface composes the same domain operations for a live page: design context and
+inspection, public task execution, generic experiments, bounded trace queries, a shared draft,
+evidence-backed revision creation, qualification, and revision-bound human feedback.
+
+The generic Streamable HTTP MCP surface retains six tools:
+
+- `open_case` exposes requirements, topology, current head, budgets, history, and permitted changes.
+- `inspect_asset` exposes authored and compiled public values for one exact revision.
+- `run_task` evaluates the fixed public scenario and returns a parent `BehaviorDiff` for children.
+- `run_experiment` records a falsifiable hypothesis, bounded controls, and selected observables.
+- `create_revision` accepts only exact current-base evidence and one allowlisted attribute patch.
+- `verify_revision` rechecks the public result and consumes the committed hidden suite once.
 
 Errors distinguish invalid inputs, stale evidence, public requirement failures, non-finite design
 outcomes, upstream simulation failures, stored-evidence corruption, and exhausted budgets. Raw
-upstream details and hidden qualification conditions do not cross the public boundary.
+upstream details and hidden qualification conditions do not cross either public boundary.
 
 ## Evidence binding
 
@@ -95,7 +88,7 @@ hash, hypothesis ID, and ledger events. Revision creation revalidates that:
 1. the cited base is the current head and its hash matches;
 2. the cited run completed finitely on that same base;
 3. the hypothesis ID owns that experiment;
-4. the changed target and attribute were preregistered by the hypothesis or its competitor;
+4. the changed target and attribute were preregistered by the hypothesis or competitor;
 5. the patch changes exactly one permitted authored value;
 6. the patched model is accepted by the pinned simulator before commit.
 
@@ -103,52 +96,21 @@ hash, hypothesis ID, and ledger events. Revision creation revalidates that:
 it reruns or retrieves the matching parent condition and returns a machine-validated
 `BehaviorDiff`. Old results therefore cannot silently become evidence for a new revision.
 
-## Autonomy evaluation
-
-`scripts/run_autonomy_eval.py` runs three independent goal-only attempts. Each receives a new
-temporary data root, service, bearer, and Agents SDK run. The agent is provisioned with serial
-tool calls, high reasoning effort, hosted Code Interpreter, sensitive trace data disabled, and a
-local function tool that requires approval for `publish_revision`.
-
-The event evaluator accepts additional exploration, differing valid call orders, and corrected
-invalid requests. It requires causal temporal relationships rather than a recipe:
-
-- each committed child follows a completed current-base experiment;
-- a completed Code Interpreter call reports the corresponding trace's run ID, hypothesis ID,
-  trace hash, row/time bounds, and per-signal sums derived from every row before the child;
-- the revision response proves one matching canonical diff;
-- the final public head passes with a changed `public_pass` comparison;
-- qualification returns public `1/1` and hidden `3/3`;
-- the exact ticket reaches the final approval request with no response or server invocation;
-- the ledger, facade calls, service calls, stored trace hashes, and revision provenance reconcile;
-- no private value crosses the raw event boundary.
-
-At least two of the three attempts must satisfy every gate. The evidence artifact contains the
-exact Git commit, model, prompt hash, per-attempt gate results, tool counts, revision and experiment
-counts, and hashed evidence identifiers. It contains no raw trace, credential, private path,
-fixture XML, or hidden scenario.
-
 ## Verification
 
 ```bash
 uv run pytest -q -m "not cgl"
-uv run pytest -q -m cgl
-uv run pytest -q
 uv run ruff check .
 uv run ruff format --check .
 git diff --check
+cd web && npm test && npm run build && npm audit --audit-level=high
 ```
 
-After committing the exact candidate, with `OPENAI_API_KEY` set:
-
-```bash
-uv run python scripts/run_autonomy_eval.py
-```
-
-A green deterministic suite is necessary but is not a substitute for at least two real-model
-successes recorded by that driver.
+On a CGL-capable Mac, also run `uv run pytest -q -m cgl` and the unfiltered suite. After the
+deterministic gates, exercise the live page from Codex with a goal-only request and confirm the
+human can observe, edit, give feedback, and exclusively perform final acceptance.
 
 ## Deferred work
 
 Public hosting, durable accounts, multiple robot families, arbitrary CAD/URDF import, FEA, real
-hardware actions, and post-approval publication remain outside this milestone.
+hardware actions, and post-accept export/materialization remain outside this milestone.

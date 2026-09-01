@@ -6,8 +6,8 @@
 - Keep each pull request limited to one executable issue. Put concrete, evidenced, out-of-scope improvements in Backlog instead of widening the current pull request.
 - Use a `yu/` branch and target `main`. Continue an existing pull request only after verifying its open state, exact head branch, current head SHA, and `main` base.
 - Preserve unrelated work and explicit user fences. Never force-push, merge, close a pull request, or mark an issue Done unless the user explicitly asks.
-- The approved autonomy direction is an OpenAI Agents SDK runner connected to the Streamable HTTP MCP facade, with a bounded generic `run_experiment`; fixed BehaviorDiff stays on `run_task`.
-- Keep domain policy in `AssetAutopsyService`. Code Interpreter handles generic trace analysis, while `publish_revision` must stop at the Agents SDK approval interruption before any domain side effect. Do not reintroduce the historical `run_probe` recipe or alias. Product CLI, arbitrary 3D, and advanced recovery are out of scope.
+- The approved product loop is Codex operating the top-level WebMCP tools in the local Three.js workbench. The browser shares the live design session with the human; it must not embed a second agent or chat surface.
+- Keep domain policy in `AssetAutopsyService`. Keep `run_experiment` generic and bounded, fixed `BehaviorDiff` on `run_task`, drafts outside the immutable ledger, and final acceptance human-only. Do not expose Accept as a WebMCP or Streamable HTTP MCP tool. Do not reintroduce the historical `run_probe` recipe or alias. Product CLI, arbitrary 3D, and advanced recovery are out of scope.
 
 ## Implementation and verification
 

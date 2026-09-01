@@ -107,7 +107,6 @@ def test_service_requires_strict_models_and_a_same_revision_baseline(tmp_path) -
         asyncio.run(service.run_experiment(payload))
     assert baseline.value.code == "BASELINE_REQUIRED"
     assert runner.calls == 0
-    assert service.publish_invocation_count == 0
 
 
 def test_removed_surfaces_have_no_production_references() -> None:
