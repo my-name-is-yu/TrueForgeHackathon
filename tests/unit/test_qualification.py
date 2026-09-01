@@ -73,14 +73,12 @@ def test_promotion_ticket_digest_binds_commitments_for_qualifiable_heads(
         "holdout_commitment_sha256": "e" * 64,
     }
     ticket = build_promotion_ticket(
-        ticket_id="evt_ticket",
         case_id="case_compound-arm-01",
         revision_id="r002",
         asset_sha256="f" * 64,
         canonical_diff=diffs[:diff_count],
         public_result=public,
         holdout_result=holdout,
-        export_name="compound-arm-01-repaired",
         commitment_hashes=commitments,
     )
 
@@ -92,3 +90,9 @@ def test_promotion_ticket_digest_binds_commitments_for_qualifiable_heads(
         {**ticket.model_dump(mode="json"), "ticket_digest": "0" * 64}
     )
     assert validate_promotion_ticket(tampered, commitment_hashes=commitments) is False
+    changed_asset = PromotionTicket.model_validate(
+        {**ticket.model_dump(mode="json"), "asset_sha256": "0" * 64}
+    )
+    assert (
+        validate_promotion_ticket(changed_asset, commitment_hashes=commitments) is False
+    )

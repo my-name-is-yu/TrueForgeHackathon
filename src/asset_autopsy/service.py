@@ -981,14 +981,12 @@ class AssetAutopsyService:
             passed = hidden.passed == hidden.total and not hidden.violated_clause_ids
             if passed:
                 ticket = build_promotion_ticket(
-                    ticket_id=_new_id("evt"),
                     case_id=case.case_id,
                     revision_id=revision.revision_id,
                     asset_sha256=revision.asset_sha256,
                     canonical_diff=cumulative_diff,
                     public_result=public_result,
                     holdout_result=holdout_result,
-                    export_name="compound-arm-01-repaired",
                     commitment_hashes=commitments,
                 )
             terminal_payload = {

@@ -389,20 +389,12 @@ class VerifyRevisionInput(StrictModel):
 
 
 class PromotionTicket(StrictModel):
-    ticket_id: EventId
     case_id: CaseId
     revision_id: RevisionId
     asset_sha256: AssetHash
     canonical_diff: list["CanonicalDiffEntry"] = Field(min_length=1, max_length=2)
     public_result: "AggregateResult"
     holdout_result: "AggregateResult"
-    export_name: Annotated[
-        str,
-        StringConstraints(
-            strict=True, min_length=1, max_length=96, pattern=r"^[a-z0-9][a-z0-9-]*$"
-        ),
-    ]
-    qualified_core_sha256: AssetHash
     ticket_digest: AssetHash
 
     @model_validator(mode="after")

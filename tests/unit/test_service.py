@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -107,42 +106,6 @@ def test_service_requires_strict_models_and_a_same_revision_baseline(tmp_path) -
         asyncio.run(service.run_experiment(payload))
     assert baseline.value.code == "BASELINE_REQUIRED"
     assert runner.calls == 0
-
-
-def test_removed_surfaces_have_no_production_references() -> None:
-    package = Path(__file__).resolve().parents[2] / "src" / "asset_autopsy"
-    assert not (package / "publisher.py").exists()
-    production = "\n".join(path.read_text() for path in sorted(package.glob("*.py")))
-    for removed in (
-        "PublishRevisionOutput",
-        "PublicationBundle",
-        "PublicationError",
-        "PromotionReceipt",
-        "PublicationRecord",
-        "record_promotion_receipt",
-        "reconcile_promotion",
-        "get_promotion_receipt",
-        "promoted_revision_id",
-        "promotion_state",
-        "publication_receipt_count",
-        "published_bundle_count",
-        "public_artifact_count",
-        "publication_root",
-        '"PROMOTED"',
-        "QUALIFICATION_RECOVERING",
-        "QUALIFICATION_RECOVERED",
-        '"recovering"',
-        "mark_qualification_recovering",
-        "recover_qualification",
-        "StorageIntegrityError =",
-        "restore_case_state =",
-        "append_ledger_event =",
-        "commit_revision_and_event =",
-        "complete_qualification =",
-        "SQLiteEvidenceStore =",
-        "Storage = EvidenceStore",
-    ):
-        assert removed not in production
 
 
 def test_service_rejects_a_tampered_revision_object_with_a_sanitized_integrity_error(

@@ -1311,7 +1311,6 @@ def _verify_revision_payload() -> dict[str, object]:
 
 def _promotion_ticket_payload() -> dict[str, object]:
     return {
-        "ticket_id": "evt_ticket",
         "case_id": "case_demo",
         "revision_id": "r002",
         "asset_sha256": "1" * 64,
@@ -1331,8 +1330,6 @@ def _promotion_ticket_payload() -> dict[str, object]:
         ],
         "public_result": {"passed": 1, "total": 1},
         "holdout_result": {"passed": 3, "total": 3},
-        "export_name": "repaired-asset",
-        "qualified_core_sha256": "2" * 64,
         "ticket_digest": "3" * 64,
     }
 

@@ -1856,14 +1856,14 @@ def test_qualification_reserve_terminal_preserves_exact_identity(
         **identity,
         state="PASSED",
         result={
-            "qualified_core_sha256": "9" * 64,
+            "ticket_digest": "9" * 64,
             "passed": 3,
             "members": ("a", "b"),
         },
     )
     assert terminal.state == "PASSED"
     assert terminal.result == {
-        "qualified_core_sha256": "9" * 64,
+        "ticket_digest": "9" * 64,
         "passed": 3,
         "members": ["a", "b"],
     }
@@ -1874,7 +1874,7 @@ def test_qualification_reserve_terminal_preserves_exact_identity(
             **identity,
             state="PASSED",
             result={
-                "qualified_core_sha256": "9" * 64,
+                "ticket_digest": "9" * 64,
                 "passed": 3,
                 "members": ("a", "b"),
             },
@@ -1900,7 +1900,7 @@ def test_qualification_reserve_terminal_preserves_exact_identity(
         store.record_qualification_terminal(
             **identity,
             state="PASSED",
-            result={"qualified_core_sha256": "0" * 64, "passed": 999},
+            result={"ticket_digest": "0" * 64, "passed": 999},
         )
     with pytest.raises(QualificationConflictError):
         store.reserve_qualification(

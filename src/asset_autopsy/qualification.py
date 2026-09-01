@@ -123,65 +123,31 @@ class HiddenVerifier:
 
 def build_promotion_ticket(
     *,
-    ticket_id: str,
     case_id: str,
     revision_id: str,
     asset_sha256: str,
     canonical_diff: Sequence[CanonicalDiffEntry],
     public_result: AggregateResult,
     holdout_result: AggregateResult,
-    export_name: str,
     commitment_hashes: dict[str, str],
 ) -> PromotionTicket:
-    core = qualified_core_payload(
-        case_id=case_id,
-        revision_id=revision_id,
-        asset_sha256=asset_sha256,
-        canonical_diff=canonical_diff,
-        public_result=public_result,
-        holdout_result=holdout_result,
-        export_name=export_name,
-        commitment_hashes=commitment_hashes,
-    )
-    qualified_core_sha256 = _sha256(core)
     ticket_fields = {
-        "ticket_id": ticket_id,
         "case_id": case_id,
         "revision_id": revision_id,
         "asset_sha256": asset_sha256,
         "canonical_diff": [entry.model_dump(mode="json") for entry in canonical_diff],
         "public_result": public_result.model_dump(mode="json"),
         "holdout_result": holdout_result.model_dump(mode="json"),
-        "export_name": export_name,
-        "qualified_core_sha256": qualified_core_sha256,
     }
     return PromotionTicket(
         **ticket_fields,
-        ticket_digest=_sha256(ticket_fields),
+        ticket_digest=_sha256(
+            {
+                **ticket_fields,
+                "commitment_hashes": dict(sorted(commitment_hashes.items())),
+            }
+        ),
     )
-
-
-def qualified_core_payload(
-    *,
-    case_id: str,
-    revision_id: str,
-    asset_sha256: str,
-    canonical_diff: Sequence[CanonicalDiffEntry],
-    public_result: AggregateResult,
-    holdout_result: AggregateResult,
-    export_name: str,
-    commitment_hashes: dict[str, str],
-) -> dict[str, object]:
-    return {
-        "case_id": case_id,
-        "revision_id": revision_id,
-        "asset_sha256": asset_sha256,
-        "canonical_diff": [entry.model_dump(mode="json") for entry in canonical_diff],
-        "public_result": public_result.model_dump(mode="json"),
-        "holdout_result": holdout_result.model_dump(mode="json"),
-        "export_name": export_name,
-        "commitment_hashes": dict(sorted(commitment_hashes.items())),
-    }
 
 
 def validate_promotion_ticket(
@@ -189,33 +155,12 @@ def validate_promotion_ticket(
     *,
     commitment_hashes: dict[str, str],
 ) -> bool:
-    core = qualified_core_payload(
-        case_id=ticket.case_id,
-        revision_id=ticket.revision_id,
-        asset_sha256=ticket.asset_sha256,
-        canonical_diff=ticket.canonical_diff,
-        public_result=ticket.public_result,
-        holdout_result=ticket.holdout_result,
-        export_name=ticket.export_name,
-        commitment_hashes=commitment_hashes,
-    )
-    qualified_hash = _sha256(core)
-    ticket_fields = {
-        "ticket_id": ticket.ticket_id,
-        "case_id": ticket.case_id,
-        "revision_id": ticket.revision_id,
-        "asset_sha256": ticket.asset_sha256,
-        "canonical_diff": [
-            entry.model_dump(mode="json") for entry in ticket.canonical_diff
-        ],
-        "public_result": ticket.public_result.model_dump(mode="json"),
-        "holdout_result": ticket.holdout_result.model_dump(mode="json"),
-        "export_name": ticket.export_name,
-        "qualified_core_sha256": qualified_hash,
-    }
-    return (
-        ticket.qualified_core_sha256 == qualified_hash
-        and ticket.ticket_digest == _sha256(ticket_fields)
+    ticket_fields = ticket.model_dump(mode="json", exclude={"ticket_digest"})
+    return ticket.ticket_digest == _sha256(
+        {
+            **ticket_fields,
+            "commitment_hashes": dict(sorted(commitment_hashes.items())),
+        }
     )
 
 
@@ -228,6 +173,5 @@ __all__ = [
     "HiddenVerifier",
     "QualificationExecutionError",
     "build_promotion_ticket",
-    "qualified_core_payload",
     "validate_promotion_ticket",
 ]
