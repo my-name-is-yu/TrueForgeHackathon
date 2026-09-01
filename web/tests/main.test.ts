@@ -68,14 +68,19 @@ describe("public task metrics", () => {
     await vi.waitFor(() => {
       expect(document.querySelector("#revision")!.textContent).toContain("r001");
     });
+    mocks.getContext.mockRejectedValue(new Error("context unavailable"));
 
     resolveTask({
       result: "pass",
       observations: [{ metric: "final_target_error_m", value: 0.001 }],
     });
     await vi.waitFor(() => {
+      expect(document.querySelector("#run-task")!.hasAttribute("disabled")).toBe(false);
       expect(document.querySelector("#metrics")!.textContent).toContain(
         "Ask Codex to experiment",
+      );
+      expect(document.querySelector("#metrics")!.textContent).not.toContain(
+        "final target error m",
       );
     });
   });

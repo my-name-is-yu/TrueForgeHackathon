@@ -199,9 +199,12 @@ $("#run-task").addEventListener("click", async () => {
       assetSha256: context.head_asset_sha256,
     };
     const result = await callTool("run_task", { case_id: context.case.case_id, revision_id: taskIdentity.revisionId, scenario_id: "public_center", capture: "metrics" }) as { result: string; observations: { metric: string; value: number | null }[] };
-    taskMetrics = bindTaskMetrics(
-      taskIdentity,
-      result.observations,
+    taskMetrics = retainTaskMetrics(
+      bindTaskMetrics(taskIdentity, result.observations),
+      {
+        revisionId: context.head_revision_id,
+        assetSha256: context.head_asset_sha256,
+      },
     );
     renderTaskMetrics();
     await refresh();
@@ -223,7 +226,7 @@ $("#accept").addEventListener("click", async () => {
 
 document.addEventListener("asset-autopsy:changed", () => { void refresh(); });
 
+await refresh();
 const siteToolsAvailable = await registerWebMcpTools();
 $("#webmcp-status").textContent = siteToolsAvailable ? "9 site tools ready" : "Visual mode";
 $("#compatibility").hidden = siteToolsAvailable;
-await refresh();
