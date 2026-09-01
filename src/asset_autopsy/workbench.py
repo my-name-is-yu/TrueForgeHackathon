@@ -268,6 +268,22 @@ async def _head(session: WorkbenchSession):
     return case, case.revision_history[-1]
 
 
+async def _require_promotion_ticket(
+    session: WorkbenchSession, ticket_digest: AssetHash
+) -> PromotionTicket:
+    ticket = session.promotion_ticket
+    if (
+        ticket is None
+        or ticket_digest != ticket.ticket_digest
+        or not await session.service.validate_promotion_acceptance(ticket)
+    ):
+        raise WorkbenchError(
+            "INVALID_PROMOTION_TICKET",
+            "This session does not have a valid promotion ticket.",
+        )
+    return ticket
+
+
 async def _context(session: WorkbenchSession) -> dict[str, Any]:
     case, head = await _head(session)
     inspection = await session.service.inspect_asset(
@@ -622,16 +638,7 @@ def create_workbench_app(
                 session,
                 created,
             ):
-                ticket = session.promotion_ticket
-                if (
-                    ticket is None
-                    or body.ticket_digest != ticket.ticket_digest
-                    or not await session.service.validate_promotion_acceptance(ticket)
-                ):
-                    raise WorkbenchError(
-                        "INVALID_PROMOTION_TICKET",
-                        "Accept requires this session's successful promotion ticket.",
-                    )
+                ticket = await _require_promotion_ticket(session, body.ticket_digest)
                 session.accepted = True
                 response = JSONResponse(
                     {
@@ -659,17 +666,12 @@ def create_workbench_app(
                 session,
                 created,
             ):
-                ticket = session.promotion_ticket
-                if (
-                    session.accepted
-                    or ticket is None
-                    or body.ticket_digest != ticket.ticket_digest
-                    or not await session.service.validate_promotion_acceptance(ticket)
-                ):
+                if session.accepted:
                     raise WorkbenchError(
                         "INVALID_PROMOTION_TICKET",
-                        "Reject requires this session's pending promotion ticket.",
+                        "An accepted revision cannot be rejected.",
                     )
+                ticket = await _require_promotion_ticket(session, body.ticket_digest)
                 if len(session.rejections) >= 50:
                     raise WorkbenchError(
                         "REJECTION_LIMIT_REACHED",
