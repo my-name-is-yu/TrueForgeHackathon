@@ -1311,6 +1311,7 @@ def _verify_revision_payload() -> dict[str, object]:
 
 def _promotion_ticket_payload() -> dict[str, object]:
     return {
+        "ticket_id": "evt_ticket",
         "case_id": "case_demo",
         "revision_id": "r002",
         "asset_sha256": "1" * 64,

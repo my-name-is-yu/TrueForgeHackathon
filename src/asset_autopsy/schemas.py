@@ -389,6 +389,7 @@ class VerifyRevisionInput(StrictModel):
 
 
 class PromotionTicket(StrictModel):
+    ticket_id: EventId
     case_id: CaseId
     revision_id: RevisionId
     asset_sha256: AssetHash

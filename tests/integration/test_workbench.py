@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -169,6 +170,35 @@ def _create_repaired_revision(client: TestClient, context: dict) -> dict:
     )
     assert created.status_code == 200
     return evidence
+
+
+def _qualify_repaired_revision(client: TestClient) -> dict:
+    context = _context(client)
+    _create_repaired_revision(client, context)
+    repaired = _context(client)
+    task = client.post(
+        "/api/tools/run_task",
+        json={
+            "case_id": repaired["case"]["case_id"],
+            "revision_id": repaired["head_revision_id"],
+            "scenario_id": "public_center",
+            "capture": "metrics",
+        },
+    )
+    assert task.status_code == 200
+    assert task.json()["result"]["result"] == "pass"
+    verified = client.post(
+        "/api/tools/verify_revision",
+        json={
+            "case_id": repaired["case"]["case_id"],
+            "revision_id": repaired["head_revision_id"],
+            "expected_asset_sha256": repaired["head_asset_sha256"],
+        },
+    )
+    assert verified.status_code == 200
+    ticket = verified.json()["result"]["promotion_ticket"]
+    assert ticket is not None
+    return ticket
 
 
 def test_sessions_are_isolated_and_reset_discards_temporary_state(tmp_path) -> None:
@@ -359,30 +389,7 @@ def test_feedback_rejects_stale_revision_and_accept_is_human_only(tmp_path) -> N
         "/api/tools/accept_revision", json={"ticket_digest": "0" * 64}
     )
     assert unknown_tool.status_code == 404
-    _create_repaired_revision(client, context)
-    repaired = _context(client)
-    task = client.post(
-        "/api/tools/run_task",
-        json={
-            "case_id": repaired["case"]["case_id"],
-            "revision_id": repaired["head_revision_id"],
-            "scenario_id": "public_center",
-            "capture": "metrics",
-        },
-    )
-    assert task.status_code == 200
-    assert task.json()["result"]["result"] == "pass"
-    verified = client.post(
-        "/api/tools/verify_revision",
-        json={
-            "case_id": repaired["case"]["case_id"],
-            "revision_id": repaired["head_revision_id"],
-            "expected_asset_sha256": repaired["head_asset_sha256"],
-        },
-    )
-    assert verified.status_code == 200
-    ticket = verified.json()["result"]["promotion_ticket"]
-    assert ticket is not None
+    ticket = _qualify_repaired_revision(client)
     locked = _context(client)
     assert locked["editing_locked"] is True
 
@@ -394,6 +401,28 @@ def test_feedback_rejects_stale_revision_and_accept_is_human_only(tmp_path) -> N
     assert accepted.status_code == 200
     assert accepted.json()["accepted"] is True
     assert _context(client)["accepted"] is True
+
+
+def test_accept_rejects_another_sessions_ticket_digest(tmp_path) -> None:
+    app = create_workbench_app(
+        manager=_manager(tmp_path), frontend_dir=tmp_path / "missing"
+    )
+    first = TestClient(app)
+    second = TestClient(app)
+
+    first_ticket = _qualify_repaired_revision(first)
+    second_ticket = _qualify_repaired_revision(second)
+
+    assert first_ticket["ticket_id"] != second_ticket["ticket_id"]
+    assert first_ticket["ticket_digest"] != second_ticket["ticket_digest"]
+    rejected = first.post(
+        "/api/accept",
+        content=json.dumps({"ticket_digest": second_ticket["ticket_digest"]}),
+        headers={"content-type": "text/plain"},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "INVALID_PROMOTION_TICKET"
+    assert _context(first)["accepted"] is False
 
 
 def test_accept_rejects_malformed_json_with_structured_error(tmp_path) -> None:

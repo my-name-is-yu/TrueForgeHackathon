@@ -123,6 +123,7 @@ class HiddenVerifier:
 
 def build_promotion_ticket(
     *,
+    ticket_id: str,
     case_id: str,
     revision_id: str,
     asset_sha256: str,
@@ -132,6 +133,7 @@ def build_promotion_ticket(
     commitment_hashes: dict[str, str],
 ) -> PromotionTicket:
     ticket_fields = {
+        "ticket_id": ticket_id,
         "case_id": case_id,
         "revision_id": revision_id,
         "asset_sha256": asset_sha256,

@@ -981,6 +981,7 @@ class AssetAutopsyService:
             passed = hidden.passed == hidden.total and not hidden.violated_clause_ids
             if passed:
                 ticket = build_promotion_ticket(
+                    ticket_id=_new_id("evt"),
                     case_id=case.case_id,
                     revision_id=revision.revision_id,
                     asset_sha256=revision.asset_sha256,
