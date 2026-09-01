@@ -66,14 +66,15 @@ conversation remains the command surface.
 
 The workbench is local-first and visitor-isolated. Each browser session receives a temporary
 service, evidence ledger, draft, traces, feedback, and qualification lifecycle that disappear
-when the server stops. Reset replaces only that browser session with a fresh case.
+when the server stops. The server retains up to eight sessions and evicts the least recently used
+idle session when a ninth is created. Reset replaces only that browser session with a fresh case.
 
 ```bash
 cd web
 npm ci
 npm run build
 cd ..
-uv run asset-autopsy-workbench
+uv run uvicorn asset_autopsy.workbench:create_workbench_app --factory --host 127.0.0.1 --port 8713
 ```
 
 Open `http://127.0.0.1:8713` in the Codex desktop browser. Use GPT-5.6 Sol or Terra when invoking

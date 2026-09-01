@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import xml.etree.ElementTree as ET
 
+import pytest
 from starlette.testclient import TestClient
 
 from asset_autopsy.fixture import CASE_ID, clean_end_effector_position
 from asset_autopsy.runner import RunRecord, SegmentRecord
 from asset_autopsy.service import AssetAutopsyService
-from asset_autopsy.workbench import SessionManager, create_workbench_app
+from asset_autopsy.workbench import (
+    SESSION_COOKIE,
+    SessionManager,
+    WorkbenchError,
+    create_workbench_app,
+)
 
 
 class WorkbenchRunner:
@@ -171,6 +178,10 @@ def test_sessions_are_isolated_and_reset_discards_temporary_state(tmp_path) -> N
     second = TestClient(app)
     first_context = _context(first)
     second_context = _context(second)
+    first_session_id = first.cookies.get(SESSION_COOKIE)
+    assert first_session_id is not None
+    first_session = manager.sessions[first_session_id]
+    previous_root = first_session.data_root
 
     response = first.post("/api/tools/set_draft_patch", json=_draft(first_context))
     assert response.status_code == 200
@@ -192,10 +203,88 @@ def test_sessions_are_isolated_and_reset_discards_temporary_state(tmp_path) -> N
 
     reset = first.post("/api/reset")
     assert reset.status_code == 200
+    assert manager.sessions[first_session_id] is first_session
+    assert first_session.data_root != previous_root
+    assert first_session.data_root.is_dir()
+    assert not previous_root.exists()
     reset_context = _context(first)
     assert reset_context["draft"] is None
     assert reset_context["feedback"] == []
     assert reset_context["head_revision_id"] == "r000"
+
+
+def test_session_limit_evicts_idle_lru_and_deletes_its_generation(tmp_path) -> None:
+    manager = SessionManager(
+        root=tmp_path,
+        service_factory=lambda path: AssetAutopsyService(
+            path, runner=WorkbenchRunner()
+        ),
+        max_sessions=2,
+    )
+    app = create_workbench_app(manager=manager, frontend_dir=tmp_path / "missing")
+    first, second, third = TestClient(app), TestClient(app), TestClient(app)
+    _context(first)
+    first_id = first.cookies.get(SESSION_COOKIE)
+    assert first_id is not None
+    first_root = manager.sessions[first_id].data_root
+    _context(second)
+    _context(third)
+
+    assert len(manager.sessions) == 2
+    assert first_id not in manager.sessions
+    assert not first_root.exists()
+
+
+def test_reset_reinitializes_same_object_for_an_already_queued_request(
+    tmp_path,
+) -> None:
+    manager = _manager(tmp_path)
+
+    async def scenario() -> None:
+        async with manager.lease(None) as (session_id, session, _created):
+            previous_root = session.data_root
+
+            async def queued_request():
+                async with manager.lease(session_id) as (
+                    _queued_id,
+                    queued_session,
+                    _queued_created,
+                ):
+                    return queued_session, queued_session.service
+
+            queued = asyncio.create_task(queued_request())
+            await asyncio.sleep(0)
+            assert session.active_requests == 2
+            manager.reset(session_id, session)
+            replacement_service = session.service
+
+        queued_session, queued_service = await queued
+        assert queued_session is session
+        assert queued_service is replacement_service
+        assert not previous_root.exists()
+
+    asyncio.run(scenario())
+
+
+def test_session_limit_rejects_new_session_when_every_session_is_busy(
+    tmp_path,
+) -> None:
+    manager = SessionManager(
+        root=tmp_path,
+        service_factory=lambda path: AssetAutopsyService(
+            path, runner=WorkbenchRunner()
+        ),
+        max_sessions=1,
+    )
+
+    async def scenario() -> None:
+        async with manager.lease(None):
+            with pytest.raises(WorkbenchError) as caught:
+                async with manager.lease(None):
+                    pass
+            assert caught.value.code == "SESSION_CAPACITY_REACHED"
+
+    asyncio.run(scenario())
 
 
 def test_draft_is_not_ledger_state_and_revision_requires_session_evidence(

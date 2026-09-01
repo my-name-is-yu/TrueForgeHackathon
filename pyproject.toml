@@ -12,9 +12,6 @@ dependencies = [
     "uvicorn==0.52.4",
 ]
 
-[project.scripts]
-asset-autopsy-workbench = "asset_autopsy.workbench_cli:main"
-
 [dependency-groups]
 test = [
     "pytest==8.4.1",

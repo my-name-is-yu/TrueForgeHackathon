@@ -1,6 +1,7 @@
 import "./style.css";
 import { acceptRevision, callTool, getContext, resetSession, type JsonObject } from "./api";
 import { createRobotView } from "./robot";
+import { bindTaskMetrics, retainTaskMetrics, type TaskMetricsState } from "./task-metrics";
 import { registerWebMcpTools } from "./webmcp";
 
 type Joint = {
@@ -74,6 +75,7 @@ app.innerHTML = `
 const canvas = document.querySelector<HTMLElement>("#robot-canvas")!;
 const robot = createRobotView(canvas);
 let context: Context;
+let taskMetrics: TaskMetricsState | null = null;
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const escapeHtml = (value: unknown) => String(value)
@@ -103,8 +105,19 @@ function updateCurrentValue(): void {
   robot.update({ joint: joint.name, attribute });
 }
 
+function renderTaskMetrics(): void {
+  $("#metrics").innerHTML = taskMetrics
+    ? taskMetrics.observations.map((item) => `<article><span>${escapeHtml(item.metric.replaceAll("_", " "))}</span><strong>${item.value === null ? "—" : Number(item.value).toPrecision(4)}</strong></article>`).join("")
+    : `<p class="empty-copy">Ask Codex to experiment, or run the fixed task here.</p>`;
+}
+
 function render(next: Context): void {
   context = next;
+  taskMetrics = retainTaskMetrics(taskMetrics, {
+    revisionId: context.head_revision_id,
+    assetSha256: context.head_asset_sha256,
+  });
+  renderTaskMetrics();
   $("#revision").textContent = `${context.case.case_id} / ${context.head_revision_id}`;
   $("#hash").textContent = context.head_asset_sha256.slice(0, 12);
   $("#lock-state").textContent = context.accepted ? "Accepted" : context.editing_locked ? "Locked" : "Editable";
@@ -183,7 +196,11 @@ $("#run-task").addEventListener("click", async () => {
   try {
     $("#run-task").setAttribute("disabled", "");
     const result = await callTool("run_task", { case_id: context.case.case_id, revision_id: context.head_revision_id, scenario_id: "public_center", capture: "metrics" }) as { result: string; observations: { metric: string; value: number | null }[] };
-    $("#metrics").innerHTML = result.observations.map((item) => `<article><span>${escapeHtml(item.metric.replaceAll("_", " "))}</span><strong>${item.value === null ? "—" : Number(item.value).toPrecision(4)}</strong></article>`).join("");
+    taskMetrics = bindTaskMetrics(
+      { revisionId: context.head_revision_id, assetSha256: context.head_asset_sha256 },
+      result.observations,
+    );
+    renderTaskMetrics();
     await refresh();
     toast(`Public task: ${result.result.toUpperCase()}`);
   } catch (error) { toast(String(error), true); }
@@ -191,7 +208,7 @@ $("#run-task").addEventListener("click", async () => {
 });
 
 $("#reset").addEventListener("click", async () => {
-  try { await resetSession(); await refresh(); toast("Fresh isolated case created."); }
+  try { await resetSession(); taskMetrics = null; await refresh(); toast("Fresh isolated case created."); }
   catch (error) { toast(String(error), true); }
 });
 

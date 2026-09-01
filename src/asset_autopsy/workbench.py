@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import math
 import secrets
+import shutil
 import tempfile
-from collections.abc import Callable
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -17,7 +20,6 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .fixture import CASE_ID
-from .qualification import validate_promotion_ticket
 from .schemas import (
     AttributePatch,
     AssetHash,
@@ -38,6 +40,7 @@ from .service import AssetAutopsyService, DomainError
 
 
 SESSION_COOKIE = "asset_autopsy_session"
+MAX_SESSIONS = 8
 WEBMCP_TOOL_NAMES = (
     "get_design_context",
     "inspect_design",
@@ -126,7 +129,9 @@ class DesignFeedback:
 @dataclass(slots=True)
 class WorkbenchSession:
     service: AssetAutopsyService
+    data_root: Path
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    active_requests: int = 0
     draft: DraftPatch | None = None
     traces: dict[str, dict[str, Any]] = field(default_factory=dict)
     feedback: list[DesignFeedback] = field(default_factory=list)
@@ -144,33 +149,95 @@ class SessionManager:
         *,
         root: Path | None = None,
         service_factory: Callable[[Path], AssetAutopsyService] = AssetAutopsyService,
+        max_sessions: int = MAX_SESSIONS,
     ) -> None:
+        if not 1 <= max_sessions <= 32:
+            raise ValueError("max_sessions must be between 1 and 32")
         self._tempdir = None if root is not None else tempfile.TemporaryDirectory()
-        self.root = Path(root or self._tempdir.name)
+        self.root = Path(root or self._tempdir.name).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.service_factory = service_factory
-        self.sessions: dict[str, WorkbenchSession] = {}
+        self.max_sessions = max_sessions
+        self.sessions: OrderedDict[str, WorkbenchSession] = OrderedDict()
+        self._lock = asyncio.Lock()
 
-    def get(self, session_id: str | None) -> tuple[str, WorkbenchSession, bool]:
-        if session_id is not None and session_id in self.sessions:
-            return session_id, self.sessions[session_id], False
-        session_id = secrets.token_urlsafe(24)
-        session = self._new_session(session_id)
-        self.sessions[session_id] = session
-        return session_id, session, True
+    @asynccontextmanager
+    async def lease(
+        self, session_id: str | None
+    ) -> AsyncIterator[tuple[str, WorkbenchSession, bool]]:
+        async with self._lock:
+            created = session_id is None or session_id not in self.sessions
+            if created:
+                if len(self.sessions) >= self.max_sessions:
+                    self._evict_one()
+                session_id = secrets.token_urlsafe(24)
+                session = self._new_session(session_id)
+                self.sessions[session_id] = session
+            else:
+                session = self.sessions[session_id]
+                self.sessions.move_to_end(session_id)
+            session.active_requests += 1
+        try:
+            async with session.lock:
+                yield session_id, session, created
+        finally:
+            async with self._lock:
+                session.active_requests -= 1
 
-    def reset(self, session_id: str) -> WorkbenchSession:
-        previous = self.sessions[session_id]
-        previous.service.store.close()
-        session = self._new_session(session_id)
-        self.sessions[session_id] = session
+    def reset(self, session_id: str, session: WorkbenchSession) -> WorkbenchSession:
+        if self.sessions.get(session_id) is not session or not session.lock.locked():
+            raise RuntimeError("reset requires the leased current session")
+        replacement = self._new_session(session_id)
+        previous_service = session.service
+        previous_root = session.data_root
+        session.service = replacement.service
+        session.data_root = replacement.data_root
+        session.draft = None
+        session.traces.clear()
+        session.feedback.clear()
+        session.promotion_ticket = None
+        session.accepted = False
+        previous_service.store.close()
+        self._delete_generation(previous_root)
         return session
 
     def _new_session(self, session_id: str) -> WorkbenchSession:
         generation = secrets.token_hex(8)
+        data_root = self.root / session_id / generation
         return WorkbenchSession(
-            service=self.service_factory(self.root / session_id / generation)
+            service=self.service_factory(data_root), data_root=data_root
         )
+
+    def _evict_one(self) -> None:
+        session_id = next(
+            (
+                key
+                for key, session in self.sessions.items()
+                if session.active_requests == 0 and not session.lock.locked()
+            ),
+            None,
+        )
+        if session_id is None:
+            raise WorkbenchError(
+                "SESSION_CAPACITY_REACHED",
+                "All temporary workbench sessions are currently busy.",
+                503,
+            )
+        session = self.sessions.pop(session_id)
+        session.service.store.close()
+        self._delete_generation(session.data_root)
+
+    def _delete_generation(self, data_root: Path) -> None:
+        resolved = data_root.resolve()
+        relative = resolved.relative_to(self.root)
+        if len(relative.parts) != 2:
+            raise RuntimeError("session generation path is invalid")
+        if resolved.exists():
+            shutil.rmtree(resolved)
+        try:
+            resolved.parent.rmdir()
+        except OSError:
+            pass
 
 
 def _json(value: Any) -> Any:
@@ -288,15 +355,6 @@ async def _call_tool(
             raise WorkbenchError(
                 "SESSION_EXPERIMENT_REQUIRED",
                 "The cited experiment must have completed in this browser session.",
-            )
-        stored_run = session.service.store.get_run(request.basis_experiment_run_id)
-        if (
-            stored_run.case_id != CASE_ID
-            or stored_run.revision_id != draft.base_revision_id
-        ):
-            raise WorkbenchError(
-                "EXPERIMENT_REVISION_MISMATCH",
-                "The cited experiment does not belong to the draft base revision.",
             )
         result = await session.service.create_revision(
             CreateRevisionInput(
@@ -451,14 +509,19 @@ def create_workbench_app(
         frontend_dir = Path(__file__).resolve().parents[2] / "web" / "dist"
 
     async def tool_endpoint(request: Request) -> Response:
-        session_id, session, created = manager.get(request.cookies.get(SESSION_COOKIE))
+        created = False
+        session_id = ""
         try:
             body = await request.json()
             if not isinstance(body, dict):
                 raise WorkbenchError(
                     "INVALID_ARGUMENTS", "Tool arguments must be an object.", 422
                 )
-            async with session.lock:
+            async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
+                session_id,
+                session,
+                created,
+            ):
                 result = await _call_tool(session, request.path_params["name"], body)
             response = JSONResponse({"ok": True, "result": _json(result)})
         except (ValidationError, ValueError) as error:
@@ -500,8 +563,11 @@ def create_workbench_app(
         return response
 
     async def context_endpoint(request: Request) -> Response:
-        session_id, session, created = manager.get(request.cookies.get(SESSION_COOKIE))
-        async with session.lock:
+        async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
+            session_id,
+            session,
+            created,
+        ):
             context = await _context(session)
         response = JSONResponse(context)
         if created:
@@ -511,8 +577,11 @@ def create_workbench_app(
         return response
 
     async def trace_endpoint(request: Request) -> Response:
-        session_id, session, created = manager.get(request.cookies.get(SESSION_COOKIE))
-        async with session.lock:
+        async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
+            session_id,
+            session,
+            created,
+        ):
             trace = session.traces.get(request.path_params["run_id"])
         response = (
             JSONResponse(trace)
@@ -534,29 +603,20 @@ def create_workbench_app(
         return response
 
     async def accept_endpoint(request: Request) -> Response:
-        session_id, session, created = manager.get(request.cookies.get(SESSION_COOKIE))
+        created = False
+        session_id = ""
         try:
-            async with session.lock:
-                body = AcceptRequest.model_validate(await request.json())
+            body = AcceptRequest.model_validate(await request.json())
+            async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
+                session_id,
+                session,
+                created,
+            ):
                 ticket = session.promotion_ticket
-                case, head = await _head(session)
-                stored_case = session.service.store.get_case(CASE_ID)
-                commitment_hashes = {
-                    "source_asset_sha256": stored_case.source_asset_sha256,
-                    "controller_sha256": stored_case.controller_sha256,
-                    "public_contract_sha256": stored_case.public_contract_sha256,
-                    "runner_sha256": stored_case.runner_sha256,
-                    "holdout_commitment_sha256": stored_case.holdout_commitment_sha256,
-                }
                 if (
                     ticket is None
                     or body.ticket_digest != ticket.ticket_digest
-                    or case.qualification_state != "passed"
-                    or ticket.revision_id != head.revision_id
-                    or ticket.asset_sha256 != head.asset_sha256
-                    or not validate_promotion_ticket(
-                        ticket, commitment_hashes=commitment_hashes
-                    )
+                    or not await session.service.validate_promotion_acceptance(ticket)
                 ):
                     raise WorkbenchError(
                         "INVALID_PROMOTION_TICKET",
@@ -584,9 +644,12 @@ def create_workbench_app(
         return response
 
     async def reset_endpoint(request: Request) -> Response:
-        session_id, session, created = manager.get(request.cookies.get(SESSION_COOKIE))
-        async with session.lock:
-            manager.reset(session_id)
+        async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
+            session_id,
+            session,
+            created,
+        ):
+            manager.reset(session_id, session)
         response = JSONResponse({"reset": True})
         if created:
             response.set_cookie(
@@ -596,6 +659,14 @@ def create_workbench_app(
 
     async def health_endpoint(_request: Request) -> Response:
         return JSONResponse({"status": "ok", "webmcp_tools": list(WEBMCP_TOOL_NAMES)})
+
+    async def workbench_error_handler(
+        _request: Request, error: WorkbenchError
+    ) -> Response:
+        return JSONResponse(
+            {"error": {"code": error.code, "message": str(error)}},
+            status_code=error.status_code,
+        )
 
     routes = [
         Route("/api/context", context_endpoint, methods=["GET"]),
@@ -616,11 +687,14 @@ def create_workbench_app(
                 Route("/", lambda _request: FileResponse(frontend_dir / "index.html")),
             ]
         )
-    return Starlette(routes=routes)
+    return Starlette(
+        routes=routes, exception_handlers={WorkbenchError: workbench_error_handler}
+    )
 
 
 __all__ = [
     "SESSION_COOKIE",
+    "MAX_SESSIONS",
     "WEBMCP_TOOL_NAMES",
     "SessionManager",
     "WorkbenchSession",
