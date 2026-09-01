@@ -547,6 +547,12 @@ def test_current_evidence_backed_public_passing_head_qualifies_within_budget(
     assert verified.promotion_ticket.asset_sha256 == head.asset_sha256
     assert len(verified.promotion_ticket.canonical_diff) == revision_count
     assert "scenario" not in verified.model_dump_json().lower()
+    assert run(service.validate_promotion_acceptance(verified.promotion_ticket))
+    assert not run(
+        service.validate_promotion_acceptance(
+            verified.promotion_ticket.model_copy(update={"asset_sha256": "0" * 64})
+        )
+    )
 
     repeated = run(
         service.verify_revision(

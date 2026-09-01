@@ -26,6 +26,7 @@ from .patcher import PatcherError, apply_one_attribute_patch
 from .qualification import (
     HiddenVerifier,
     build_promotion_ticket,
+    validate_promotion_ticket,
 )
 from .runner import (
     ConstantSegment,
@@ -1049,6 +1050,30 @@ class AssetAutopsyService:
             False,
             "Do not retry publication; treat the approval request as the evaluation endpoint.",
         )
+
+    async def validate_promotion_acceptance(self, ticket: PromotionTicket) -> bool:
+        if not isinstance(ticket, PromotionTicket):
+            return False
+        async with self._lock:
+            try:
+                case = self.store.get_case(ticket.case_id)
+            except StorageError:
+                return False
+            if (
+                case.qualification_state != "passed"
+                or case.head_revision_id != ticket.revision_id
+            ):
+                return False
+            try:
+                revision = self.store.get_revision(ticket.case_id, ticket.revision_id)
+            except StorageError:
+                return False
+            return (
+                revision.asset_sha256 == ticket.asset_sha256
+                and validate_promotion_ticket(
+                    ticket, commitment_hashes=self._commitments(case)
+                )
+            )
 
     def _provision_demo_case(self) -> None:
         source = self.store.objects.put_bytes(

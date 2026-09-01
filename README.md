@@ -46,6 +46,53 @@ The Agents SDK supplies the model loop, hosted Code Interpreter, tracing, run st
 approval interruption. Asset Autopsy owns robot-specific policy and evidence integrity. Physics
 execution stays in a private commit-pinned MuJoCo child process.
 
+The same service also powers a local browser workbench. In the Codex desktop browser, its
+top-level JavaScript registers nine WebMCP site tools so a person and Codex can inspect and change
+the same live design session. The page remains usable as a normal visual editor in browsers
+without WebMCP.
+
+```text
+Codex conversation <-> WebMCP tools in the live page
+                         |
+Human <-> Three.js workbench + one-change shared draft
+                         |
+                 AssetAutopsyService
+```
+
+There is no second chat surface inside the page. WebMCP exposes capabilities, while the Codex
+conversation remains the command surface.
+
+## Local design workbench
+
+The workbench is local-first and visitor-isolated. Each browser session receives a temporary
+service, evidence ledger, draft, traces, feedback, and qualification lifecycle that disappear
+when the server stops. The server retains up to eight sessions and evicts the least recently used
+idle session when a ninth is created. Reset replaces only that browser session with a fresh case.
+
+```bash
+cd web
+npm ci
+npm run build
+cd ..
+uv run uvicorn asset_autopsy.workbench:create_workbench_app --factory --host 127.0.0.1 --port 8713
+```
+
+Open `http://127.0.0.1:8713` in the Codex desktop browser. Use GPT-5.6 Sol or Terra when invoking
+site tools; the visual editor shows a compatibility banner when WebMCP is unavailable. During
+frontend development, run `npm run dev` in `web/` alongside the Python server and open
+`http://127.0.0.1:5173`.
+
+The shared draft can preview exactly one `axis`, `damping`, `armature`, or `frictionloss` change.
+It does not touch the immutable revision ledger. Codex must cite a completed experiment from the
+same base before converting the draft into a revision. Subjective human feedback is bound to the
+exact current revision and hash. After successful hidden qualification, editing locks and only
+the visible human **Accept** button can accept the ticket; Accept is deliberately not a site tool.
+
+The registered tools are `get_design_context`, `inspect_design`, `run_task`, `run_experiment`,
+`query_trace`, `set_draft_patch`, `create_revision_from_draft`, `verify_revision`, and
+`record_design_feedback`. Full experiment traces are available to the visible UI API; agents use
+the bounded `query_trace` operations (`sample`, `min_max`, `delta`, `sum`, and `settling`).
+
 ## Public tools
 
 | Tool | Capability |
@@ -107,9 +154,10 @@ Do not approve the final request during an evaluation.
 
 ## Local verification
 
-Requirements are Python 3.12, `uv`, an OpenAI API key with access to `gpt-5.6-sol`, and MuJoCo
-CGL support for the render gate. The Agents SDK is pinned to an exact upstream commit because the
-approval-capable API used here has not yet reached the compatible stable release line.
+Requirements are Python 3.12, `uv`, Node.js 22 for the workbench, an OpenAI API key with access
+to `gpt-5.6-sol`, and MuJoCo CGL support for the render gate. The Agents SDK is pinned to an exact
+upstream commit because the approval-capable API used here has not yet reached the compatible
+stable release line.
 
 ```bash
 uv sync --frozen
@@ -117,6 +165,7 @@ uv run pytest -q -m "not cgl"
 uv run ruff check .
 uv run ruff format --check .
 git diff --check
+cd web && npm test && npm run build && npm audit --audit-level=high
 ```
 
 On a CGL-capable Mac, also run:
@@ -132,6 +181,6 @@ on the recorded Git commit. See [the implemented design](docs/asset-autopsy-mvp-
 
 ## Current limits
 
-This milestone intentionally supports one fixed simulated arm. It does not yet include WebMCP,
-a browser UI, arbitrary CAD or URDF import, multiple robots, FEA, real hardware, or post-approval
-publication materialization.
+This milestone intentionally supports one fixed simulated arm and local browser sessions. It does
+not yet include deployment, durable user accounts, arbitrary CAD or URDF import, multiple robots,
+FEA, real hardware, or post-approval publication materialization.
