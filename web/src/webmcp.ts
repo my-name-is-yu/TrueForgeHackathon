@@ -110,7 +110,7 @@ const expectedEffectSchema = objectSchema({
 export const webmcpTools: Omit<ToolDefinition, "execute">[] = [
   {
     name: "get_design_context",
-    description: "Read the current robot revision, hash, editable policy, draft, human feedback, budgets, and qualification state.",
+    description: "Read the current robot revision, hash, editable policy, draft, human feedback and rejections, recent trace identities, latest task evidence, budgets, and qualification state.",
     inputSchema: objectSchema({}),
     annotations: { readOnlyHint: true },
   },
@@ -182,7 +182,7 @@ export const webmcpTools: Omit<ToolDefinition, "execute">[] = [
   },
   {
     name: "verify_revision",
-    description: "Consume the one hidden qualification attempt for a public-passing current revision. Success locks editing for human Accept or Reset.",
+    description: "Consume the one hidden qualification attempt for a public-passing current revision. Success locks editing for the human-only Accept or Reject decision.",
     inputSchema: objectSchema({
       case_id: string("Case ID from design context."),
       revision_id: string("Current child head revision."),

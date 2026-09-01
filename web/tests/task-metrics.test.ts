@@ -1,28 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { bindTaskMetrics, retainTaskMetrics } from "../src/task-metrics";
+import { bindTaskMetrics } from "../src/task-metrics";
 
 const identity = { revisionId: "r000", assetSha256: "a".repeat(64) };
 const observations = [{ metric: "final_target_error_m", value: 0.1 }];
+const result = {
+  revision_id: "r000",
+  result: "fail" as const,
+  observations,
+  behavior_diff: null,
+};
 
 describe("task metric identity", () => {
-  it("retains metrics only for the exact revision and asset hash", () => {
-    const state = bindTaskMetrics(identity, observations);
+  it("binds task evidence to the exact revision and asset hash", () => {
+    const state = bindTaskMetrics(identity, result);
 
-    expect(retainTaskMetrics(state, identity)).toBe(state);
-    expect(
-      retainTaskMetrics(state, { ...identity, revisionId: "r001" }),
-    ).toBeNull();
-    expect(
-      retainTaskMetrics(state, { ...identity, assetSha256: "b".repeat(64) }),
-    ).toBeNull();
-  });
-
-  it("represents reset as an explicit cleared state", () => {
-    const state = bindTaskMetrics(identity, observations);
-    const resetState = null;
-
+    expect(state.revisionId).toBe(identity.revisionId);
+    expect(state.assetSha256).toBe(identity.assetSha256);
     expect(state.observations).toEqual(observations);
-    expect(retainTaskMetrics(resetState, identity)).toBeNull();
+    expect(state.result).toBe("fail");
   });
 });

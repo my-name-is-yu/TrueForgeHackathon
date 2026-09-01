@@ -227,6 +227,9 @@ def test_sessions_are_isolated_and_reset_discards_temporary_state(tmp_path) -> N
 
     assert _context(first)["draft"] is not None
     assert len(_context(first)["feedback"]) == 1
+    assert _context(first)["rejections"] == []
+    assert _context(first)["experiment_traces"] == []
+    assert _context(first)["latest_task"] is None
     assert _context(second)["draft"] is None
     assert _context(second)["feedback"] == []
     assert first_context["head_asset_sha256"] == second_context["head_asset_sha256"]
@@ -240,6 +243,9 @@ def test_sessions_are_isolated_and_reset_discards_temporary_state(tmp_path) -> N
     reset_context = _context(first)
     assert reset_context["draft"] is None
     assert reset_context["feedback"] == []
+    assert reset_context["rejections"] == []
+    assert reset_context["experiment_traces"] == []
+    assert reset_context["latest_task"] is None
     assert reset_context["head_revision_id"] == "r000"
 
 
@@ -357,6 +363,21 @@ def test_draft_is_not_ledger_state_and_revision_requires_session_evidence(
     full_trace = client.get(f"/api/traces/{result['run_id']}")
     assert full_trace.status_code == 200
     assert len(full_trace.json()["rows"]) == 256
+    trace = full_trace.json()
+    shared = _context(client)
+    assert shared["latest_task"]["revision_id"] == "r000"
+    assert shared["latest_task"]["result"] == "fail"
+    assert shared["experiment_traces"] == [
+        {
+            "run_id": result["run_id"],
+            "revision_id": "r000",
+            "asset_sha256": context["head_asset_sha256"],
+            "signals": sorted(trace["rows"][0]["values"]),
+            "row_count": len(trace["rows"]),
+            "start_time_s": trace["rows"][0]["time_s"],
+            "end_time_s": trace["rows"][-1]["time_s"],
+        }
+    ]
     compact = client.post(
         "/api/tools/query_trace",
         json={"run_id": result["run_id"], "operation": "sample", "count": 4},
@@ -403,6 +424,113 @@ def test_feedback_rejects_stale_revision_and_accept_is_human_only(tmp_path) -> N
     assert _context(client)["accepted"] is True
 
 
+def test_reject_preserves_feedback_and_starts_a_fresh_attempt(tmp_path) -> None:
+    manager = _manager(tmp_path)
+    client = TestClient(
+        create_workbench_app(manager=manager, frontend_dir=tmp_path / "missing")
+    )
+    ticket = _qualify_repaired_revision(client)
+    session_id = client.cookies.get(SESSION_COOKIE)
+    assert session_id is not None
+    session = manager.sessions[session_id]
+    previous_root = session.data_root
+    previous_trace_ids = tuple(session.traces)
+    assert previous_trace_ids
+    qualified = _context(client)
+    assert qualified["latest_task"]["revision_id"] == ticket["revision_id"]
+    assert qualified["latest_task"]["result"] == "pass"
+    assert qualified["latest_task"]["behavior_diff"]["verdict"] == "public_pass"
+
+    response = client.post(
+        "/api/reject",
+        json={
+            "ticket_digest": ticket["ticket_digest"],
+            "feedback": "Keep the stable motion but make the final approach less abrupt.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "rejected": True,
+        "revision_id": ticket["revision_id"],
+        "asset_sha256": ticket["asset_sha256"],
+    }
+    assert manager.sessions[session_id] is session
+    assert session.data_root != previous_root
+    assert not previous_root.exists()
+    fresh = _context(client)
+    assert fresh["head_revision_id"] == "r000"
+    assert fresh["case"]["qualification_state"] == "unused"
+    assert fresh["editing_locked"] is False
+    assert fresh["accepted"] is False
+    assert fresh["accept_ticket_digest"] is None
+    assert fresh["draft"] is None
+    assert fresh["feedback"] == []
+    assert fresh["experiment_traces"] == []
+    assert fresh["latest_task"] is None
+    assert fresh["rejections"] == [
+        {
+            "revision_id": ticket["revision_id"],
+            "asset_sha256": ticket["asset_sha256"],
+            "feedback": "Keep the stable motion but make the final approach less abrupt.",
+        }
+    ]
+    for run_id in previous_trace_ids:
+        assert client.get(f"/api/traces/{run_id}").status_code == 404
+
+    _create_repaired_revision(client, fresh)
+    continued = _context(client)
+    assert continued["head_revision_id"] == "r001"
+    assert continued["rejections"] == fresh["rejections"]
+    assert continued["experiment_traces"]
+
+    reset = client.post("/api/reset")
+    assert reset.status_code == 200
+    assert _context(client)["rejections"] == []
+
+
+def test_reject_commits_when_old_generation_cleanup_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+    client = TestClient(
+        create_workbench_app(manager=manager, frontend_dir=tmp_path / "missing")
+    )
+    ticket = _qualify_repaired_revision(client)
+    session_id = client.cookies.get(SESSION_COOKIE)
+    assert session_id is not None
+    session = manager.sessions[session_id]
+    previous_root = session.data_root
+
+    def fail_cleanup(data_root) -> None:
+        assert data_root == previous_root
+        raise OSError("simulated stale-generation cleanup failure")
+
+    monkeypatch.setattr(manager, "_delete_generation", fail_cleanup)
+    response = client.post(
+        "/api/reject",
+        json={
+            "ticket_digest": ticket["ticket_digest"],
+            "feedback": "Keep this rejection even if stale-file cleanup fails.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert previous_root.exists()
+    assert session.data_root != previous_root
+    fresh = _context(client)
+    assert fresh["head_revision_id"] == "r000"
+    assert fresh["editing_locked"] is False
+    assert fresh["accept_ticket_digest"] is None
+    assert fresh["rejections"] == [
+        {
+            "revision_id": ticket["revision_id"],
+            "asset_sha256": ticket["asset_sha256"],
+            "feedback": "Keep this rejection even if stale-file cleanup fails.",
+        }
+    ]
+
+
 def test_accept_rejects_another_sessions_ticket_digest(tmp_path) -> None:
     app = create_workbench_app(
         manager=_manager(tmp_path), frontend_dir=tmp_path / "missing"
@@ -423,6 +551,74 @@ def test_accept_rejects_another_sessions_ticket_digest(tmp_path) -> None:
     assert rejected.status_code == 409
     assert rejected.json()["error"]["code"] == "INVALID_PROMOTION_TICKET"
     assert _context(first)["accepted"] is False
+
+
+def test_reject_is_human_only_and_rejects_invalid_requests(tmp_path) -> None:
+    manager = _manager(tmp_path)
+    app = create_workbench_app(manager=manager, frontend_dir=tmp_path / "missing")
+    first = TestClient(app)
+    second = TestClient(app)
+    first_ticket = _qualify_repaired_revision(first)
+    second_ticket = _qualify_repaired_revision(second)
+    first_session_id = first.cookies.get(SESSION_COOKIE)
+    assert first_session_id is not None
+    first_root = manager.sessions[first_session_id].data_root
+
+    unknown_tool = first.post(
+        "/api/tools/reject_revision",
+        json={
+            "ticket_digest": first_ticket["ticket_digest"],
+            "feedback": "This must remain human-only.",
+        },
+    )
+    assert unknown_tool.status_code == 404
+
+    cross_session = first.post(
+        "/api/reject",
+        json={
+            "ticket_digest": second_ticket["ticket_digest"],
+            "feedback": "This ticket belongs to another session.",
+        },
+    )
+    assert cross_session.status_code == 409
+    assert cross_session.json()["error"]["code"] == "INVALID_PROMOTION_TICKET"
+    unchanged = _context(first)
+    assert unchanged["editing_locked"] is True
+    assert unchanged["rejections"] == []
+    assert manager.sessions[first_session_id].data_root == first_root
+
+    malformed = first.post(
+        "/api/reject",
+        content="{",
+        headers={"content-type": "application/json"},
+    )
+    assert malformed.status_code == 422
+    assert malformed.json()["rejected"] is False
+    assert malformed.json()["error"]["code"] == "INVALID_ARGUMENTS"
+
+    blank = first.post(
+        "/api/reject",
+        json={"ticket_digest": first_ticket["ticket_digest"], "feedback": "   "},
+    )
+    assert blank.status_code == 422
+    assert blank.json()["error"]["code"] == "INVALID_ARGUMENTS"
+
+    accepted = first.post(
+        "/api/accept", json={"ticket_digest": first_ticket["ticket_digest"]}
+    )
+    assert accepted.status_code == 200
+    after_accept = first.post(
+        "/api/reject",
+        json={
+            "ticket_digest": first_ticket["ticket_digest"],
+            "feedback": "Accepted revisions cannot be rejected afterward.",
+        },
+    )
+    assert after_accept.status_code == 409
+    assert after_accept.json()["error"]["code"] == "INVALID_PROMOTION_TICKET"
+    final = _context(first)
+    assert final["accepted"] is True
+    assert final["rejections"] == []
 
 
 def test_accept_rejects_malformed_json_with_structured_error(tmp_path) -> None:

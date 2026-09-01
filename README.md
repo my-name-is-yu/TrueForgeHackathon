@@ -35,7 +35,15 @@ run `npm run dev` in `web/` alongside the Python server and open `http://127.0.0
 
 The registered WebMCP tools are `get_design_context`, `inspect_design`, `run_task`,
 `run_experiment`, `query_trace`, `set_draft_patch`, `create_revision_from_draft`,
-`verify_revision`, and `record_design_feedback`. Final **Accept** remains human-only.
+`verify_revision`, and `record_design_feedback`. Final **Accept** and **Reject** remain human-only.
+
+The shared evidence view makes the latest experiment trace, the current revision's canonical
+change, and the parent-to-child `BehaviorDiff` visible to the person while Codex works. A successful
+qualification locks editing for a human decision. **Reject** requires feedback and starts a fresh
+service/store generation in the same browser session; the bounded rejection history carries
+forward so Codex can continue from it. The rejected generation's other feedback, draft, traces,
+promotion ticket, and acceptance state do not carry forward. **Reset session** is the blank-slate
+action and clears all temporary state, including feedback and rejection history.
 
 ## Streamable HTTP MCP tools
 
@@ -58,7 +66,12 @@ uv run pytest -q -m "not cgl"
 uv run ruff check .
 uv run ruff format --check .
 git diff --check
-cd web && npm test && npm run build && npm audit --audit-level=high
+cd web
+npm ci
+npm test
+npm run build
+npm audit --audit-level=high
+cd ..
 ```
 
 On a CGL-capable Mac, also run:
@@ -68,8 +81,19 @@ uv run pytest -q -m cgl
 uv run pytest -q
 ```
 
-After the deterministic checks, run a goal-only end-to-end design trial from Codex against the
-live page.
+After these checks, serve the built artifact with the Python workbench command above
+and run a goal-only end-to-end trial from Codex against `http://127.0.0.1:8713`. Give Codex the
+design goal and protected boundaries, but not a diagnosis, tool order, or patch value. Confirm in
+the live page that:
+
+1. all nine site tools are available and the initial revision is `r000`;
+2. Codex chooses an experiment and trace query, and the resulting trace becomes visible;
+3. the shared draft appears before commit, then the revision and canonical change become visible;
+4. the public child run shows a parent-to-child `BehaviorDiff` before qualification;
+5. qualification locks editing without exposing Accept or Reject as a site tool;
+6. human Reject preserves its rejection note, returns to a fresh editable `r000`, and lets Codex create a
+   new draft from that feedback; and
+7. after a subsequent successful qualification, only the human can Accept the revision.
 
 ## Current limits
 

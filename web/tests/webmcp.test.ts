@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { registerWebMcpTools, webmcpTools } from "../src/webmcp";
 
 describe("WebMCP registration", () => {
-  it("registers the nine browser tools without exposing human Accept", async () => {
+  it("registers the nine browser tools without exposing human review actions", async () => {
     const registerTool = vi.fn();
     Object.defineProperty(document, "modelContext", {
       configurable: true,
@@ -16,6 +16,8 @@ describe("WebMCP registration", () => {
     expect(names).toHaveLength(9);
     expect(names).not.toContain("accept_revision");
     expect(names).not.toContain("accept");
+    expect(names).not.toContain("reject_revision");
+    expect(names).not.toContain("reject");
   });
 
   it("keeps the visual workbench usable when WebMCP is unsupported", async () => {
