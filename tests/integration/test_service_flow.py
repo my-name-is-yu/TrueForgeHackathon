@@ -32,7 +32,6 @@ from asset_autopsy.schemas import (
     OpenCaseInput,
     PatchTarget,
     Predicate,
-    PublishRevisionInput,
     QposObservable,
     QvelObservable,
     RunExperimentInput,
@@ -715,7 +714,7 @@ def test_third_child_revision_is_rejected_at_the_budget_boundary(tmp_path) -> No
     assert len(runner.validated_xml) == 2
 
 
-def test_full_two_revision_service_flow_qualifies_and_publication_is_deferred_without_side_effects(
+def test_full_two_revision_service_flow_qualifies_without_corrupting_evidence(
     tmp_path,
 ) -> None:
     service = AssetAutopsyService(tmp_path, runner=DeterministicFakeRunner())
@@ -930,7 +929,6 @@ def test_full_two_revision_service_flow_qualifies_and_publication_is_deferred_wi
     qualification_bytes = service.store.objects.read_bytes(verified.artifacts[0].sha256)
     assert "-0.553127" not in ledger_text
     assert b"-0.553127" not in qualification_bytes
-    assert service.publish_invocation_count == 0
     verified_retry = run(
         service.verify_revision(
             VerifyRevisionInput(
@@ -952,28 +950,6 @@ def test_full_two_revision_service_flow_qualifies_and_publication_is_deferred_wi
         == 1
     )
 
-    before_state = service_state(service)
-    before_files = files(Path(tmp_path))
-    with pytest.raises(DomainError) as deferred:
-        run(
-            service.publish_revision(
-                PublishRevisionInput(
-                    case_id=CASE_ID,
-                    promotion_ticket=verified.promotion_ticket,
-                )
-            )
-        )
-    assert deferred.value.code == "PUBLICATION_DEFERRED"
-    assert deferred.value.safe_message == (
-        "Post-approval publication materialization is deferred for this evaluation."
-    )
-    assert deferred.value.retryable is False
-    assert deferred.value.next_action == (
-        "Do not retry publication; treat the approval request as the evaluation endpoint."
-    )
-    assert service.publish_invocation_count == 1
-    assert files(Path(tmp_path)) == before_files
-    assert service_state(service) == before_state
     assert service.store.verify_ledger()
     for event in service.store.ledger_events(CASE_ID):
         for artifact in event.artifact_refs:

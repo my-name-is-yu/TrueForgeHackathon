@@ -37,8 +37,6 @@ from .schemas import (
     JointPosition,
     OpenCaseInput,
     OpenCaseOutput,
-    PromotionTicket,
-    PublishRevisionInput,
     RevisionId,
     RunId,
     RunExperimentInput,
@@ -59,7 +57,6 @@ TOOL_NAMES = (
     "run_experiment",
     "create_revision",
     "verify_revision",
-    "publish_revision",
 )
 
 _MAX_VALIDATION_ERRORS = 8
@@ -77,7 +74,6 @@ _PUBLIC_INPUT_FIELD_NAMES = frozenset(
         "basis_hypothesis_id",
         "before",
         "body_name",
-        "canonical_diff",
         "capture",
         "capture_final_snapshot",
         "case_id",
@@ -89,9 +85,7 @@ _PUBLIC_INPUT_FIELD_NAMES = frozenset(
         "expected_base_sha256",
         "expected_effect",
         "expected_old_value",
-        "export_name",
         "falsifier",
-        "holdout_result",
         "hypothesis",
         "initial_joint_positions",
         "joint_name",
@@ -108,17 +102,12 @@ _PUBLIC_INPUT_FIELD_NAMES = frozenset(
         "position_rad",
         "predicates",
         "prediction",
-        "promotion_ticket",
-        "public_result",
-        "qualified_core_sha256",
         "rationale",
         "revision_id",
         "scenario_id",
         "segments",
         "suspected_elements",
         "target",
-        "ticket_digest",
-        "ticket_id",
         "total",
         "value",
         "view",
@@ -194,8 +183,6 @@ class AssetAutopsyServiceProtocol(Protocol):
     async def verify_revision(
         self, request: VerifyRevisionInput
     ) -> VerifyRevisionOutput: ...
-
-    async def publish_revision(self, request: PublishRevisionInput) -> None: ...
 
 
 class _SanitizedToolError(ToolError):
@@ -559,7 +546,7 @@ async def create_mcp_facade(
         allowed_origins=[config.allowed_origin],
     )
     mcp = _SanitizedFastMCP(
-        name="asset-autopsy-autonomy",
+        name="asset-autopsy",
         instructions="Bounded 3D asset observation, experimentation, revision, and qualification tools.",
         host=config.host,
         port=config.port,
@@ -651,7 +638,7 @@ async def create_mcp_facade(
         description=(
             "Test a preregistered causal hypothesis on one exact revision with "
             "agent-selected controls and observables. A completed trace returns the "
-            "hypothesis and run IDs plus its trace hash; successful Code Interpreter analysis "
+            "hypothesis and run IDs plus its trace hash; successful trace analysis "
             "reports all three to establish evidence for a revision."
         ),
         annotations=_annotations(read_only=False, destructive=False, idempotent=False),
@@ -745,24 +732,6 @@ async def create_mcp_facade(
             VerifyRevisionOutput,
             await invoke("verify_revision", request, service.verify_revision),
         )
-
-    @mcp.tool(
-        name="publish_revision",
-        description=(
-            "Request human approval for the exact revision and asset hash in a "
-            "successful qualification ticket. No materialization occurs before approval."
-        ),
-        annotations=_annotations(read_only=False, destructive=True, idempotent=True),
-        structured_output=False,
-    )
-    async def publish_revision(
-        case_id: CaseId,
-        promotion_ticket: PromotionTicket,
-    ) -> None:
-        request = PublishRevisionInput.model_validate(
-            {"case_id": case_id, "promotion_ticket": promotion_ticket}
-        )
-        await invoke("publish_revision", request, service.publish_revision)
 
     _enforce_strict_tool_arguments(mcp)
     app = _AuthOriginMiddleware(

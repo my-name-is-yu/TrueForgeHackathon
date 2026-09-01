@@ -396,13 +396,6 @@ class PromotionTicket(StrictModel):
     canonical_diff: list["CanonicalDiffEntry"] = Field(min_length=1, max_length=2)
     public_result: "AggregateResult"
     holdout_result: "AggregateResult"
-    export_name: Annotated[
-        str,
-        StringConstraints(
-            strict=True, min_length=1, max_length=96, pattern=r"^[a-z0-9][a-z0-9-]*$"
-        ),
-    ]
-    qualified_core_sha256: AssetHash
     ticket_digest: AssetHash
 
     @model_validator(mode="after")
@@ -418,17 +411,6 @@ class PromotionTicket(StrictModel):
             raise ValueError(
                 "promotion ticket requires successful fixed-suite qualification"
             )
-        return self
-
-
-class PublishRevisionInput(StrictModel):
-    case_id: CaseId
-    promotion_ticket: PromotionTicket
-
-    @model_validator(mode="after")
-    def validate_ticket_case(self) -> PublishRevisionInput:
-        if self.promotion_ticket.case_id != self.case_id:
-            raise ValueError("promotion ticket case must match publication case")
         return self
 
 
@@ -1429,7 +1411,6 @@ TOOL_INPUT_MODELS = (
     RunExperimentInput,
     CreateRevisionInput,
     VerifyRevisionInput,
-    PublishRevisionInput,
 )
 TOOL_OUTPUT_MODELS = (
     OpenCaseOutput,
@@ -1463,7 +1444,6 @@ __all__ = [
     "InspectAssetOutput",
     "OpenCaseInput",
     "OpenCaseOutput",
-    "PublishRevisionInput",
     "RunExperimentInput",
     "RunExperimentOutput",
     "RunTaskInput",

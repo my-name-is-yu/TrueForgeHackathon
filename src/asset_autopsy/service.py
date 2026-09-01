@@ -61,7 +61,6 @@ from .schemas import (
     PatchPolicy,
     PromotionTicket,
     PublicEventSummary,
-    PublishRevisionInput,
     Range,
     RevisionSummary,
     RunExperimentInput,
@@ -164,16 +163,11 @@ class AssetAutopsyService:
             "run_experiment",
             "create_revision",
             "verify_revision",
-            "publish_revision",
         )
 
     @property
     def invocation_counts(self) -> Mapping[str, int]:
         return MappingProxyType(dict(self._invocations))
-
-    @property
-    def publish_invocation_count(self) -> int:
-        return self._invocations["publish_revision"]
 
     async def open_case(self, value: OpenCaseInput) -> OpenCaseOutput:
         request_id = self._begin("open_case", value, OpenCaseInput)
@@ -994,7 +988,6 @@ class AssetAutopsyService:
                     canonical_diff=cumulative_diff,
                     public_result=public_result,
                     holdout_result=holdout_result,
-                    export_name="compound-arm-01-repaired",
                     commitment_hashes=commitments,
                 )
             terminal_payload = {
@@ -1040,16 +1033,6 @@ class AssetAutopsyService:
                 holdout_result=holdout_result,
                 promotion_ticket=ticket,
             )
-
-    async def publish_revision(self, value: PublishRevisionInput) -> None:
-        request_id = self._begin("publish_revision", value, PublishRevisionInput)
-        raise self._error(
-            request_id,
-            "PUBLICATION_DEFERRED",
-            "Post-approval publication materialization is deferred for this evaluation.",
-            False,
-            "Do not retry publication; treat the approval request as the evaluation endpoint.",
-        )
 
     async def validate_promotion_acceptance(self, ticket: PromotionTicket) -> bool:
         if not isinstance(ticket, PromotionTicket):
