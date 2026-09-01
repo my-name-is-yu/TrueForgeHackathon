@@ -8,11 +8,11 @@ import tempfile
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -41,18 +41,6 @@ from .service import AssetAutopsyService, DomainError
 
 SESSION_COOKIE = "asset_autopsy_session"
 MAX_SESSIONS = 8
-WEBMCP_TOOL_NAMES = (
-    "get_design_context",
-    "inspect_design",
-    "run_task",
-    "run_experiment",
-    "query_trace",
-    "set_draft_patch",
-    "create_revision_from_draft",
-    "verify_revision",
-    "record_design_feedback",
-)
-_ATTRIBUTE_PATCH = TypeAdapter(AttributePatch)
 
 
 class WorkbenchError(RuntimeError):
@@ -74,7 +62,7 @@ class InspectDesignRequest(StrictRequest):
 class DraftPatchRequest(StrictRequest):
     base_revision_id: RevisionId
     expected_base_sha256: AssetHash
-    patch: dict[str, Any]
+    patch: AttributePatch
 
 
 class CreateFromDraftRequest(StrictRequest):
@@ -106,35 +94,14 @@ class AcceptRequest(StrictRequest):
 
 
 @dataclass(slots=True)
-class DraftPatch:
-    base_revision_id: str
-    expected_base_sha256: str
-    patch: AttributePatch
-
-    def public(self) -> dict[str, Any]:
-        return {
-            "base_revision_id": self.base_revision_id,
-            "expected_base_sha256": self.expected_base_sha256,
-            "patch": self.patch.model_dump(mode="json"),
-        }
-
-
-@dataclass(slots=True)
-class DesignFeedback:
-    revision_id: str
-    asset_sha256: str
-    feedback: str
-
-
-@dataclass(slots=True)
 class WorkbenchSession:
     service: AssetAutopsyService
     data_root: Path
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_requests: int = 0
-    draft: DraftPatch | None = None
+    draft: DraftPatchRequest | None = None
     traces: dict[str, dict[str, Any]] = field(default_factory=dict)
-    feedback: list[DesignFeedback] = field(default_factory=list)
+    feedback: list[FeedbackRequest] = field(default_factory=list)
     promotion_ticket: PromotionTicket | None = None
     accepted: bool = False
 
@@ -246,6 +213,16 @@ def _json(value: Any) -> Any:
     return value
 
 
+def _set_session_cookie(
+    response: Response, *, created: bool, session_id: str
+) -> Response:
+    if created:
+        response.set_cookie(
+            SESSION_COOKIE, session_id, httponly=True, samesite="lax", secure=False
+        )
+    return response
+
+
 async def _head(session: WorkbenchSession):
     case = await session.service.open_case(OpenCaseInput(case_id=CASE_ID))
     return case, case.revision_history[-1]
@@ -261,10 +238,9 @@ async def _context(session: WorkbenchSession) -> dict[str, Any]:
         "design": _json(inspection),
         "head_revision_id": head.revision_id,
         "head_asset_sha256": head.asset_sha256,
-        "draft": session.draft.public() if session.draft else None,
-        "feedback": [asdict(feedback) for feedback in session.feedback],
+        "draft": session.draft.model_dump(mode="json") if session.draft else None,
+        "feedback": [feedback.model_dump(mode="json") for feedback in session.feedback],
         "editing_locked": session.editing_locked,
-        "qualification_passed": session.promotion_ticket is not None,
         "accepted": session.accepted,
         "accept_ticket_digest": (
             session.promotion_ticket.ticket_digest
@@ -327,13 +303,8 @@ async def _call_tool(
                 "STALE_DRAFT_BASE",
                 "The draft must cite the current revision and asset hash.",
             )
-        patch = _ATTRIBUTE_PATCH.validate_python(request.patch)
-        session.draft = DraftPatch(
-            base_revision_id=request.base_revision_id,
-            expected_base_sha256=request.expected_base_sha256,
-            patch=patch,
-        )
-        return {"draft": session.draft.public(), "persisted": False}
+        session.draft = request
+        return {"draft": request.model_dump(mode="json"), "persisted": False}
 
     if name == "create_revision_from_draft":
         if session.editing_locked:
@@ -391,18 +362,13 @@ async def _call_tool(
                 "STALE_FEEDBACK_TARGET",
                 "Feedback must cite the exact current revision and asset hash.",
             )
-        feedback = DesignFeedback(
-            revision_id=request.revision_id,
-            asset_sha256=request.asset_sha256,
-            feedback=request.feedback,
-        )
         if len(session.feedback) >= 50:
             raise WorkbenchError(
                 "FEEDBACK_LIMIT_REACHED",
                 "This temporary session already contains 50 feedback entries.",
             )
-        session.feedback.append(feedback)
-        return {"recorded": True, "feedback": asdict(feedback)}
+        session.feedback.append(request)
+        return {"recorded": True, "feedback": request.model_dump(mode="json")}
 
     raise WorkbenchError(
         "UNKNOWN_TOOL", "The requested workbench tool does not exist.", 404
@@ -551,16 +517,7 @@ def create_workbench_app(
                 {"ok": False, "error": {"code": error.code, "message": str(error)}},
                 status_code=error.status_code,
             )
-        if created:
-            response.set_cookie(
-                SESSION_COOKIE,
-                session_id,
-                httponly=True,
-                samesite="lax",
-                secure=False,
-                max_age=None,
-            )
-        return response
+        return _set_session_cookie(response, created=created, session_id=session_id)
 
     async def context_endpoint(request: Request) -> Response:
         async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
@@ -570,11 +527,7 @@ def create_workbench_app(
         ):
             context = await _context(session)
         response = JSONResponse(context)
-        if created:
-            response.set_cookie(
-                SESSION_COOKIE, session_id, httponly=True, samesite="lax", secure=False
-            )
-        return response
+        return _set_session_cookie(response, created=created, session_id=session_id)
 
     async def trace_endpoint(request: Request) -> Response:
         async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
@@ -596,11 +549,7 @@ def create_workbench_app(
                 status_code=404,
             )
         )
-        if created:
-            response.set_cookie(
-                SESSION_COOKIE, session_id, httponly=True, samesite="lax", secure=False
-            )
-        return response
+        return _set_session_cookie(response, created=created, session_id=session_id)
 
     async def accept_endpoint(request: Request) -> Response:
         created = False
@@ -637,11 +586,7 @@ def create_workbench_app(
                 {"accepted": False, "error": {"code": code, "message": str(error)}},
                 status_code=status,
             )
-        if created:
-            response.set_cookie(
-                SESSION_COOKIE, session_id, httponly=True, samesite="lax", secure=False
-            )
-        return response
+        return _set_session_cookie(response, created=created, session_id=session_id)
 
     async def reset_endpoint(request: Request) -> Response:
         async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
@@ -651,14 +596,10 @@ def create_workbench_app(
         ):
             manager.reset(session_id, session)
         response = JSONResponse({"reset": True})
-        if created:
-            response.set_cookie(
-                SESSION_COOKIE, session_id, httponly=True, samesite="lax", secure=False
-            )
-        return response
+        return _set_session_cookie(response, created=created, session_id=session_id)
 
     async def health_endpoint(_request: Request) -> Response:
-        return JSONResponse({"status": "ok", "webmcp_tools": list(WEBMCP_TOOL_NAMES)})
+        return JSONResponse({"status": "ok"})
 
     async def workbench_error_handler(
         _request: Request, error: WorkbenchError
@@ -695,7 +636,6 @@ def create_workbench_app(
 __all__ = [
     "SESSION_COOKIE",
     "MAX_SESSIONS",
-    "WEBMCP_TOOL_NAMES",
     "SessionManager",
     "WorkbenchSession",
     "create_workbench_app",
