@@ -579,7 +579,7 @@ def create_workbench_app(
                         "asset_sha256": ticket.asset_sha256,
                     }
                 )
-        except (ValidationError, WorkbenchError) as error:
+        except (ValidationError, ValueError, WorkbenchError) as error:
             code = getattr(error, "code", "INVALID_ARGUMENTS")
             status = getattr(error, "status_code", 422)
             response = JSONResponse(

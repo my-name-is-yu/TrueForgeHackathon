@@ -194,9 +194,13 @@ $("#feedback-form").addEventListener("submit", async (event) => {
 $("#run-task").addEventListener("click", async () => {
   try {
     $("#run-task").setAttribute("disabled", "");
-    const result = await callTool("run_task", { case_id: context.case.case_id, revision_id: context.head_revision_id, scenario_id: "public_center", capture: "metrics" }) as { result: string; observations: { metric: string; value: number | null }[] };
+    const taskIdentity = {
+      revisionId: context.head_revision_id,
+      assetSha256: context.head_asset_sha256,
+    };
+    const result = await callTool("run_task", { case_id: context.case.case_id, revision_id: taskIdentity.revisionId, scenario_id: "public_center", capture: "metrics" }) as { result: string; observations: { metric: string; value: number | null }[] };
     taskMetrics = bindTaskMetrics(
-      { revisionId: context.head_revision_id, assetSha256: context.head_asset_sha256 },
+      taskIdentity,
       result.observations,
     );
     renderTaskMetrics();

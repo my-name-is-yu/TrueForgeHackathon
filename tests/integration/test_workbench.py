@@ -394,3 +394,21 @@ def test_feedback_rejects_stale_revision_and_accept_is_human_only(tmp_path) -> N
     assert accepted.status_code == 200
     assert accepted.json()["accepted"] is True
     assert _context(client)["accepted"] is True
+
+
+def test_accept_rejects_malformed_json_with_structured_error(tmp_path) -> None:
+    client = TestClient(
+        create_workbench_app(
+            manager=_manager(tmp_path), frontend_dir=tmp_path / "missing"
+        )
+    )
+
+    response = client.post(
+        "/api/accept",
+        content="{",
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["accepted"] is False
+    assert response.json()["error"]["code"] == "INVALID_ARGUMENTS"
