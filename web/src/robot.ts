@@ -3,7 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const lengths = [0.4, 0.35, 0.25];
 
-export type Preview = { joint: string; attribute: string } | null;
+export type Preview = { joint: string } | null;
 
 export function createRobotView(container: HTMLElement): { update(preview: Preview): void } {
   const scene = new THREE.Scene();

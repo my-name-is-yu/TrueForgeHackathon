@@ -20,7 +20,6 @@ type Context = JsonObject & {
   draft: { patch: { target: { name: string }; attribute: string; new_value: number | number[] } } | null;
   feedback: { feedback: string; revision_id: string }[];
   editing_locked: boolean;
-  qualification_passed: boolean;
   accepted: boolean;
   accept_ticket_digest: string | null;
 };
@@ -102,7 +101,7 @@ function updateCurrentValue(): void {
   const value = joint[attribute];
   $("#current-value").textContent = `Current: ${Array.isArray(value) ? value.join(" ") : value}`;
   $("#new-value").setAttribute("placeholder", attribute === "axis" ? "0 0 1" : String(value));
-  robot.update({ joint: joint.name, attribute });
+  robot.update({ joint: joint.name });
 }
 
 function renderTaskMetrics(): void {
@@ -137,7 +136,7 @@ function render(next: Context): void {
     const patch = context.draft.patch;
     draftCard.className = "draft-card";
     draftCard.innerHTML = `<span>UNCOMMITTED PREVIEW</span><strong>${escapeHtml(patch.target.name)}.${escapeHtml(patch.attribute)}</strong><code>${escapeHtml(JSON.stringify(patch.new_value))}</code><p>Visible to Codex. Not yet a revision.</p>`;
-    robot.update({ joint: patch.target.name, attribute: patch.attribute });
+    robot.update({ joint: patch.target.name });
   } else {
     draftCard.className = "draft-card empty";
     draftCard.textContent = "No uncommitted draft";
@@ -152,7 +151,7 @@ function render(next: Context): void {
     : `<p class="empty-copy">No activity yet.</p>`;
 
   const acceptBar = $("#accept-bar");
-  acceptBar.hidden = !context.qualification_passed || context.accepted;
+  acceptBar.hidden = !context.editing_locked || context.accepted;
   $("#accept").toggleAttribute("disabled", !context.accept_ticket_digest);
 }
 
