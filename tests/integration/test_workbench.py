@@ -234,6 +234,7 @@ def test_draft_is_not_ledger_state_and_revision_requires_session_evidence(
     assert missing.json()["error"]["code"] == "SESSION_EXPERIMENT_REQUIRED"
 
     result = _create_repaired_revision(client, context)
+    assert "trace" not in result
     full_trace = client.get(f"/api/traces/{result['run_id']}")
     assert full_trace.status_code == 200
     assert len(full_trace.json()["rows"]) == 256

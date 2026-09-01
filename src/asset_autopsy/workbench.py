@@ -237,7 +237,9 @@ async def _call_tool(
         )
         if result.trace is not None:
             session.traces[result.run_id] = result.trace.model_dump(mode="json")
-        return result
+        public_result = result.model_dump(mode="json")
+        public_result.pop("trace")
+        return public_result
 
     if name == "query_trace":
         return _query_trace(session, QueryTraceRequest.model_validate(arguments))
