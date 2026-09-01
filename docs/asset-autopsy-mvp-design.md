@@ -39,6 +39,17 @@ commit-pinned MuJoCo MCP child owns physics execution.
 Neither the saved instructions nor the user prompt names an Asset Autopsy tool, a faulty element,
 an experiment, a trace-analysis method, an expected number of revisions, or a required order.
 
+The local Three.js workbench is a second client of the same service. It owns temporary
+visitor-isolated sessions, visible design state, a single shared uncommitted patch, subjective
+revision-bound feedback, and top-level WebMCP registration. Codex remains in the external
+conversation; the browser does not embed another agent or chat loop.
+
+The browser exposes nine composable capabilities rather than a repair recipe. Drafting never
+mutates the evidence ledger. `create_revision_from_draft` requires experiment evidence from the
+exact draft base, and `query_trace` gives agents bounded trace operations while the complete trace
+stays available to the visible UI. A successful hidden qualification locks editing. The final
+Accept action is a human-only UI endpoint and is not registered as WebMCP.
+
 ## Fixed case and budgets
 
 `compound-arm-01` contains three hinge joints and three position actuators. The public patch
@@ -139,5 +150,5 @@ successes recorded by that driver.
 
 ## Deferred work
 
-WebMCP, a browser workbench, public hosting, multiple robot families, arbitrary CAD/URDF import,
-FEA, real hardware actions, and post-approval publication remain outside this milestone.
+Public hosting, durable accounts, multiple robot families, arbitrary CAD/URDF import, FEA, real
+hardware actions, and post-approval publication remain outside this milestone.
