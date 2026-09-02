@@ -17,7 +17,7 @@ Human <-> Three.js workbench + one-change shared draft
 ```
 
 See [the implemented design](docs/asset-autopsy-mvp-design.md) for the responsibility, evidence,
-revision, qualification, and human-acceptance contracts.
+revision, and qualification contracts.
 
 ## Local design workbench
 
@@ -35,15 +35,17 @@ run `npm run dev` in `web/` alongside the Python server and open `http://127.0.0
 
 The registered WebMCP tools are `get_design_context`, `inspect_design`, `run_task`,
 `run_experiment`, `query_trace`, `set_draft_patch`, `create_revision_from_draft`,
-`verify_revision`, and `record_design_feedback`. Final **Accept** and **Reject** remain human-only.
+and `verify_revision`.
 
 The shared evidence view makes the latest experiment trace, the current revision's canonical
 change, and the parent-to-child `BehaviorDiff` visible to the person while Codex works. A successful
-qualification locks editing for a human decision. **Reject** requires feedback and starts a fresh
-service/store generation in the same browser session; the bounded rejection history carries
-forward so Codex can continue from it. The rejected generation's other feedback, draft, traces,
-promotion ticket, and acceptance state do not carry forward. **Reset session** is the blank-slate
-action and clears all temporary state, including feedback and rejection history.
+qualification locks editing and leaves the evidence available for inspection. **Reset session**
+starts a fresh service/store generation at `r000`; feedback, source history, review, revert, and any
+final decision remain in the Codex conversation and Git instead of being duplicated in the page.
+Workbench revision IDs are temporary evidence identities, not Git history.
+
+Because qualification is one-shot, a hidden-suite failure also locks editing and is shown as
+`Qualification failed — reset required`; existing evidence remains readable until Reset.
 
 ## Streamable HTTP MCP tools
 
@@ -86,17 +88,18 @@ and run a goal-only end-to-end trial from Codex against `http://127.0.0.1:8713`.
 design goal and protected boundaries, but not a diagnosis, tool order, or patch value. Confirm in
 the live page that:
 
-1. all nine site tools are available and the initial revision is `r000`;
+1. all eight site tools are available and the initial revision is `r000`;
 2. Codex chooses an experiment and trace query, and the resulting trace becomes visible;
-3. the shared draft appears before commit, then the revision and canonical change become visible;
+3. the shared draft changes the selected joint's live preview before commit, then the revision and
+   canonical change become visible;
 4. the public child run shows a parent-to-child `BehaviorDiff` before qualification;
-5. qualification locks editing without exposing Accept or Reject as a site tool;
-6. human Reject preserves its rejection note, returns to a fresh editable `r000`, and lets Codex create a
-   new draft from that feedback; and
-7. after a subsequent successful qualification, only the human can Accept the revision.
+5. qualification displays `Qualified — editing locked` without exposing approval controls or a
+   promotion-ticket digest; and
+6. Reset returns the same visitor to a fresh editable `r000` with no draft, trace, task result, or
+   qualification lock.
 
 ## Current limits
 
 This milestone intentionally supports one fixed simulated arm and local browser sessions. It does
 not include deployment, durable accounts, arbitrary CAD or URDF import, multiple robots, FEA, real
-hardware, or post-accept export/materialization.
+hardware, asset-file materialization, Git-backed asset revisions, or export.

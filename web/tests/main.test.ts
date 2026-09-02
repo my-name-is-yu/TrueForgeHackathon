@@ -1,11 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  acceptRevision: vi.fn(),
   callTool: vi.fn(),
   getContext: vi.fn(),
   getTrace: vi.fn(),
-  rejectRevision: vi.fn(),
   resetSession: vi.fn(),
 }));
 
@@ -20,15 +18,8 @@ vi.mock("../src/webmcp", () => ({
 const context = (revisionId: string, assetSha256: string) => ({
   case: {
     case_id: "compound-arm-01",
-    qualification_state: "open",
+    qualification_state: "unused",
     remaining_budgets: {},
-    revision_history: [{
-      revision_id: revisionId,
-      asset_sha256: assetSha256,
-      parent_revision_id: null,
-      canonical_diff: [],
-    }],
-    event_tail: [],
   },
   design: {
     joints: [{
@@ -43,14 +34,12 @@ const context = (revisionId: string, assetSha256: string) => ({
   },
   head_revision_id: revisionId,
   head_asset_sha256: assetSha256,
+  head_parent_revision_id: null,
+  head_canonical_diff: [],
   draft: null,
-  feedback: [],
   experiment_traces: [],
   latest_task: null,
-  rejections: [],
   editing_locked: false,
-  accepted: false,
-  accept_ticket_digest: null,
 });
 
 describe("public task metrics", () => {

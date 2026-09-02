@@ -1,28 +1,22 @@
 import "./style.css";
 import {
-  acceptRevision,
   callTool,
   getContext,
   getTrace,
-  rejectRevision,
   resetSession,
   type JsonObject,
 } from "./api";
-import { createRobotView } from "./robot";
+import {
+  createRobotView,
+  type RobotJoint,
+  type RobotViewState,
+} from "./robot";
 import {
   bindTaskMetrics,
   type TaskMetricsState,
   type TaskResult,
 } from "./task-metrics";
 import { registerWebMcpTools } from "./webmcp";
-
-type Joint = {
-  name: string;
-  axis: [number, number, number];
-  damping: number;
-  armature: number;
-  frictionloss: number;
-};
 
 type CanonicalDiff = {
   target: string;
@@ -57,27 +51,18 @@ type ExperimentTrace = {
 type Context = JsonObject & {
   case: {
     case_id: string;
-    qualification_state: string;
+    qualification_state: RobotViewState["qualificationState"];
     remaining_budgets: Record<string, number>;
-    revision_history: {
-      revision_id: string;
-      asset_sha256: string;
-      parent_revision_id: string | null;
-      canonical_diff: CanonicalDiff[];
-    }[];
-    event_tail: { kind: string; summary: string }[];
   };
-  design: { joints: Joint[]; bodies: { name: string; parent: string | null }[]; actuators: { name: string; joint_name: string }[] };
+  design: { joints: RobotJoint[]; bodies: { name: string; parent: string | null }[]; actuators: { name: string; joint_name: string }[] };
   head_revision_id: string;
   head_asset_sha256: string;
-  draft: { patch: { target: { name: string }; attribute: string; new_value: number | number[] } } | null;
-  feedback: { feedback: string; revision_id: string; asset_sha256: string }[];
+  head_parent_revision_id: string | null;
+  head_canonical_diff: CanonicalDiff[];
+  draft: RobotViewState["draft"];
   experiment_traces: ExperimentTraceSummary[];
   latest_task: TaskResult | null;
-  rejections: { feedback: string; revision_id: string; asset_sha256: string }[];
   editing_locked: boolean;
-  accepted: boolean;
-  accept_ticket_digest: string | null;
 };
 
 const app = document.querySelector<HTMLElement>("#app");
@@ -105,11 +90,6 @@ app.innerHTML = `
         <button class="primary" type="submit">Preview shared draft</button>
       </form>
       <div id="draft-card" class="draft-card empty">No uncommitted draft</div>
-      <div class="divider"></div>
-      <form id="feedback-form">
-        <label>Design feedback<textarea id="feedback" placeholder="Feels too twitchy near the target…" required></textarea></label>
-        <button class="ghost" type="submit">Attach to this revision</button>
-      </form>
     </aside>
     <section class="evidence panel">
       <div class="panel-title"><div><span>EVIDENCE</span><strong>Hard requirements</strong></div><button id="run-task" class="ghost">Run public task</button></div>
@@ -135,15 +115,7 @@ app.innerHTML = `
         </section>
       </div>
     </section>
-    <section class="activity panel">
-      <div class="panel-title"><div><span>SHARED CONTEXT</span><strong>Revision-bound activity</strong></div></div>
-      <div id="activity-list"></div>
-    </section>
   </div>
-  <section id="accept-bar" class="accept-bar" hidden>
-    <div><span>QUALIFICATION PASSED</span><strong>Accept, or add design feedback and restart from a fresh case.</strong></div>
-    <div class="accept-actions"><button id="reject" class="danger">Reject &amp; restart</button><button id="accept" class="primary">Accept revision</button></div>
-  </section>
   <div id="toast" role="status"></div>
 `;
 
@@ -180,18 +152,30 @@ const formatNumber = (value: number | null): string => {
     : value.toPrecision(4);
 };
 
-function selectedJoint(): Joint {
+function selectedJoint(): RobotJoint {
   return context.design.joints.find((item) => item.name === $<HTMLSelectElement>("#joint").value)!;
+}
+
+function updateRobotView(): void {
+  if (!context) return;
+  robot.update({
+    revisionId: context.head_revision_id,
+    joints: context.design.joints,
+    selectedJointName: $<HTMLSelectElement>("#joint").value || null,
+    draft: context.draft,
+    editingLocked: context.editing_locked,
+    qualificationState: context.case.qualification_state,
+  });
 }
 
 function updateCurrentValue(): void {
   if (!context) return;
   const joint = selectedJoint();
-  const attribute = $<HTMLSelectElement>("#attribute").value as keyof Joint;
+  const attribute = $<HTMLSelectElement>("#attribute").value as keyof RobotJoint;
   const value = joint[attribute];
   $("#current-value").textContent = `Current: ${Array.isArray(value) ? value.join(" ") : value}`;
   $("#new-value").setAttribute("placeholder", attribute === "axis" ? "0 0 1" : String(value));
-  robot.update({ joint: joint.name });
+  updateRobotView();
 }
 
 function renderTaskMetrics(): void {
@@ -230,11 +214,10 @@ function renderTaskMetrics(): void {
 }
 
 function renderRevisionDiff(): void {
-  const revision = context.case.revision_history.find((item) => item.revision_id === context.head_revision_id);
-  $("#diff-revision").textContent = revision?.parent_revision_id
-    ? `${revision.parent_revision_id} → ${revision.revision_id}`
+  $("#diff-revision").textContent = context.head_parent_revision_id
+    ? `${context.head_parent_revision_id} → ${context.head_revision_id}`
     : "Original";
-  const diffs = revision?.canonical_diff ?? [];
+  const diffs = context.head_canonical_diff;
   $("#revision-diff").innerHTML = diffs.length
     ? diffs.map((item) => `<article><span>${escapeHtml(item.target)}.${escapeHtml(item.attribute)}</span><div><code>${escapeHtml(item.before)}</code><b>→</b><code>${escapeHtml(item.after)}</code></div></article>`).join("")
     : `<p class="empty-copy">The original revision has no authored change.</p>`;
@@ -335,7 +318,9 @@ function render(next: Context): void {
   renderTraceChart();
   $("#revision").textContent = `${context.case.case_id} / ${context.head_revision_id}`;
   $("#hash").textContent = context.head_asset_sha256.slice(0, 12);
-  $("#lock-state").textContent = context.accepted ? "Accepted" : context.editing_locked ? "Locked" : "Editable";
+  $("#lock-state").textContent = context.case.qualification_state === "failed"
+    ? "Qualification failed — reset required"
+    : context.editing_locked ? "Qualified — editing locked" : "Editable";
   $("#lock-state").classList.toggle("locked", context.editing_locked);
   $("#draft-form").querySelectorAll("input, select, button").forEach((element) => {
     (element as HTMLInputElement).disabled = context.editing_locked;
@@ -352,25 +337,10 @@ function render(next: Context): void {
     const patch = context.draft.patch;
     draftCard.className = "draft-card";
     draftCard.innerHTML = `<span>UNCOMMITTED PREVIEW</span><strong>${escapeHtml(patch.target.name)}.${escapeHtml(patch.attribute)}</strong><code>${escapeHtml(JSON.stringify(patch.new_value))}</code><p>Visible to Codex. Not yet a revision.</p>`;
-    robot.update({ joint: patch.target.name });
   } else {
     draftCard.className = "draft-card empty";
     draftCard.textContent = "No uncommitted draft";
   }
-
-  const activities = [
-    ...context.rejections.slice().reverse().map((item) => ({ kind: "HUMAN REJECTION", summary: `${item.revision_id}: ${item.feedback}` })),
-    ...context.feedback.map((item) => ({ kind: "HUMAN FEEDBACK", summary: `${item.revision_id}: ${item.feedback}` })),
-    ...context.case.event_tail.slice().reverse(),
-  ];
-  $("#activity-list").innerHTML = activities.length
-    ? activities.slice(0, 10).map((item) => `<article><span>${escapeHtml(item.kind.replaceAll("_", " "))}</span><p>${escapeHtml(item.summary)}</p></article>`).join("")
-    : `<p class="empty-copy">No activity yet.</p>`;
-
-  const acceptBar = $("#accept-bar");
-  acceptBar.hidden = !context.editing_locked || context.accepted;
-  $("#accept").toggleAttribute("disabled", !context.accept_ticket_digest);
-  $("#reject").toggleAttribute("disabled", !context.accept_ticket_digest);
 }
 
 async function refresh(): Promise<void> {
@@ -422,17 +392,6 @@ $("#draft-form").addEventListener("submit", async (event) => {
   } catch (error) { toast(String(error), true); }
 });
 
-$("#feedback-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    const input = $("#feedback") as HTMLTextAreaElement;
-    await callTool("record_design_feedback", { revision_id: context.head_revision_id, asset_sha256: context.head_asset_sha256, feedback: input.value });
-    input.value = "";
-    await refresh();
-    toast("Feedback attached to the current revision.");
-  } catch (error) { toast(String(error), true); }
-});
-
 $("#run-task").addEventListener("click", async () => {
   try {
     $("#run-task").setAttribute("disabled", "");
@@ -451,43 +410,16 @@ $("#reset").addEventListener("click", async () => {
     selectedTraceSignal = null;
     knownLatestTraceRunId = null;
     traceState = null;
+    $<HTMLInputElement>("#new-value").value = "";
     await refresh();
     toast("Fresh isolated case created.");
   }
   catch (error) { toast(String(error), true); }
 });
 
-$("#accept").addEventListener("click", async () => {
-  if (!context.accept_ticket_digest) return;
-  try { await acceptRevision(context.accept_ticket_digest); await refresh(); toast("Revision accepted by the human designer."); }
-  catch (error) { toast(String(error), true); }
-});
-
-$("#reject").addEventListener("click", async () => {
-  if (!context.accept_ticket_digest) return;
-  const input = $<HTMLTextAreaElement>("#feedback");
-  const feedback = input.value.trim();
-  if (!feedback) {
-    toast("Add design feedback before rejecting this revision.", true);
-    input.focus();
-    return;
-  }
-  try {
-    await rejectRevision(context.accept_ticket_digest, feedback);
-    input.value = "";
-    taskMetrics = null;
-    selectedTraceRunId = null;
-    selectedTraceSignal = null;
-    knownLatestTraceRunId = null;
-    traceState = null;
-    await refresh();
-    toast("Revision rejected. A fresh case keeps the rejection note.");
-  } catch (error) { toast(String(error), true); }
-});
-
 document.addEventListener("asset-autopsy:changed", () => { void refresh(); });
 
 await refresh();
 const siteToolsAvailable = await registerWebMcpTools();
-$("#webmcp-status").textContent = siteToolsAvailable ? "9 site tools ready" : "Visual mode";
+$("#webmcp-status").textContent = siteToolsAvailable ? "8 site tools ready" : "Visual mode";
 $("#compatibility").hidden = siteToolsAvailable;

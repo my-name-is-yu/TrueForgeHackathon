@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getTrace, rejectRevision } from "../src/api";
+import * as api from "../src/api";
 
 describe("workbench evidence API", () => {
   afterEach(() => {
@@ -25,28 +25,24 @@ describe("workbench evidence API", () => {
     });
     vi.stubGlobal("fetch", fetch);
 
-    await expect(getTrace("run_001")).resolves.toBe(trace);
+    await expect(api.getTrace("run_001")).resolves.toBe(trace);
     expect(fetch).toHaveBeenCalledWith("/api/traces/run_001", {
       credentials: "same-origin",
     });
   });
 
-  it("sends ticket-bound feedback to the human-only reject endpoint", async () => {
+  it("keeps reset as the only session-level action", async () => {
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ rejected: true }),
     });
     vi.stubGlobal("fetch", fetch);
 
-    await expect(rejectRevision("d".repeat(64), "Keep the movement calmer.")).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledWith("/api/reject", {
+    await expect(api.resetSession()).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith("/api/reset", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ticket_digest: "d".repeat(64),
-        feedback: "Keep the movement calmer.",
-      }),
     });
+    expect("acceptRevision" in api).toBe(false);
+    expect("rejectRevision" in api).toBe(false);
   });
 });

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -83,29 +83,6 @@ class QueryTraceRequest(StrictRequest):
     tolerance: float | None = Field(default=None, gt=0.0)
 
 
-class FeedbackRequest(StrictRequest):
-    revision_id: RevisionId
-    asset_sha256: AssetHash
-    feedback: SafeText
-
-
-class AcceptRequest(StrictRequest):
-    ticket_digest: AssetHash
-
-
-class RejectRequest(StrictRequest):
-    ticket_digest: AssetHash
-    feedback: SafeText
-
-    @field_validator("feedback")
-    @classmethod
-    def validate_feedback(cls, value: str) -> str:
-        feedback = value.strip()
-        if not feedback:
-            raise ValueError("Reject feedback cannot be blank.")
-        return feedback
-
-
 @dataclass(frozen=True, slots=True)
 class SessionTrace:
     revision_id: str
@@ -121,15 +98,13 @@ class WorkbenchSession:
     active_requests: int = 0
     draft: DraftPatchRequest | None = None
     traces: dict[str, SessionTrace] = field(default_factory=dict)
-    feedback: list[FeedbackRequest] = field(default_factory=list)
-    rejections: list[FeedbackRequest] = field(default_factory=list)
     latest_task: dict[str, Any] | None = None
     promotion_ticket: PromotionTicket | None = None
-    accepted: bool = False
+    qualification_terminal: bool = False
 
     @property
     def editing_locked(self) -> bool:
-        return self.promotion_ticket is not None
+        return self.qualification_terminal
 
 
 class SessionManager:
@@ -177,8 +152,6 @@ class SessionManager:
         self,
         session_id: str,
         session: WorkbenchSession,
-        *,
-        preserve_rejections: bool = False,
     ) -> WorkbenchSession:
         if self.sessions.get(session_id) is not session or not session.lock.locked():
             raise RuntimeError("reset requires the leased current session")
@@ -190,12 +163,9 @@ class SessionManager:
         session.data_root = replacement.data_root
         session.draft = None
         session.traces.clear()
-        session.feedback.clear()
-        if not preserve_rejections:
-            session.rejections.clear()
         session.latest_task = None
         session.promotion_ticket = None
-        session.accepted = False
+        session.qualification_terminal = False
         previous_service.store.close()
         try:
             self._delete_generation(previous_root)
@@ -268,37 +238,24 @@ async def _head(session: WorkbenchSession):
     return case, case.revision_history[-1]
 
 
-async def _require_promotion_ticket(
-    session: WorkbenchSession, ticket_digest: AssetHash
-) -> PromotionTicket:
-    ticket = session.promotion_ticket
-    if (
-        ticket is None
-        or ticket_digest != ticket.ticket_digest
-        or not await session.service.validate_promotion_acceptance(ticket)
-    ):
-        raise WorkbenchError(
-            "INVALID_PROMOTION_TICKET",
-            "This session does not have a valid promotion ticket.",
-        )
-    return ticket
-
-
 async def _context(session: WorkbenchSession) -> dict[str, Any]:
     case, head = await _head(session)
+    session.qualification_terminal = case.qualification_state in {"passed", "failed"}
     inspection = await session.service.inspect_asset(
         InspectAssetInput(case_id=CASE_ID, revision_id=head.revision_id, view="both")
     )
     return {
-        "case": _json(case),
+        "case": case.model_dump(
+            mode="json", exclude={"revision_history", "event_tail"}
+        ),
         "design": _json(inspection),
         "head_revision_id": head.revision_id,
         "head_asset_sha256": head.asset_sha256,
-        "draft": session.draft.model_dump(mode="json") if session.draft else None,
-        "feedback": [feedback.model_dump(mode="json") for feedback in session.feedback],
-        "rejections": [
-            rejection.model_dump(mode="json") for rejection in session.rejections
+        "head_parent_revision_id": head.parent_revision_id,
+        "head_canonical_diff": [
+            entry.model_dump(mode="json") for entry in head.canonical_diff
         ],
+        "draft": session.draft.model_dump(mode="json") if session.draft else None,
         "experiment_traces": [
             {
                 "run_id": run_id,
@@ -313,12 +270,6 @@ async def _context(session: WorkbenchSession) -> dict[str, Any]:
         ],
         "latest_task": session.latest_task,
         "editing_locked": session.editing_locked,
-        "accepted": session.accepted,
-        "accept_ticket_digest": (
-            session.promotion_ticket.ticket_digest
-            if session.promotion_ticket is not None
-            else None
-        ),
     }
 
 
@@ -365,13 +316,17 @@ async def _call_tool(
         return _query_trace(session, QueryTraceRequest.model_validate(arguments))
 
     if name == "set_draft_patch":
+        case, head = await _head(session)
+        session.qualification_terminal = case.qualification_state in {
+            "passed",
+            "failed",
+        }
         if session.editing_locked:
             raise WorkbenchError(
                 "EDITING_LOCKED",
-                "Qualification passed. Accept or reset this session before editing.",
+                "Qualification is complete. Reset this session before editing.",
             )
         request = DraftPatchRequest.model_validate(arguments)
-        _case, head = await _head(session)
         if (
             request.base_revision_id != head.revision_id
             or request.expected_base_sha256 != head.asset_sha256
@@ -384,12 +339,19 @@ async def _call_tool(
         return {"draft": request.model_dump(mode="json"), "persisted": False}
 
     if name == "create_revision_from_draft":
+        case, head = await _head(session)
+        session.qualification_terminal = case.qualification_state in {
+            "passed",
+            "failed",
+        }
         if session.editing_locked:
-            raise WorkbenchError("EDITING_LOCKED", "Qualification has locked editing.")
+            raise WorkbenchError(
+                "EDITING_LOCKED",
+                "Qualification is complete. Reset this session before editing.",
+            )
         if session.draft is None:
             raise WorkbenchError("DRAFT_REQUIRED", "Create a draft patch first.")
         request = CreateFromDraftRequest.model_validate(arguments)
-        _case, head = await _head(session)
         draft = session.draft
         if (
             draft.base_revision_id != head.revision_id
@@ -420,32 +382,28 @@ async def _call_tool(
         return result
 
     if name == "verify_revision":
-        result = await session.service.verify_revision(
-            VerifyRevisionInput.model_validate(arguments)
-        )
+        try:
+            result = await session.service.verify_revision(
+                VerifyRevisionInput.model_validate(arguments)
+            )
+        except DomainError:
+            case, _head_revision = await _head(session)
+            if case.qualification_state in {"passed", "failed"}:
+                session.qualification_terminal = True
+                session.draft = None
+            raise
         if result.promotion_ticket is not None:
             session.promotion_ticket = result.promotion_ticket
-            session.draft = None
-        return result
-
-    if name == "record_design_feedback":
-        request = FeedbackRequest.model_validate(arguments)
-        _case, head = await _head(session)
-        if (
-            request.revision_id != head.revision_id
-            or request.asset_sha256 != head.asset_sha256
-        ):
-            raise WorkbenchError(
-                "STALE_FEEDBACK_TARGET",
-                "Feedback must cite the exact current revision and asset hash.",
-            )
-        if len(session.feedback) >= 50:
-            raise WorkbenchError(
-                "FEEDBACK_LIMIT_REACHED",
-                "This temporary session already contains 50 feedback entries.",
-            )
-        session.feedback.append(request)
-        return {"recorded": True, "feedback": request.model_dump(mode="json")}
+        session.qualification_terminal = True
+        session.draft = None
+        qualification_state = (
+            "passed" if result.promotion_ticket is not None else "failed"
+        )
+        public_result = result.model_dump(mode="json", exclude={"promotion_ticket"})
+        public_result["qualified"] = result.promotion_ticket is not None
+        public_result["editing_locked"] = session.editing_locked
+        public_result["qualification_state"] = qualification_state
+        return public_result
 
     raise WorkbenchError(
         "UNKNOWN_TOOL", "The requested workbench tool does not exist.", 404
@@ -628,78 +586,6 @@ def create_workbench_app(
         )
         return _set_session_cookie(response, created=created, session_id=session_id)
 
-    async def accept_endpoint(request: Request) -> Response:
-        created = False
-        session_id = ""
-        try:
-            body = AcceptRequest.model_validate(await request.json())
-            async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
-                session_id,
-                session,
-                created,
-            ):
-                ticket = await _require_promotion_ticket(session, body.ticket_digest)
-                session.accepted = True
-                response = JSONResponse(
-                    {
-                        "accepted": True,
-                        "revision_id": ticket.revision_id,
-                        "asset_sha256": ticket.asset_sha256,
-                    }
-                )
-        except (ValidationError, ValueError, WorkbenchError) as error:
-            code = getattr(error, "code", "INVALID_ARGUMENTS")
-            status = getattr(error, "status_code", 422)
-            response = JSONResponse(
-                {"accepted": False, "error": {"code": code, "message": str(error)}},
-                status_code=status,
-            )
-        return _set_session_cookie(response, created=created, session_id=session_id)
-
-    async def reject_endpoint(request: Request) -> Response:
-        created = False
-        session_id = ""
-        try:
-            body = RejectRequest.model_validate(await request.json())
-            async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
-                session_id,
-                session,
-                created,
-            ):
-                if session.accepted:
-                    raise WorkbenchError(
-                        "INVALID_PROMOTION_TICKET",
-                        "An accepted revision cannot be rejected.",
-                    )
-                ticket = await _require_promotion_ticket(session, body.ticket_digest)
-                if len(session.rejections) >= 50:
-                    raise WorkbenchError(
-                        "REJECTION_LIMIT_REACHED",
-                        "This temporary session already contains 50 rejected attempts.",
-                    )
-                rejection = FeedbackRequest(
-                    revision_id=ticket.revision_id,
-                    asset_sha256=ticket.asset_sha256,
-                    feedback=body.feedback,
-                )
-                manager.reset(session_id, session, preserve_rejections=True)
-                session.rejections.append(rejection)
-                response = JSONResponse(
-                    {
-                        "rejected": True,
-                        "revision_id": ticket.revision_id,
-                        "asset_sha256": ticket.asset_sha256,
-                    }
-                )
-        except (ValidationError, ValueError, WorkbenchError) as error:
-            code = getattr(error, "code", "INVALID_ARGUMENTS")
-            status = getattr(error, "status_code", 422)
-            response = JSONResponse(
-                {"rejected": False, "error": {"code": code, "message": str(error)}},
-                status_code=status,
-            )
-        return _set_session_cookie(response, created=created, session_id=session_id)
-
     async def reset_endpoint(request: Request) -> Response:
         async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
             session_id,
@@ -725,8 +611,6 @@ def create_workbench_app(
         Route("/api/context", context_endpoint, methods=["GET"]),
         Route("/api/tools/{name:str}", tool_endpoint, methods=["POST"]),
         Route("/api/traces/{run_id:str}", trace_endpoint, methods=["GET"]),
-        Route("/api/accept", accept_endpoint, methods=["POST"]),
-        Route("/api/reject", reject_endpoint, methods=["POST"]),
         Route("/api/reset", reset_endpoint, methods=["POST"]),
         Route("/health", health_endpoint, methods=["GET"]),
     ]

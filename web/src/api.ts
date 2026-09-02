@@ -37,29 +37,3 @@ export async function resetSession(): Promise<void> {
   const response = await fetch("/api/reset", { method: "POST", credentials: "same-origin" });
   if (!response.ok) throw new Error(`Reset failed: ${response.status}`);
 }
-
-export async function acceptRevision(ticketDigest: string): Promise<void> {
-  const response = await fetch("/api/accept", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ticket_digest: ticketDigest }),
-  });
-  const body = await response.json();
-  if (!response.ok || !body.accepted) {
-    throw new Error(`${body.error?.code ?? "ACCEPT_FAILED"}: ${body.error?.message ?? response.statusText}`);
-  }
-}
-
-export async function rejectRevision(ticketDigest: string, feedback: string): Promise<void> {
-  const response = await fetch("/api/reject", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ticket_digest: ticketDigest, feedback }),
-  });
-  const body = await response.json();
-  if (!response.ok || !body.rejected) {
-    throw new Error(`${body.error?.code ?? "REJECT_FAILED"}: ${body.error?.message ?? response.statusText}`);
-  }
-}
