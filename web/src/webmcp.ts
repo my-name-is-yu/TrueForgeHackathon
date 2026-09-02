@@ -198,9 +198,11 @@ export async function registerWebMcpTools(document_: Document = document): Promi
     await register.call(document_.modelContext, {
       ...definition,
       execute: async (input: JsonObject) => {
-        const result = await callTool(definition.name, input);
-        document_.dispatchEvent(new CustomEvent("asset-autopsy:changed", { detail: { tool: definition.name } }));
-        return result;
+        try {
+          return await callTool(definition.name, input);
+        } finally {
+          document_.dispatchEvent(new CustomEvent("asset-autopsy:changed", { detail: { tool: definition.name } }));
+        }
       },
     });
   }
