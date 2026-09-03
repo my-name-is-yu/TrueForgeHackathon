@@ -64,3 +64,22 @@ def test_session_artifacts_drop_corrupt_payload_on_read(tmp_path) -> None:
         store.read(descriptor.sha256)
 
     assert descriptor.sha256 not in store
+
+
+def test_restore_replaces_the_descriptor_index_without_deleting_objects(
+    tmp_path,
+) -> None:
+    store = SessionArtifactStore(tmp_path)
+    retained = _artifact(b"retained", name="retained.glb")
+    discarded = _artifact(b"discarded", name="discarded.glb")
+    store.put(retained, b"retained")
+    store.put(discarded, b"discarded")
+
+    store.restore([retained])
+
+    assert store.artifact_count == 1
+    assert store.total_bytes == retained.byte_size
+    assert store.read(retained.sha256) == (b"retained", retained)
+    with pytest.raises(ArtifactStoreError, match="not indexed"):
+        store.read(discarded.sha256)
+    assert store.objects.path_for(discarded.sha256).is_file()

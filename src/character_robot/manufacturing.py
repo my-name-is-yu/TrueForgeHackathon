@@ -625,6 +625,11 @@ def _check_validation_scope(
             requirements.required_component_ids,
         ),
         (
+            "mounting_hole",
+            catalog.policy.required_hole_ids,
+            requirements.required_hole_ids,
+        ),
+        (
             "connector",
             catalog.policy.required_connector_ids,
             requirements.required_connector_ids,

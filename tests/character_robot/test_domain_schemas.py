@@ -133,6 +133,22 @@ def test_character_spec_is_strict_bounded_and_behavior_references_face_contract(
         CharacterRobotSpec.model_validate(unsupported)
 
 
+def test_character_spec_collections_are_deeply_immutable() -> None:
+    spec = CharacterRobotSpec.model_validate(_spec_payload())
+
+    collections = (
+        spec.appearance.style_tags,
+        spec.morphology.nodes,
+        spec.morphology.nodes[1].sections,
+        spec.face.supported_expressions,
+        spec.behavior.scenarios,
+        spec.behavior.scenarios[0].keyframes,
+    )
+    assert all(isinstance(value, tuple) for value in collections)
+    with pytest.raises(AttributeError):
+        spec.morphology.nodes.append(spec.morphology.nodes[0])  # type: ignore[attr-defined]
+
+
 def test_morphology_rejects_unknown_dependencies_cycles_and_excessive_radius() -> None:
     payload = _spec_payload()["morphology"]
     unknown = copy.deepcopy(payload)

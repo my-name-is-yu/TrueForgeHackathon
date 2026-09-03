@@ -98,7 +98,12 @@ ExpressionId: TypeAlias = Literal[
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, validate_assignment=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+        validate_assignment=True,
+    )
 
 
 class Vec2(StrictModel):
@@ -171,7 +176,7 @@ class RoundedSolidNode(MorphologyNodeBase):
 
 class RevolveNode(MorphologyNodeBase):
     kind: Literal["revolve"]
-    profile_points_mm: list[Vec2] = Field(min_length=3, max_length=24)
+    profile_points_mm: tuple[Vec2, ...] = Field(min_length=3, max_length=24)
     angle_deg: FiniteFloat = Field(ge=30.0, le=360.0, default=360.0)
 
 
@@ -183,11 +188,13 @@ class LoftSection(StrictModel):
 
 class LoftNode(MorphologyNodeBase):
     kind: Literal["loft"]
-    sections: list[LoftSection] = Field(min_length=2, max_length=8)
+    sections: tuple[LoftSection, ...] = Field(min_length=2, max_length=8)
 
     @field_validator("sections")
     @classmethod
-    def require_ordered_sections(cls, value: list[LoftSection]) -> list[LoftSection]:
+    def require_ordered_sections(
+        cls, value: tuple[LoftSection, ...]
+    ) -> tuple[LoftSection, ...]:
         positions = [section.z_mm for section in value]
         if positions != sorted(positions) or len(positions) != len(set(positions)):
             raise ValueError("loft sections must have unique ascending z_mm values")
@@ -196,12 +203,12 @@ class LoftNode(MorphologyNodeBase):
 
 class SweepNode(MorphologyNodeBase):
     kind: Literal["sweep"]
-    path_points_mm: list[Vec3] = Field(min_length=2, max_length=16)
+    path_points_mm: tuple[Vec3, ...] = Field(min_length=2, max_length=16)
     radius_mm: FiniteFloat = Field(gt=0.0, le=100.0)
 
     @field_validator("path_points_mm")
     @classmethod
-    def require_nonzero_path(cls, value: list[Vec3]) -> list[Vec3]:
+    def require_nonzero_path(cls, value: tuple[Vec3, ...]) -> tuple[Vec3, ...]:
         for left, right in zip(value, value[1:]):
             distance = math.sqrt(
                 (left.x - right.x) ** 2
@@ -216,11 +223,11 @@ class SweepNode(MorphologyNodeBase):
 class CsgNode(MorphologyNodeBase):
     kind: Literal["csg"]
     operation: Literal["union", "subtract", "intersect"]
-    operand_node_ids: list[SafeIdentifier] = Field(min_length=2, max_length=8)
+    operand_node_ids: tuple[SafeIdentifier, ...] = Field(min_length=2, max_length=8)
 
     @field_validator("operand_node_ids")
     @classmethod
-    def require_unique_operands(cls, value: list[str]) -> list[str]:
+    def require_unique_operands(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("CSG operands must be unique")
         return value
@@ -240,7 +247,7 @@ MorphologyNode: TypeAlias = Annotated[
 
 
 class MorphologyGraph(StrictModel):
-    nodes: list[MorphologyNode] = Field(min_length=1, max_length=48)
+    nodes: tuple[MorphologyNode, ...] = Field(min_length=1, max_length=48)
 
     @model_validator(mode="after")
     def validate_graph(self) -> Self:
@@ -301,11 +308,11 @@ class AppearanceSpec(StrictModel):
     accent_color: ColorHex
     eye_color: ColorHex = "#111111"
     finish: Literal["matte", "satin", "gloss"] = "matte"
-    style_tags: list[SafeIdentifier] = Field(default_factory=list, max_length=12)
+    style_tags: tuple[SafeIdentifier, ...] = Field(default_factory=tuple, max_length=12)
 
     @field_validator("style_tags")
     @classmethod
-    def require_unique_tags(cls, value: list[str]) -> list[str]:
+    def require_unique_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("style tags must be unique")
         return value
@@ -322,11 +329,11 @@ class PersonalitySpec(StrictModel):
 
 class FaceSpec(StrictModel):
     default_expression: ExpressionId = "neutral"
-    supported_expressions: list[ExpressionId] = Field(min_length=1, max_length=7)
+    supported_expressions: tuple[ExpressionId, ...] = Field(min_length=1, max_length=7)
 
     @field_validator("supported_expressions")
     @classmethod
-    def require_unique_expressions(cls, value: list[str]) -> list[str]:
+    def require_unique_expressions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("supported expressions must be unique")
         return value
@@ -351,7 +358,7 @@ class BehaviorKeyframe(StrictModel):
 class BehaviorScenario(StrictModel):
     scenario_id: ScenarioId
     duration_ms: StrictInt = Field(ge=100, le=120_000)
-    keyframes: list[BehaviorKeyframe] = Field(min_length=1, max_length=64)
+    keyframes: tuple[BehaviorKeyframe, ...] = Field(min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def validate_timeline(self) -> Self:
@@ -366,13 +373,13 @@ class BehaviorScenario(StrictModel):
 
 
 class BehaviorGraph(StrictModel):
-    scenarios: list[BehaviorScenario] = Field(min_length=1, max_length=6)
+    scenarios: tuple[BehaviorScenario, ...] = Field(min_length=1, max_length=6)
 
     @field_validator("scenarios")
     @classmethod
     def require_unique_scenarios(
-        cls, value: list[BehaviorScenario]
-    ) -> list[BehaviorScenario]:
+        cls, value: tuple[BehaviorScenario, ...]
+    ) -> tuple[BehaviorScenario, ...]:
         identifiers = [scenario.scenario_id for scenario in value]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("behavior scenario IDs must be unique")

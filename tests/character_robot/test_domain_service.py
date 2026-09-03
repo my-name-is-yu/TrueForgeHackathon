@@ -24,8 +24,9 @@ from character_robot.schemas import (
     SetIdentityEdit,
     ValidateDesignInput,
 )
-from character_robot.project_store import ProjectStore, ProjectStoreError
+from character_robot.project_store import ProjectStore, ProjectStoreError, spec_sha256
 from character_robot.service import CharacterRobotService, DomainError
+from character_robot.simulation import MotionSimulationResult, SimulationCheck
 
 from test_domain_schemas import _spec_payload
 
@@ -57,6 +58,7 @@ class _Profile:
 
 class _Profiles:
     def __init__(self) -> None:
+        self.get_calls = 0
         common = (
             _Component(
                 "controller", "Character controller", 1, _Envelope("controller")
@@ -99,6 +101,7 @@ class _Profiles:
         return tuple(self.values.values())
 
     def get_profile(self, profile_id):
+        self.get_calls += 1
         try:
             return self.values[profile_id]
         except KeyError:
@@ -145,7 +148,7 @@ class _Compiler:
             )
         )
         return _CompileResult(
-            dimensions_mm=(width, 110.0, 160.0),
+            dimensions_mm=(width, 110.0, 98.0),
             geometry_sha256=hashlib.sha256(f"geometry:{width}".encode()).hexdigest(),
             artifacts=artifacts,
         )
@@ -229,6 +232,149 @@ def test_blank_context_exposes_profiles_without_creating_a_baseline_revision() -
     ]
     assert "head_pan_tilt" in context.hardware_profiles[0].capabilities
     assert context.recent_runs == []
+
+
+def test_draft_mutations_resolve_the_hardware_profile_once() -> None:
+    profiles = _Profiles()
+    service = CharacterRobotService(
+        profile_registry=profiles,
+        cad_compiler=_Compiler(),
+    )
+
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    assert profiles.get_calls == 1
+
+    asyncio.run(
+        service.revise_design_draft(
+            ReviseDesignDraftInput(
+                draft_hash=draft.draft_hash,
+                edits=[
+                    SetIdentityEdit(
+                        kind="set_identity",
+                        identity=draft.spec.identity.model_copy(
+                            update={"name": "Pip revised"}
+                        ),
+                    )
+                ],
+            )
+        )
+    )
+    assert profiles.get_calls == 2
+
+
+def test_unknown_profile_is_rejected_without_a_cad_compiler() -> None:
+    profiles = _Profiles()
+    service = CharacterRobotService(profile_registry=profiles, cad_compiler=None)
+    unknown = _spec().model_copy(update={"hardware_profile_id": "unknown-board/v1"})
+
+    with pytest.raises(DomainError) as caught:
+        asyncio.run(
+            service.set_design_draft(
+                SetDesignDraftInput(expected_revision=None, spec=unknown)
+            )
+        )
+
+    assert caught.value.code == "HARDWARE_PROFILE_NOT_FOUND"
+    assert profiles.get_calls == 1
+
+
+def test_revision_spec_hash_cannot_be_changed_through_a_draft_output() -> None:
+    service = _service()
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+
+    with pytest.raises(AttributeError):
+        draft.spec.appearance.style_tags.append("mutated")  # type: ignore[attr-defined]
+
+    committed = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Immutable revision.",
+            )
+        )
+    )
+    context = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+
+    assert context.current_spec is not None
+    assert committed.revision.spec_hash == spec_sha256(context.current_spec)
+
+
+def test_failed_simulation_check_blocks_digital_validation(monkeypatch) -> None:
+    model_xml = b'<mujoco model="failed-check"/>'
+    failed = MotionSimulationResult(
+        engine_version="3.5.0",
+        compiler_version="character-sim-v1",
+        assumption_level="planning_only",
+        model_sha256=hashlib.sha256(model_xml).hexdigest(),
+        model_xml=model_xml,
+        checks=(
+            SimulationCheck(
+                code="step_contact",
+                passed=False,
+                measured_value=0.2,
+                limit_value=0.7,
+                unit="ratio",
+                message="The planning model did not clear the step-contact threshold.",
+            ),
+        ),
+        duration_ms=1.0,
+    )
+    monkeypatch.setattr(
+        "character_robot.service.run_motion_checks",
+        lambda _dimensions, **_kwargs: failed,
+    )
+    service = _service()
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+
+    report = asyncio.run(
+        service.validate_design(
+            ValidateDesignInput(
+                target=DraftTarget(kind="draft", draft_hash=draft.draft_hash)
+            )
+        )
+    ).report
+
+    failed_issue = next(
+        issue for issue in report.issues if issue.code == "simulation_step_contact"
+    )
+    assert failed_issue.severity == "error"
+    assert report.passed is False
+    assert report.evidence_level == "concept_only"
+
+    revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Simulation failure remains blocking.",
+            )
+        )
+    )
+    build_pack = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id=revision.revision.revision_id,
+                expected_spec_hash=revision.revision.spec_hash,
+            )
+        )
+    )
+    assert build_pack.status == "blocked"
+    assert [blocker.code for blocker in build_pack.blockers] == [
+        "simulation_step_contact"
+    ]
 
 
 def test_context_records_compile_and_validation_provenance() -> None:
@@ -370,6 +516,7 @@ def test_storage_failure_rolls_back_draft_revision_and_manifest_state(tmp_path) 
             )
         )
     assert pack_failure.value.code == "PROJECT_STORAGE_FAILED"
+    assert service._artifacts.artifact_count == 0
     context = asyncio.run(service.get_studio_context(GetStudioContextInput()))
     assert context.head_revision_id == "r000"
     assert context.artifact_manifest_count == 0
@@ -472,7 +619,7 @@ def test_measured_probe_adapter_cannot_outvote_a_digital_only_catalog() -> None:
     digital = CharacterRobotService(
         profile_registry=digital_profiles,
         cad_compiler=_Compiler(),
-        manufacturing_validator=_ManufacturingValidator(),
+        manufacturing_validator=_ManufacturingValidator().validate,
     )
     digital_draft = asyncio.run(
         digital.set_design_draft(
@@ -499,7 +646,7 @@ def test_measured_probe_adapter_cannot_outvote_a_digital_only_catalog() -> None:
     qualified = CharacterRobotService(
         profile_registry=qualified_profiles,
         cad_compiler=_Compiler(),
-        manufacturing_validator=_ManufacturingValidator(),
+        manufacturing_validator=_ManufacturingValidator().validate,
     )
     qualified_draft = asyncio.run(
         qualified.set_design_draft(

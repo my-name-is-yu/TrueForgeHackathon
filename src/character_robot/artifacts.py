@@ -71,6 +71,8 @@ class SessionArtifactStore:
         immutable Spec remains available and the compiler can regenerate them.
         """
 
+        self._descriptors.clear()
+        self._total_bytes = 0
         for descriptor in descriptors:
             try:
                 content = self.objects.read_bytes(descriptor.sha256)

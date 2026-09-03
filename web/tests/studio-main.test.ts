@@ -73,6 +73,44 @@ const context = (): StudioContext => ({
   },
 });
 
+const buildPack = (specHash = "b".repeat(64)): BuildPackResult => ({
+  status: "experimental_ready",
+  manifest: {
+    revisionId: "r003",
+    specHash,
+    geometrySha256: "e".repeat(64),
+    profileId: "m5-cores3-goplus2/v1",
+    catalogVersion: "hardware-catalog-v1",
+    compilerVersion: "character-cad-v1",
+    cadEngineVersion: "0.11.1",
+    simulationEngineVersion: "3.5.0",
+    firmwareRuntimeVersion: "character-runtime-v1",
+    evidenceLevel: "digital_checks_passed",
+    manifestHash: "f".repeat(64),
+    downloadRequiresHumanAction: true,
+  },
+  artifacts: [{
+    kind: "stl",
+    fileName: "pico-body.stl",
+    mediaType: "model/stl",
+    sha256: "d".repeat(64),
+    byteSize: 4096,
+    experimental: true,
+    downloadUrl: `/api/studio/v1/artifacts/${"d".repeat(64)}`,
+  }],
+  blockers: [{
+    code: "runtime_release_not_published",
+    severity: "warning",
+    path: "build_pack",
+    message: "The pinned runtime binary has not been published.",
+    measuredValue: null,
+    limitValue: null,
+    suggestion: "Publish and digest the fixed runtime release.",
+  }],
+  nextAction: "Review and download each artifact.",
+  humanActionRequired: true,
+});
+
 describe("mountCharacterRobotStudio", () => {
   afterEach(() => { document.body.replaceChildren(); });
 
@@ -96,43 +134,7 @@ describe("mountCharacterRobotStudio", () => {
       evidenceLevel: "concept_only",
       keyframes: [],
     });
-    const preparedPack: BuildPackResult = {
-      status: "experimental_ready",
-      manifest: {
-        revisionId: "r003",
-        specHash: "b".repeat(64),
-        geometrySha256: "e".repeat(64),
-        profileId: "m5-cores3-goplus2/v1",
-        catalogVersion: "hardware-catalog-v1",
-        compilerVersion: "character-cad-v1",
-        cadEngineVersion: "0.11.1",
-        simulationEngineVersion: "3.5.0",
-        firmwareRuntimeVersion: "character-runtime-v1",
-        evidenceLevel: "digital_checks_passed",
-        manifestHash: "f".repeat(64),
-        downloadRequiresHumanAction: true,
-      },
-      artifacts: [{
-        kind: "stl",
-        fileName: "pico-body.stl",
-        mediaType: "model/stl",
-        sha256: "d".repeat(64),
-        byteSize: 4096,
-        experimental: true,
-        downloadUrl: `/api/studio/v1/artifacts/${"d".repeat(64)}`,
-      }],
-      blockers: [{
-        code: "runtime_release_not_published",
-        severity: "warning",
-        path: "build_pack",
-        message: "The pinned runtime binary has not been published.",
-        measuredValue: null,
-        limitValue: null,
-        suggestion: "Publish and digest the fixed runtime release.",
-      }],
-      nextAction: "Review and download each artifact.",
-      humanActionRequired: true,
-    };
+    const preparedPack = buildPack();
     const prepareBuildPack = vi.fn().mockResolvedValue(preparedPack);
     const importProject = vi.fn().mockResolvedValue(undefined);
     const setSelection = vi.fn().mockResolvedValue("beak");
@@ -212,6 +214,7 @@ describe("mountCharacterRobotStudio", () => {
     Object.defineProperty(importInput, "files", { value: [sharedProject] });
     importInput.dispatchEvent(new Event("change", { bubbles: true }));
     await vi.waitFor(() => expect(importProject).toHaveBeenCalledWith(sharedProject, 7));
+    await vi.waitFor(() => expect(document.querySelector(".crs-manifest")).toBeNull());
 
     document.dispatchEvent(new CustomEvent(STUDIO_CHANGED_EVENT, {
       detail: {
@@ -228,6 +231,103 @@ describe("mountCharacterRobotStudio", () => {
       expect(document.querySelector("#crs-warnings")?.textContent).toContain("8.0 mm more width");
     });
 
+    studio.destroy();
+  });
+
+  it("clears a failed replacement GLB and retries the current URL", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    let current = context();
+    current.preview.glbUrl = "/api/studio/v1/artifacts/old-preview";
+    const loadPreview = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Replacement GLB is unavailable"))
+      .mockResolvedValueOnce(undefined);
+    const clearPreview = vi.fn();
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext: async () => current,
+      setSelection: async ({ node_id }) => node_id,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview,
+        clearPreview,
+        selectNode: vi.fn(),
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+    await vi.waitFor(() => expect(loadPreview).toHaveBeenCalledTimes(1));
+
+    current = structuredClone(current);
+    current.preview.glbUrl = "/api/studio/v1/artifacts/new-preview";
+    await studio.refresh();
+    await vi.waitFor(() => expect(clearPreview).toHaveBeenCalledOnce());
+    expect(document.querySelector("#crs-view-status")?.textContent).toBe("Preview unavailable");
+    expect(document.querySelector("#crs-view-state")?.textContent).toContain(
+      "Replacement GLB is unavailable",
+    );
+
+    await studio.refresh();
+    await vi.waitFor(() => expect(loadPreview).toHaveBeenCalledTimes(3));
+    expect(loadPreview).toHaveBeenLastCalledWith(
+      "/api/studio/v1/artifacts/new-preview",
+      current.draft!.spec,
+    );
+    studio.destroy();
+  });
+
+  it("invalidates build packs by spec identity and ignores stale responses", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    let current = context();
+    let resolveBuildPack!: (result: BuildPackResult) => void;
+    const prepareBuildPack = vi.fn(() => new Promise<BuildPackResult>((resolve) => {
+      resolveBuildPack = resolve;
+    }));
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext: async () => current,
+      prepareBuildPack,
+      setSelection: async ({ node_id }) => node_id,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview: vi.fn(),
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+
+    document.dispatchEvent(new CustomEvent(STUDIO_CHANGED_EVENT, {
+      detail: { tool: "prepare_build_pack", ok: true, buildPackResult: buildPack() },
+    }));
+    await vi.waitFor(() => expect(document.querySelector(".crs-manifest")).not.toBeNull());
+
+    current = structuredClone(current);
+    current.headSpecSha256 = "a".repeat(64);
+    await studio.refresh();
+    expect(document.querySelector(".crs-manifest")).toBeNull();
+    expect(document.querySelector(".crs-artifact")).toBeNull();
+
+    current = context();
+    await studio.refresh();
+    (document.querySelector("#crs-prepare-pack") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(prepareBuildPack).toHaveBeenCalledOnce());
+    current = structuredClone(current);
+    current.headSpecSha256 = "a".repeat(64);
+    await studio.refresh();
+    resolveBuildPack(buildPack());
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLButtonElement>("#crs-prepare-pack")?.textContent)
+        .toBe("Prepare build pack");
+    });
+    expect(document.querySelector(".crs-manifest")).toBeNull();
+
+    document.dispatchEvent(new CustomEvent(STUDIO_CHANGED_EVENT, {
+      detail: { tool: "prepare_build_pack", ok: true, buildPackResult: buildPack() },
+    }));
+    await Promise.resolve();
+    expect(document.querySelector(".crs-manifest")).toBeNull();
     studio.destroy();
   });
 

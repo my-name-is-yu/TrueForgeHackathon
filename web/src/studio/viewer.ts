@@ -565,6 +565,7 @@ export function createStudioViewer(
               resolve();
               return;
             }
+            clearModel();
             const message = error instanceof Error ? error.message : "GLB preview could not be loaded";
             options.onLoadStateChange?.("error", message);
             reject(new Error(message));

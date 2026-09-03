@@ -123,7 +123,7 @@ def _requirements() -> ManufacturingRequirements:
         maximum_mass_g=1000.0,
         minimum_cog_margin_mm=5.0,
         required_part_ids=("chassis",),
-        required_hole_ids=("shell_mount",),
+        required_hole_ids=("controller_mount",),
         required_fit_ids=("head_joint",),
         required_component_ids=("controller",),
         required_connector_ids=("controller_usb",),
@@ -146,7 +146,7 @@ def _observations() -> ManufacturingObservations:
         ),
         holes=(
             HoleProbe(
-                hole_id="shell_mount",
+                hole_id="controller_mount",
                 observed_diameter_mm=3.4,
                 mating_diameter_mm=3.0,
                 maximum_clearance_mm=0.6,
@@ -254,7 +254,7 @@ def test_manufacturing_failures_report_measurements_and_do_not_qualify() -> None
         ),
         holes=(
             HoleProbe(
-                hole_id="shell_mount",
+                hole_id="controller_mount",
                 observed_diameter_mm=3.1,
                 mating_diameter_mm=3.0,
             ),
@@ -393,6 +393,7 @@ def test_qualification_policy_items_cannot_be_omitted_from_validation_scope() ->
     requirements = replace(
         _requirements(),
         required_component_ids=(),
+        required_hole_ids=(),
         required_connector_ids=(),
         required_motion_ids=(),
     )
@@ -405,4 +406,9 @@ def test_qualification_policy_items_cannot_be_omitted_from_validation_scope() ->
         issue.subject
         for issue in report.issues
         if issue.code == "validation_scope_incomplete"
-    ] == ["component.controller", "connector.controller_usb", "motion.neck_pan"]
+    ] == [
+        "component.controller",
+        "mounting_hole.controller_mount",
+        "connector.controller_usb",
+        "motion.neck_pan",
+    ]

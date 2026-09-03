@@ -11,7 +11,7 @@ import time
 import uuid
 import zipfile
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -106,12 +106,6 @@ class CadCompilerProtocol(Protocol):
     def compile(
         self, spec: CharacterRobotSpec, profile: object | None = None
     ) -> object: ...
-
-
-class ManufacturingValidationProviderProtocol(Protocol):
-    """Trusted adapter from measured catalog/probes to the pure validation kernel."""
-
-    def validate(self, spec: CharacterRobotSpec, compiled: object) -> object: ...
 
 
 class DomainError(RuntimeError):
@@ -212,7 +206,9 @@ class CharacterRobotService:
         profile_registry: ProfileRegistryProtocol | None = None,
         cad_compiler: CadCompilerProtocol | None | object = _DEFAULT_CAD_COMPILER,
         project_store: ProjectStore | None = None,
-        manufacturing_validator: ManufacturingValidationProviderProtocol | None = None,
+        manufacturing_validator: (
+            Callable[[CharacterRobotSpec, object], object] | None
+        ) = None,
         physical_records: Sequence[PhysicalEvidenceRecord] = (),
         evidence_verifier: EvidenceSignatureVerifier | None = None,
         exact_build_manifest_sha256: str | None = None,
@@ -511,7 +507,6 @@ class CharacterRobotService:
         async with self._lock:
             self._require_head(value.expected_revision, request_id)
             self._require_draft_replacement(value.expected_draft_hash, request_id)
-            self._get_profile(value.spec.hardware_profile_id, request_id)
             compiled = await self._compile(value.spec, request_id)
             # Compile telemetry is an independent durable record when a later
             # design constraint rejects the candidate.
@@ -577,7 +572,6 @@ class CharacterRobotService:
                     "Inspect the current design and submit a smaller bounded edit.",
                 ) from None
 
-            self._get_profile(candidate.hardware_profile_id, request_id)
             compiled = await self._compile(candidate, request_id)
             self._persist(request_id)
             self._require_within_maximum_dimensions(candidate, compiled, request_id)
@@ -1258,12 +1252,12 @@ class CharacterRobotService:
                         issues.append(
                             ValidationIssue(
                                 code=f"simulation_{check.code}",
-                                severity="warning",
+                                severity="error",
                                 path="simulation",
                                 message=check.message,
                                 measured_value=check.measured_value,
                                 limit_value=check.limit_value,
-                                suggestion="Record a versioned measured dynamics profile before using this planning-model result as a build gate.",
+                                suggestion="Revise the design or measured dynamics inputs until this check passes, then rerun validation.",
                             )
                         )
                 if simulation.assumption_level == "planning_only":
@@ -1289,9 +1283,7 @@ class CharacterRobotService:
                 )
             else:
                 try:
-                    manufacturing = self.manufacturing_validator.validate(
-                        spec, compiled
-                    )
+                    manufacturing = self.manufacturing_validator(spec, compiled)
                     requested_evidence_level = str(
                         _value(manufacturing, "evidence_level")
                     )
@@ -1501,6 +1493,7 @@ class CharacterRobotService:
         self, spec: CharacterRobotSpec, request_id: str
     ) -> _CompileView | None:
         started = time.perf_counter()
+        profile = self._get_profile(spec.hardware_profile_id, request_id)
         if self.cad_compiler is None:
             self._record_run(
                 kind="compile",
@@ -1511,7 +1504,6 @@ class CharacterRobotService:
                 error_codes=["cad_compiler_unavailable"],
             )
             return None
-        profile = self._get_profile(spec.hardware_profile_id, request_id)
         cache_key = _cad_cache_key(spec, profile)
         if cached := self._compile_cache.get(cache_key):
             self._compile_cache.move_to_end(cache_key)

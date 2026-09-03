@@ -112,6 +112,12 @@ const designTargetKey = (target: DesignTarget | null): string | null => (
     : target ? `revision:${target.revision_id}` : null
 );
 
+const buildPackTargetKey = (context: StudioContext): string | null => (
+  context.headRevisionId && context.headSpecSha256
+    ? JSON.stringify([context.projectId, context.headRevisionId, context.headSpecSha256])
+    : null
+);
+
 const template = `
   <div class="crs-shell">
     <header class="crs-header">
@@ -222,7 +228,7 @@ export async function mountCharacterRobotStudio(
   let selectionSequence = 0;
   let scenarioSequence = 0;
   let destroyed = false;
-  let preparedForRevision: string | null = null;
+  let preparedForBuildPackTarget: string | null = null;
   let renderedTargetKey: string | null = null;
   let transientToolWarning: StudioWarning | null = null;
 
@@ -568,6 +574,8 @@ export async function mountCharacterRobotStudio(
   const onPrepareBuildPack = async (): Promise<void> => {
     if (!context?.headRevisionId || !context.headSpecSha256) return;
     const revisionId = context.headRevisionId;
+    const specHash = context.headSpecSha256;
+    const requestedTarget = buildPackTargetKey(context);
     const button = query<HTMLButtonElement>("#crs-prepare-pack");
     button.disabled = true;
     button.textContent = "Preparing manifest…";
@@ -575,10 +583,17 @@ export async function mountCharacterRobotStudio(
     try {
       const result = await prepareBuildPack({
         revision_id: revisionId,
-        expected_spec_hash: context.headSpecSha256,
+        expected_spec_hash: specHash,
       });
-      if (destroyed || context.headRevisionId !== revisionId) return;
-      preparedForRevision = revisionId;
+      if (
+        destroyed
+        || !context
+        || buildPackTargetKey(context) !== requestedTarget
+        || (result.manifest !== null && (
+          result.manifest.revisionId !== revisionId || result.manifest.specHash !== specHash
+        ))
+      ) return;
+      preparedForBuildPackTarget = requestedTarget;
       renderBuildPack(result);
     } catch (error) {
       query<HTMLElement>("#crs-build-copy").textContent = error instanceof Error
@@ -606,7 +621,11 @@ export async function mountCharacterRobotStudio(
     const label = input.closest<HTMLLabelElement>(".crs-import-button");
     if (label) label.classList.add("busy");
     void importProject(file, context?.projectGeneration ?? 0)
-      .then(refresh)
+      .then(() => {
+        preparedForBuildPackTarget = null;
+        query<HTMLElement>("#crs-artifacts").replaceChildren();
+        return refresh();
+      })
       .catch((error: unknown) => {
         query<HTMLElement>("#crs-build-copy").textContent = error instanceof Error
           ? error.message
@@ -668,8 +687,8 @@ export async function mountCharacterRobotStudio(
 
     const buildButton = query<HTMLButtonElement>("#crs-prepare-pack");
     buildButton.disabled = !nextContext.headRevisionId || !nextContext.headSpecSha256;
-    if (preparedForRevision !== nextContext.headRevisionId) {
-      preparedForRevision = null;
+    if (preparedForBuildPackTarget !== buildPackTargetKey(nextContext)) {
+      preparedForBuildPackTarget = null;
       query<HTMLElement>("#crs-artifacts").replaceChildren();
       query<HTMLElement>("#crs-build-copy").textContent = nextContext.headRevisionId
         ? nextContext.draft
@@ -698,7 +717,18 @@ export async function mountCharacterRobotStudio(
         viewStatus.className = "crs-pill";
         viewStatus.textContent = "Waiting for preview";
       } else {
-        if (spec) void viewer.loadPreview(loadedGlbUrl, spec).catch(() => undefined);
+        const requestedGlbUrl = loadedGlbUrl;
+        if (spec) {
+          void viewer.loadPreview(requestedGlbUrl, spec).catch((error: unknown) => {
+            if (destroyed || loadedGlbUrl !== requestedGlbUrl) return;
+            loadedGlbUrl = null;
+            viewer.clearPreview();
+            setViewState(
+              "error",
+              error instanceof Error ? error.message : "GLB preview could not be loaded",
+            );
+          });
+        }
       }
     }
   };
@@ -733,10 +763,19 @@ export async function mountCharacterRobotStudio(
       }
       : null;
     if (detail?.ok && detail.tool === "prepare_build_pack" && detail.buildPackResult) {
-      preparedForRevision = detail.buildPackResult.manifest?.revisionId
-        ?? context?.headRevisionId
-        ?? null;
-      renderBuildPack(detail.buildPackResult);
+      const manifest = detail.buildPackResult.manifest;
+      const currentTarget = context ? buildPackTargetKey(context) : null;
+      if (
+        context
+        && currentTarget
+        && (manifest === null || (
+          manifest.revisionId === context.headRevisionId
+          && manifest.specHash === context.headSpecSha256
+        ))
+      ) {
+        preparedForBuildPackTarget = currentTarget;
+        renderBuildPack(detail.buildPackResult);
+      }
     }
     void refresh();
   };
