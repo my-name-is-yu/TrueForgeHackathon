@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  acceptRevision: vi.fn(),
   callTool: vi.fn(),
   getContext: vi.fn(),
+  getTrace: vi.fn(),
   registerWebMcpTools: vi.fn(),
   resetSession: vi.fn(),
 }));
 
 vi.mock("../src/api", () => ({
-  acceptRevision: mocks.acceptRevision,
   callTool: mocks.callTool,
   getContext: mocks.getContext,
+  getTrace: mocks.getTrace,
   resetSession: mocks.resetSession,
 }));
 vi.mock("../src/robot", () => ({
@@ -41,9 +41,8 @@ describe("workbench initialization", () => {
     resolveContext({
       case: {
         case_id: "compound-arm-01",
-        qualification_state: "open",
+        qualification_state: "unused",
         remaining_budgets: {},
-        event_tail: [],
       },
       design: {
         joints: [{
@@ -58,16 +57,18 @@ describe("workbench initialization", () => {
       },
       head_revision_id: "r000",
       head_asset_sha256: "a".repeat(64),
+      head_parent_revision_id: null,
+      head_canonical_diff: [],
       draft: null,
-      feedback: [],
+      experiment_traces: [],
+      latest_task: null,
       editing_locked: false,
-      accepted: false,
-      accept_ticket_digest: null,
     });
     await loading;
 
     expect(mocks.registerWebMcpTools).toHaveBeenCalledOnce();
     expect(mocks.callTool).toHaveBeenCalledOnce();
+    expect(document.querySelector("#webmcp-status")!.textContent).toBe("8 site tools ready");
     expect(mocks.getContext.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.registerWebMcpTools.mock.invocationCallOrder[0],
     );

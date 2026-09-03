@@ -110,7 +110,7 @@ const expectedEffectSchema = objectSchema({
 export const webmcpTools: Omit<ToolDefinition, "execute">[] = [
   {
     name: "get_design_context",
-    description: "Read the current robot revision, hash, editable policy, draft, human feedback, budgets, and qualification state.",
+    description: "Read the current robot head, parent and canonical diff, editable policy, shared draft, recent trace identities, latest task evidence, budgets, and qualification state.",
     inputSchema: objectSchema({}),
     annotations: { readOnlyHint: true },
   },
@@ -182,21 +182,12 @@ export const webmcpTools: Omit<ToolDefinition, "execute">[] = [
   },
   {
     name: "verify_revision",
-    description: "Consume the one hidden qualification attempt for a public-passing current revision. Success locks editing for human Accept or Reset.",
+    description: "Consume the one hidden qualification attempt for a public-passing current revision. A completed pass or fail locks editing; only a pass marks the revision qualified, and the human resets the session for another attempt.",
     inputSchema: objectSchema({
       case_id: string("Case ID from design context."),
       revision_id: string("Current child head revision."),
       expected_asset_sha256: string("Exact current asset SHA-256."),
     }, ["case_id", "revision_id", "expected_asset_sha256"]),
-  },
-  {
-    name: "record_design_feedback",
-    description: "Record subjective human design feedback against the exact current revision and hash for later agent context.",
-    inputSchema: objectSchema({
-      revision_id: string("Exact current revision."),
-      asset_sha256: string("Exact current asset SHA-256."),
-      feedback: string("Specific subjective feedback from the human designer."),
-    }, ["revision_id", "asset_sha256", "feedback"]),
   },
 ];
 
@@ -207,9 +198,11 @@ export async function registerWebMcpTools(document_: Document = document): Promi
     await register.call(document_.modelContext, {
       ...definition,
       execute: async (input: JsonObject) => {
-        const result = await callTool(definition.name, input);
-        document_.dispatchEvent(new CustomEvent("asset-autopsy:changed", { detail: { tool: definition.name } }));
-        return result;
+        try {
+          return await callTool(definition.name, input);
+        } finally {
+          document_.dispatchEvent(new CustomEvent("asset-autopsy:changed", { detail: { tool: definition.name } }));
+        }
       },
     });
   }

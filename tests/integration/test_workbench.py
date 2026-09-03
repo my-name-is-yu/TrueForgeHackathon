@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -19,6 +18,9 @@ from asset_autopsy.workbench import (
 
 
 class WorkbenchRunner:
+    def __init__(self, *, fail_hidden_qualification: bool = False) -> None:
+        self.fail_hidden_qualification = fail_hidden_qualification
+
     async def validate(self, _xml_string: str) -> bool:
         return True
 
@@ -35,8 +37,17 @@ class WorkbenchRunner:
             for _ in range(requested.n_steps):
                 elapsed += 1
                 target = tuple(float(item) for item in requested.ctrl)
-                error = 0.0 if repaired or requested.label != "public_center" else 0.1
-                speed = 0.0 if repaired or requested.label != "public_center" else 0.1
+                hidden_failure = (
+                    self.fail_hidden_qualification
+                    and requested.label == "qualification"
+                )
+                if hidden_failure:
+                    error = 0.1
+                else:
+                    error = (
+                        0.0 if repaired or requested.label != "public_center" else 0.1
+                    )
+                speed = error
                 body = clean_end_effector_position(target)
                 row = {
                     "t": 0.002 * elapsed,
@@ -60,11 +71,12 @@ class WorkbenchRunner:
         return RunRecord(step_count=elapsed, segments=tuple(segments))
 
 
-def _manager(tmp_path) -> SessionManager:
+def _manager(tmp_path, *, fail_hidden_qualification: bool = False) -> SessionManager:
     return SessionManager(
         root=tmp_path,
         service_factory=lambda path: AssetAutopsyService(
-            path, runner=WorkbenchRunner()
+            path,
+            runner=WorkbenchRunner(fail_hidden_qualification=fail_hidden_qualification),
         ),
     )
 
@@ -73,6 +85,45 @@ def _context(client: TestClient) -> dict:
     response = client.get("/api/context")
     assert response.status_code == 200
     return response.json()
+
+
+def _assert_public_context_shape(context: dict) -> None:
+    assert set(context) == {
+        "case",
+        "design",
+        "head_revision_id",
+        "head_asset_sha256",
+        "head_parent_revision_id",
+        "head_canonical_diff",
+        "draft",
+        "experiment_traces",
+        "latest_task",
+        "editing_locked",
+    }
+    assert set(context["case"]) == {
+        "schema_version",
+        "request_id",
+        "case_id",
+        "event_ids",
+        "warnings",
+        "artifacts",
+        "qualification_state",
+        "original_revision_id",
+        "original_asset_sha256",
+        "controller_sha256",
+        "public_contract_sha256",
+        "runner_sha256",
+        "holdout_commitment_sha256",
+        "public_scenarios",
+        "contract_clauses",
+        "compiled_dimensions",
+        "joints",
+        "bodies",
+        "actuators",
+        "observable_metric_names",
+        "patch_policy",
+        "remaining_budgets",
+    }
 
 
 def _draft(context: dict) -> dict:
@@ -196,9 +247,12 @@ def _qualify_repaired_revision(client: TestClient) -> dict:
         },
     )
     assert verified.status_code == 200
-    ticket = verified.json()["result"]["promotion_ticket"]
-    assert ticket is not None
-    return ticket
+    result = verified.json()["result"]
+    assert "promotion_ticket" not in result
+    assert result["qualified"] is True
+    assert result["editing_locked"] is True
+    assert result["qualification_state"] == "passed"
+    return result
 
 
 def test_sessions_are_isolated_and_reset_discards_temporary_state(tmp_path) -> None:
@@ -215,20 +269,15 @@ def test_sessions_are_isolated_and_reset_discards_temporary_state(tmp_path) -> N
 
     response = first.post("/api/tools/set_draft_patch", json=_draft(first_context))
     assert response.status_code == 200
-    feedback = first.post(
-        "/api/tools/record_design_feedback",
-        json={
-            "revision_id": first_context["head_revision_id"],
-            "asset_sha256": first_context["head_asset_sha256"],
-            "feedback": "Prefer a calmer end-effector settle.",
-        },
-    )
-    assert feedback.status_code == 200
 
-    assert _context(first)["draft"] is not None
-    assert len(_context(first)["feedback"]) == 1
-    assert _context(second)["draft"] is None
-    assert _context(second)["feedback"] == []
+    first_with_draft = _context(first)
+    second_unchanged = _context(second)
+    _assert_public_context_shape(first_with_draft)
+    _assert_public_context_shape(second_unchanged)
+    assert first_with_draft["draft"] is not None
+    assert first_with_draft["experiment_traces"] == []
+    assert first_with_draft["latest_task"] is None
+    assert second_unchanged["draft"] is None
     assert first_context["head_asset_sha256"] == second_context["head_asset_sha256"]
 
     reset = first.post("/api/reset")
@@ -238,9 +287,14 @@ def test_sessions_are_isolated_and_reset_discards_temporary_state(tmp_path) -> N
     assert first_session.data_root.is_dir()
     assert not previous_root.exists()
     reset_context = _context(first)
+    _assert_public_context_shape(reset_context)
     assert reset_context["draft"] is None
-    assert reset_context["feedback"] == []
+    assert reset_context["experiment_traces"] == []
+    assert reset_context["latest_task"] is None
     assert reset_context["head_revision_id"] == "r000"
+    assert reset_context["head_parent_revision_id"] is None
+    assert reset_context["head_canonical_diff"] == []
+    assert reset_context["editing_locked"] is False
 
 
 def test_session_limit_evicts_idle_lru_and_deletes_its_generation(tmp_path) -> None:
@@ -357,6 +411,21 @@ def test_draft_is_not_ledger_state_and_revision_requires_session_evidence(
     full_trace = client.get(f"/api/traces/{result['run_id']}")
     assert full_trace.status_code == 200
     assert len(full_trace.json()["rows"]) == 256
+    trace = full_trace.json()
+    shared = _context(client)
+    assert shared["latest_task"]["revision_id"] == "r000"
+    assert shared["latest_task"]["result"] == "fail"
+    assert shared["experiment_traces"] == [
+        {
+            "run_id": result["run_id"],
+            "revision_id": "r000",
+            "asset_sha256": context["head_asset_sha256"],
+            "signals": sorted(trace["rows"][0]["values"]),
+            "row_count": len(trace["rows"]),
+            "start_time_s": trace["rows"][0]["time_s"],
+            "end_time_s": trace["rows"][-1]["time_s"],
+        }
+    ]
     compact = client.post(
         "/api/tools/query_trace",
         json={"run_id": result["run_id"], "operation": "sample", "count": 4},
@@ -364,80 +433,244 @@ def test_draft_is_not_ledger_state_and_revision_requires_session_evidence(
     assert compact.status_code == 200
     assert len(compact.json()["result"]["rows"]) == 4
 
-    assert _context(client)["head_revision_id"] == "r001"
-    assert _context(client)["draft"] is None
+    revised = _context(client)
+    assert revised["head_revision_id"] == "r001"
+    assert revised["head_parent_revision_id"] == "r000"
+    assert revised["head_canonical_diff"] == [
+        {
+            "target": "joint_b",
+            "attribute": "axis",
+            "before": "0 0 1",
+            "after": "0 1.0 0",
+        }
+    ]
+    assert revised["draft"] is None
 
 
-def test_feedback_rejects_stale_revision_and_accept_is_human_only(tmp_path) -> None:
-    manager = _manager(tmp_path)
-    app = create_workbench_app(manager=manager, frontend_dir=tmp_path / "missing")
-    client = TestClient(app)
-    context = _context(client)
-
-    stale = client.post(
-        "/api/tools/record_design_feedback",
-        json={
-            "revision_id": "r001",
-            "asset_sha256": context["head_asset_sha256"],
-            "feedback": "This targets the wrong revision.",
-        },
-    )
-    assert stale.status_code == 409
-    assert stale.json()["error"]["code"] == "STALE_FEEDBACK_TARGET"
-
-    unknown_tool = client.post(
-        "/api/tools/accept_revision", json={"ticket_digest": "0" * 64}
-    )
-    assert unknown_tool.status_code == 404
-    ticket = _qualify_repaired_revision(client)
-    locked = _context(client)
-    assert locked["editing_locked"] is True
-
-    wrong = client.post("/api/accept", json={"ticket_digest": "0" * 64})
-    assert wrong.status_code == 409
-    accepted = client.post(
-        "/api/accept", json={"ticket_digest": ticket["ticket_digest"]}
-    )
-    assert accepted.status_code == 200
-    assert accepted.json()["accepted"] is True
-    assert _context(client)["accepted"] is True
-
-
-def test_accept_rejects_another_sessions_ticket_digest(tmp_path) -> None:
-    app = create_workbench_app(
-        manager=_manager(tmp_path), frontend_dir=tmp_path / "missing"
-    )
-    first = TestClient(app)
-    second = TestClient(app)
-
-    first_ticket = _qualify_repaired_revision(first)
-    second_ticket = _qualify_repaired_revision(second)
-
-    assert first_ticket["ticket_id"] != second_ticket["ticket_id"]
-    assert first_ticket["ticket_digest"] != second_ticket["ticket_digest"]
-    rejected = first.post(
-        "/api/accept",
-        content=json.dumps({"ticket_digest": second_ticket["ticket_digest"]}),
-        headers={"content-type": "text/plain"},
-    )
-    assert rejected.status_code == 409
-    assert rejected.json()["error"]["code"] == "INVALID_PROMOTION_TICKET"
-    assert _context(first)["accepted"] is False
-
-
-def test_accept_rejects_malformed_json_with_structured_error(tmp_path) -> None:
+def test_context_and_design_context_expose_only_current_evidence(tmp_path) -> None:
     client = TestClient(
         create_workbench_app(
             manager=_manager(tmp_path), frontend_dir=tmp_path / "missing"
         )
     )
 
-    response = client.post(
-        "/api/accept",
-        content="{",
-        headers={"content-type": "application/json"},
+    context = _context(client)
+    _assert_public_context_shape(context)
+    assert context["head_revision_id"] == "r000"
+    assert context["head_parent_revision_id"] is None
+    assert context["head_canonical_diff"] == []
+
+    tool_response = client.post("/api/tools/get_design_context", json={})
+    assert tool_response.status_code == 200
+    tool_context = tool_response.json()["result"]
+    _assert_public_context_shape(tool_context)
+    assert "revision_history" not in tool_context["case"]
+    assert "event_tail" not in tool_context["case"]
+    for removed in (
+        "feedback",
+        "rejections",
+        "accepted",
+        "accept_ticket_digest",
+    ):
+        assert removed not in tool_context
+
+
+def test_accept_reject_and_feedback_surfaces_do_not_exist(tmp_path) -> None:
+    client = TestClient(
+        create_workbench_app(
+            manager=_manager(tmp_path), frontend_dir=tmp_path / "missing"
+        )
     )
 
-    assert response.status_code == 422
-    assert response.json()["accepted"] is False
-    assert response.json()["error"]["code"] == "INVALID_ARGUMENTS"
+    assert client.post("/api/accept", json={}).status_code == 404
+    assert client.post("/api/reject", json={}).status_code == 404
+    feedback = client.post("/api/tools/record_design_feedback", json={})
+    assert feedback.status_code == 404
+    assert feedback.json()["error"]["code"] == "UNKNOWN_TOOL"
+
+
+def test_qualification_locks_edits_without_leaking_ticket_and_keeps_evidence_readable(
+    tmp_path,
+) -> None:
+    manager = _manager(tmp_path)
+    client = TestClient(
+        create_workbench_app(manager=manager, frontend_dir=tmp_path / "missing")
+    )
+
+    verified = _qualify_repaired_revision(client)
+    session = next(iter(manager.sessions.values()))
+    assert session.promotion_ticket is not None
+    assert verified["revision_id"] == session.promotion_ticket.revision_id
+    assert "ticket_digest" not in str(verified)
+
+    locked = _context(client)
+    _assert_public_context_shape(locked)
+    assert locked["editing_locked"] is True
+    assert locked["latest_task"]["revision_id"] == verified["revision_id"]
+    assert locked["latest_task"]["result"] == "pass"
+    assert locked["latest_task"]["behavior_diff"]["verdict"] == "public_pass"
+    assert "ticket_digest" not in str(locked)
+
+    inspect = client.post(
+        "/api/tools/inspect_design",
+        json={"revision_id": locked["head_revision_id"], "view": "both"},
+    )
+    assert inspect.status_code == 200
+    trace_id = next(iter(session.traces))
+    assert client.get(f"/api/traces/{trace_id}").status_code == 200
+    query = client.post(
+        "/api/tools/query_trace",
+        json={"run_id": trace_id, "operation": "sample", "count": 4},
+    )
+    assert query.status_code == 200
+
+    edit = client.post("/api/tools/set_draft_patch", json=_draft(locked))
+    assert edit.status_code == 409
+    assert edit.json()["error"] == {
+        "code": "EDITING_LOCKED",
+        "message": "Qualification is complete. Reset this session before editing.",
+    }
+
+
+def test_failed_qualification_locks_edits_and_reset_starts_a_fresh_attempt(
+    tmp_path,
+) -> None:
+    manager = _manager(tmp_path, fail_hidden_qualification=True)
+    client = TestClient(
+        create_workbench_app(manager=manager, frontend_dir=tmp_path / "missing")
+    )
+    initial = _context(client)
+    _create_repaired_revision(client, initial)
+    repaired = _context(client)
+    public_task = client.post(
+        "/api/tools/run_task",
+        json={
+            "case_id": repaired["case"]["case_id"],
+            "revision_id": repaired["head_revision_id"],
+            "scenario_id": "public_center",
+            "capture": "metrics",
+        },
+    )
+    assert public_task.status_code == 200
+    assert public_task.json()["result"]["result"] == "pass"
+
+    draft = {
+        "base_revision_id": repaired["head_revision_id"],
+        "expected_base_sha256": repaired["head_asset_sha256"],
+        "patch": {
+            "target": {"kind": "joint", "name": "joint_b"},
+            "attribute": "axis",
+            "expected_old_value": [0.0, 1.0, 0.0],
+            "new_value": [0.0, 0.0, 1.0],
+        },
+    }
+    assert client.post("/api/tools/set_draft_patch", json=draft).status_code == 200
+    assert _context(client)["draft"] is not None
+
+    verified = client.post(
+        "/api/tools/verify_revision",
+        json={
+            "case_id": repaired["case"]["case_id"],
+            "revision_id": repaired["head_revision_id"],
+            "expected_asset_sha256": repaired["head_asset_sha256"],
+        },
+    )
+
+    assert verified.status_code == 200
+    result = verified.json()["result"]
+    assert "promotion_ticket" not in result
+    assert result["qualified"] is False
+    assert result["editing_locked"] is True
+    assert result["qualification_state"] == "failed"
+    session = next(iter(manager.sessions.values()))
+    assert session.promotion_ticket is None
+    assert session.qualification_terminal is True
+
+    failed = _context(client)
+    assert failed["case"]["qualification_state"] == "failed"
+    assert failed["editing_locked"] is True
+    assert failed["draft"] is None
+    for path, arguments in (
+        ("set_draft_patch", draft),
+        ("create_revision_from_draft", {}),
+    ):
+        edit = client.post(f"/api/tools/{path}", json=arguments)
+        assert edit.status_code == 409
+        assert edit.json()["error"] == {
+            "code": "EDITING_LOCKED",
+            "message": "Qualification is complete. Reset this session before editing.",
+        }
+
+    assert client.post("/api/reset").status_code == 200
+    fresh = _context(client)
+    assert fresh["case"]["qualification_state"] == "unused"
+    assert fresh["head_revision_id"] == "r000"
+    assert fresh["editing_locked"] is False
+    assert session.qualification_terminal is False
+    assert (
+        client.post("/api/tools/set_draft_patch", json=_draft(fresh)).status_code == 200
+    )
+
+
+def test_qualified_reset_starts_a_fresh_editable_attempt(tmp_path) -> None:
+    manager = _manager(tmp_path)
+    client = TestClient(
+        create_workbench_app(manager=manager, frontend_dir=tmp_path / "missing")
+    )
+    _qualify_repaired_revision(client)
+    session_id = client.cookies.get(SESSION_COOKIE)
+    assert session_id is not None
+    session = manager.sessions[session_id]
+    previous_root = session.data_root
+    previous_trace_ids = tuple(session.traces)
+    assert previous_trace_ids
+
+    response = client.post("/api/reset")
+
+    assert response.status_code == 200
+    assert manager.sessions[session_id] is session
+    assert session.data_root != previous_root
+    assert not previous_root.exists()
+    assert session.promotion_ticket is None
+    fresh = _context(client)
+    _assert_public_context_shape(fresh)
+    assert fresh["head_revision_id"] == "r000"
+    assert fresh["head_parent_revision_id"] is None
+    assert fresh["head_canonical_diff"] == []
+    assert fresh["case"]["qualification_state"] == "unused"
+    assert fresh["editing_locked"] is False
+    assert fresh["draft"] is None
+    assert fresh["experiment_traces"] == []
+    assert fresh["latest_task"] is None
+    for run_id in previous_trace_ids:
+        assert client.get(f"/api/traces/{run_id}").status_code == 404
+
+    assert (
+        client.post("/api/tools/set_draft_patch", json=_draft(fresh)).status_code == 200
+    )
+
+
+def test_reset_commits_when_old_generation_cleanup_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+    client = TestClient(
+        create_workbench_app(manager=manager, frontend_dir=tmp_path / "missing")
+    )
+    _context(client)
+    session = next(iter(manager.sessions.values()))
+    previous_root = session.data_root
+
+    def fail_cleanup(data_root) -> None:
+        assert data_root == previous_root
+        raise OSError("simulated stale-generation cleanup failure")
+
+    monkeypatch.setattr(manager, "_delete_generation", fail_cleanup)
+    response = client.post("/api/reset")
+
+    assert response.status_code == 200
+    assert previous_root.exists()
+    assert session.data_root != previous_root
+    fresh = _context(client)
+    assert fresh["head_revision_id"] == "r000"
+    assert fresh["editing_locked"] is False

@@ -83,14 +83,11 @@ class QueryTraceRequest(StrictRequest):
     tolerance: float | None = Field(default=None, gt=0.0)
 
 
-class FeedbackRequest(StrictRequest):
-    revision_id: RevisionId
-    asset_sha256: AssetHash
-    feedback: SafeText
-
-
-class AcceptRequest(StrictRequest):
-    ticket_digest: AssetHash
+@dataclass(frozen=True, slots=True)
+class SessionTrace:
+    revision_id: str
+    asset_sha256: str
+    trace: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -100,14 +97,14 @@ class WorkbenchSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_requests: int = 0
     draft: DraftPatchRequest | None = None
-    traces: dict[str, dict[str, Any]] = field(default_factory=dict)
-    feedback: list[FeedbackRequest] = field(default_factory=list)
+    traces: dict[str, SessionTrace] = field(default_factory=dict)
+    latest_task: dict[str, Any] | None = None
     promotion_ticket: PromotionTicket | None = None
-    accepted: bool = False
+    qualification_terminal: bool = False
 
     @property
     def editing_locked(self) -> bool:
-        return self.promotion_ticket is not None
+        return self.qualification_terminal
 
 
 class SessionManager:
@@ -151,9 +148,14 @@ class SessionManager:
             async with self._lock:
                 session.active_requests -= 1
 
-    def reset(self, session_id: str, session: WorkbenchSession) -> WorkbenchSession:
+    def reset(
+        self,
+        session_id: str,
+        session: WorkbenchSession,
+    ) -> WorkbenchSession:
         if self.sessions.get(session_id) is not session or not session.lock.locked():
             raise RuntimeError("reset requires the leased current session")
+        self._validated_generation_path(session.data_root)
         replacement = self._new_session(session_id)
         previous_service = session.service
         previous_root = session.data_root
@@ -161,11 +163,15 @@ class SessionManager:
         session.data_root = replacement.data_root
         session.draft = None
         session.traces.clear()
-        session.feedback.clear()
+        session.latest_task = None
         session.promotion_ticket = None
-        session.accepted = False
+        session.qualification_terminal = False
         previous_service.store.close()
-        self._delete_generation(previous_root)
+        try:
+            self._delete_generation(previous_root)
+        except OSError:
+            # The session swap is the reset commit point; stale-file cleanup is best-effort.
+            pass
         return session
 
     def _new_session(self, session_id: str) -> WorkbenchSession:
@@ -195,16 +201,20 @@ class SessionManager:
         self._delete_generation(session.data_root)
 
     def _delete_generation(self, data_root: Path) -> None:
-        resolved = data_root.resolve()
-        relative = resolved.relative_to(self.root)
-        if len(relative.parts) != 2:
-            raise RuntimeError("session generation path is invalid")
+        resolved = self._validated_generation_path(data_root)
         if resolved.exists():
             shutil.rmtree(resolved)
         try:
             resolved.parent.rmdir()
         except OSError:
             pass
+
+    def _validated_generation_path(self, data_root: Path) -> Path:
+        resolved = data_root.resolve()
+        relative = resolved.relative_to(self.root)
+        if len(relative.parts) != 2:
+            raise RuntimeError("session generation path is invalid")
+        return resolved
 
 
 def _json(value: Any) -> Any:
@@ -230,23 +240,36 @@ async def _head(session: WorkbenchSession):
 
 async def _context(session: WorkbenchSession) -> dict[str, Any]:
     case, head = await _head(session)
+    session.qualification_terminal = case.qualification_state in {"passed", "failed"}
     inspection = await session.service.inspect_asset(
         InspectAssetInput(case_id=CASE_ID, revision_id=head.revision_id, view="both")
     )
     return {
-        "case": _json(case),
+        "case": case.model_dump(
+            mode="json", exclude={"revision_history", "event_tail"}
+        ),
         "design": _json(inspection),
         "head_revision_id": head.revision_id,
         "head_asset_sha256": head.asset_sha256,
+        "head_parent_revision_id": head.parent_revision_id,
+        "head_canonical_diff": [
+            entry.model_dump(mode="json") for entry in head.canonical_diff
+        ],
         "draft": session.draft.model_dump(mode="json") if session.draft else None,
-        "feedback": [feedback.model_dump(mode="json") for feedback in session.feedback],
+        "experiment_traces": [
+            {
+                "run_id": run_id,
+                "revision_id": record.revision_id,
+                "asset_sha256": record.asset_sha256,
+                "signals": sorted(record.trace["rows"][0]["values"]),
+                "row_count": len(record.trace["rows"]),
+                "start_time_s": record.trace["rows"][0]["time_s"],
+                "end_time_s": record.trace["rows"][-1]["time_s"],
+            }
+            for run_id, record in session.traces.items()
+        ],
+        "latest_task": session.latest_task,
         "editing_locked": session.editing_locked,
-        "accepted": session.accepted,
-        "accept_ticket_digest": (
-            session.promotion_ticket.ticket_digest
-            if session.promotion_ticket is not None
-            else None
-        ),
     }
 
 
@@ -272,6 +295,7 @@ async def _call_tool(
 
     if name == "run_task":
         result = await session.service.run_task(RunTaskInput.model_validate(arguments))
+        session.latest_task = result.model_dump(mode="json")
         return result
 
     if name == "run_experiment":
@@ -279,7 +303,11 @@ async def _call_tool(
             RunExperimentInput.model_validate(arguments)
         )
         if result.trace is not None:
-            session.traces[result.run_id] = result.trace.model_dump(mode="json")
+            session.traces[result.run_id] = SessionTrace(
+                revision_id=result.revision_id,
+                asset_sha256=result.asset_sha256,
+                trace=result.trace.model_dump(mode="json"),
+            )
         public_result = result.model_dump(mode="json")
         public_result.pop("trace")
         return public_result
@@ -288,13 +316,17 @@ async def _call_tool(
         return _query_trace(session, QueryTraceRequest.model_validate(arguments))
 
     if name == "set_draft_patch":
+        case, head = await _head(session)
+        session.qualification_terminal = case.qualification_state in {
+            "passed",
+            "failed",
+        }
         if session.editing_locked:
             raise WorkbenchError(
                 "EDITING_LOCKED",
-                "Qualification passed. Accept or reset this session before editing.",
+                "Qualification is complete. Reset this session before editing.",
             )
         request = DraftPatchRequest.model_validate(arguments)
-        _case, head = await _head(session)
         if (
             request.base_revision_id != head.revision_id
             or request.expected_base_sha256 != head.asset_sha256
@@ -307,12 +339,19 @@ async def _call_tool(
         return {"draft": request.model_dump(mode="json"), "persisted": False}
 
     if name == "create_revision_from_draft":
+        case, head = await _head(session)
+        session.qualification_terminal = case.qualification_state in {
+            "passed",
+            "failed",
+        }
         if session.editing_locked:
-            raise WorkbenchError("EDITING_LOCKED", "Qualification has locked editing.")
+            raise WorkbenchError(
+                "EDITING_LOCKED",
+                "Qualification is complete. Reset this session before editing.",
+            )
         if session.draft is None:
             raise WorkbenchError("DRAFT_REQUIRED", "Create a draft patch first.")
         request = CreateFromDraftRequest.model_validate(arguments)
-        _case, head = await _head(session)
         draft = session.draft
         if (
             draft.base_revision_id != head.revision_id
@@ -343,32 +382,28 @@ async def _call_tool(
         return result
 
     if name == "verify_revision":
-        result = await session.service.verify_revision(
-            VerifyRevisionInput.model_validate(arguments)
-        )
+        try:
+            result = await session.service.verify_revision(
+                VerifyRevisionInput.model_validate(arguments)
+            )
+        except DomainError:
+            case, _head_revision = await _head(session)
+            if case.qualification_state in {"passed", "failed"}:
+                session.qualification_terminal = True
+                session.draft = None
+            raise
         if result.promotion_ticket is not None:
             session.promotion_ticket = result.promotion_ticket
-            session.draft = None
-        return result
-
-    if name == "record_design_feedback":
-        request = FeedbackRequest.model_validate(arguments)
-        _case, head = await _head(session)
-        if (
-            request.revision_id != head.revision_id
-            or request.asset_sha256 != head.asset_sha256
-        ):
-            raise WorkbenchError(
-                "STALE_FEEDBACK_TARGET",
-                "Feedback must cite the exact current revision and asset hash.",
-            )
-        if len(session.feedback) >= 50:
-            raise WorkbenchError(
-                "FEEDBACK_LIMIT_REACHED",
-                "This temporary session already contains 50 feedback entries.",
-            )
-        session.feedback.append(request)
-        return {"recorded": True, "feedback": request.model_dump(mode="json")}
+        session.qualification_terminal = True
+        session.draft = None
+        qualification_state = (
+            "passed" if result.promotion_ticket is not None else "failed"
+        )
+        public_result = result.model_dump(mode="json", exclude={"promotion_ticket"})
+        public_result["qualified"] = result.promotion_ticket is not None
+        public_result["editing_locked"] = session.editing_locked
+        public_result["qualification_state"] = qualification_state
+        return public_result
 
     raise WorkbenchError(
         "UNKNOWN_TOOL", "The requested workbench tool does not exist.", 404
@@ -378,14 +413,14 @@ async def _call_tool(
 def _query_trace(
     session: WorkbenchSession, request: QueryTraceRequest
 ) -> dict[str, Any]:
-    trace = session.traces.get(request.run_id)
-    if trace is None:
+    record = session.traces.get(request.run_id)
+    if record is None:
         raise WorkbenchError(
             "TRACE_NOT_IN_SESSION",
             "The requested trace is not available in this session.",
             404,
         )
-    rows = trace["rows"]
+    rows = record.trace["rows"]
     end = request.end or len(rows)
     if request.start >= end or end > len(rows):
         raise WorkbenchError("INVALID_TRACE_RANGE", "The trace range is invalid.", 422)
@@ -535,10 +570,10 @@ def create_workbench_app(
             session,
             created,
         ):
-            trace = session.traces.get(request.path_params["run_id"])
+            record = session.traces.get(request.path_params["run_id"])
         response = (
-            JSONResponse(trace)
-            if trace is not None
+            JSONResponse(record.trace)
+            if record is not None
             else JSONResponse(
                 {
                     "error": {
@@ -549,43 +584,6 @@ def create_workbench_app(
                 status_code=404,
             )
         )
-        return _set_session_cookie(response, created=created, session_id=session_id)
-
-    async def accept_endpoint(request: Request) -> Response:
-        created = False
-        session_id = ""
-        try:
-            body = AcceptRequest.model_validate(await request.json())
-            async with manager.lease(request.cookies.get(SESSION_COOKIE)) as (
-                session_id,
-                session,
-                created,
-            ):
-                ticket = session.promotion_ticket
-                if (
-                    ticket is None
-                    or body.ticket_digest != ticket.ticket_digest
-                    or not await session.service.validate_promotion_acceptance(ticket)
-                ):
-                    raise WorkbenchError(
-                        "INVALID_PROMOTION_TICKET",
-                        "Accept requires this session's successful promotion ticket.",
-                    )
-                session.accepted = True
-                response = JSONResponse(
-                    {
-                        "accepted": True,
-                        "revision_id": ticket.revision_id,
-                        "asset_sha256": ticket.asset_sha256,
-                    }
-                )
-        except (ValidationError, ValueError, WorkbenchError) as error:
-            code = getattr(error, "code", "INVALID_ARGUMENTS")
-            status = getattr(error, "status_code", 422)
-            response = JSONResponse(
-                {"accepted": False, "error": {"code": code, "message": str(error)}},
-                status_code=status,
-            )
         return _set_session_cookie(response, created=created, session_id=session_id)
 
     async def reset_endpoint(request: Request) -> Response:
@@ -613,7 +611,6 @@ def create_workbench_app(
         Route("/api/context", context_endpoint, methods=["GET"]),
         Route("/api/tools/{name:str}", tool_endpoint, methods=["POST"]),
         Route("/api/traces/{run_id:str}", trace_endpoint, methods=["GET"]),
-        Route("/api/accept", accept_endpoint, methods=["POST"]),
         Route("/api/reset", reset_endpoint, methods=["POST"]),
         Route("/health", health_endpoint, methods=["GET"]),
     ]

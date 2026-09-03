@@ -2,7 +2,7 @@
 
 Status: implemented design
 
-Date: 2026-09-01
+Date: 2026-09-02
 
 Primary case: `compound-arm-01`
 
@@ -13,8 +13,8 @@ machine-operable environment without forcing a scripted workflow. Codex receives
 protected boundaries. It chooses what to inspect, which competing explanation to test, how to
 excite the system, which signals to analyze, what single attribute to change, and when to verify.
 
-The harness enforces identity, causality, bounded mutation, comparison, qualification, and human
-acceptance. It does not enforce a tool order or supply a diagnosis.
+The harness enforces identity, causality, bounded mutation, comparison, and qualification. It does
+not enforce a tool order, supply a diagnosis, or duplicate Codex and Git review controls.
 
 ```text
 goal in Codex
@@ -23,17 +23,19 @@ goal in Codex
     <-> shared one-change draft
     <-> immutable evidence-backed revisions and BehaviorDiff
     <-> one-shot hidden qualification
-    <-> human-only Accept
+    <-> qualified evidence inspected by the human in the same page
 ```
 
 This is a narrow proof for one existing MuJoCo asset, not a general robot-design platform.
 
 ## Responsibility boundaries
 
-The top-level Three.js workbench registers nine composable WebMCP capabilities and owns temporary
-visitor-isolated sessions, visible design state, a single shared uncommitted patch, subjective
-revision-bound feedback, and the final human-only Accept action. Codex remains in the external
-conversation; the browser does not embed another agent or chat loop.
+The top-level Three.js workbench registers eight composable WebMCP capabilities and owns temporary
+visitor-isolated sessions, visible design state, a single shared uncommitted patch, visible
+experiment traces, the current canonical revision change, and parent-to-child `BehaviorDiff`
+evidence. Codex remains in the external conversation; the browser does not embed another agent,
+chat loop, feedback history, source-history UI, or approval workflow. Conversation feedback,
+source edits, review, revert, commit, and merge remain with Codex and Git.
 
 `AssetAutopsyService` owns the fixture, budgets, evidence lineage, patch policy, public evaluation,
 and hidden qualification. A private commit-pinned MuJoCo MCP child owns physics execution. The
@@ -42,9 +44,19 @@ tool annotations, and sanitized error mapping, but it does not run a model or ex
 
 Drafting never mutates the evidence ledger. `create_revision_from_draft` requires experiment
 evidence from the exact draft base, and `query_trace` gives Codex bounded trace operations while
-the complete trace remains available to the visible UI. A successful hidden qualification locks
-editing. Accept validates the exact promotion ticket through the service and records only this
-temporary browser session's accepted state; it is not registered as WebMCP or Streamable HTTP MCP.
+the complete trace remains available to the visible UI. The UI binds visible trace, revision, and
+comparison evidence to their run, revision, and asset identities rather than attaching stale
+results to a refreshed head.
+
+A successful hidden qualification seals that case generation and locks editing while its evidence
+remains readable. The local workbench stores the returned promotion ticket internally and does not
+expose it in browser context or a site-tool result. It is not a page-level approval token. Ordinary
+Reset replaces the service/store generation with a fresh editable case and clears the draft,
+traces, latest task result, and qualification lock.
+
+A hidden-suite failure also seals the one-shot case generation. The browser shows
+`Qualification failed — reset required` instead of silently returning the editor to an actionable
+state after the qualification budget is consumed; evidence stays readable until Reset.
 
 ## Fixed case and budgets
 
@@ -58,14 +70,16 @@ allowlist is `joint.axis`, `joint.damping`, `joint.armature`, and `joint.frictio
 | Child revisions | 2 |
 | Hidden qualification attempts | 1 |
 
-A successful promotion ticket binds the complete one-to-two entry change history and final asset
-hash. The ticket remains part of qualification because the human Accept boundary validates it.
+A successful promotion ticket binds the complete one-to-two entry evidence chain and final asset
+hash. The workbench retains it only to represent the sealed qualification state until Reset.
 
 ## Capability contract
 
 The WebMCP surface composes the same domain operations for a live page: design context and
 inspection, public task execution, generic experiments, bounded trace queries, a shared draft,
-evidence-backed revision creation, qualification, and revision-bound human feedback.
+evidence-backed revision creation, and qualification. It remains exactly eight tools. The context
+returns the current head identity and canonical diff instead of exposing the full internal
+revision/event history, feedback, approval state, or promotion-ticket digest.
 
 The generic Streamable HTTP MCP surface retains six tools:
 
@@ -94,23 +108,41 @@ hash, hypothesis ID, and ledger events. Revision creation revalidates that:
 
 `run_task` stores the complete evaluation trace privately and returns public metrics. For a child,
 it reruns or retrieves the matching parent condition and returns a machine-validated
-`BehaviorDiff`. Old results therefore cannot silently become evidence for a new revision.
+`BehaviorDiff`. The visible evidence view presents that comparison alongside the exact canonical
+revision change, while experiment traces remain bound to their source run and revision. Old results
+therefore cannot silently become evidence for a new revision or appear as current UI evidence.
 
 ## Verification
 
 ```bash
+uv sync --frozen
 uv run pytest -q -m "not cgl"
 uv run ruff check .
 uv run ruff format --check .
 git diff --check
-cd web && npm test && npm run build && npm audit --audit-level=high
+cd web
+npm ci
+npm test
+npm run build
+npm audit --audit-level=high
+cd ..
 ```
 
-On a CGL-capable Mac, also run `uv run pytest -q -m cgl` and the unfiltered suite. After the
-deterministic gates, exercise the live page from Codex with a goal-only request and confirm the
-human can observe, edit, give feedback, and exclusively perform final acceptance.
+On a CGL-capable Mac, also run `uv run pytest -q -m cgl` and the unfiltered suite. Then serve the
+built `web/dist` artifact through the local Python workbench on `127.0.0.1:8713`; the Vite
+development proxy is not the release-path proof.
+
+From the Codex desktop browser, give Codex only the design goal and protected boundaries. Do not
+supply a diagnosis, tool sequence, or patch value. Observe the full communication path in the live
+page: eight registered tools and `r000`; an agent-chosen experiment and queried trace; a visible
+uncommitted draft; the evidence-backed child revision and canonical change; its same-condition
+parent `BehaviorDiff`; and qualification showing `Qualified — editing locked`. Confirm the page has
+no Accept, Reject, feedback-history, activity-history, or promotion-ticket UI. Exercise Reset from
+that qualified state and confirm the same visitor receives a fresh editable `r000` with no draft,
+trace, latest task result, or qualification lock.
 
 ## Deferred work
 
 Public hosting, durable accounts, multiple robot families, arbitrary CAD/URDF import, FEA, real
-hardware actions, and post-accept export/materialization remain outside this milestone.
+hardware actions, and asset export/materialization remain outside this milestone. The temporary
+workbench evidence chain is not materialized as asset files or Git-backed asset history.

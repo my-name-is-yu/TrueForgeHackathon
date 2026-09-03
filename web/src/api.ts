@@ -21,20 +21,19 @@ export async function getContext(): Promise<JsonObject> {
   return response.json();
 }
 
+export async function getTrace(runId: string): Promise<JsonObject> {
+  const response = await fetch(`/api/traces/${encodeURIComponent(runId)}`, {
+    credentials: "same-origin",
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const error = body.error ?? { code: "TRACE_REQUEST_FAILED", message: response.statusText };
+    throw new Error(`${error.code}: ${error.message}`);
+  }
+  return body;
+}
+
 export async function resetSession(): Promise<void> {
   const response = await fetch("/api/reset", { method: "POST", credentials: "same-origin" });
   if (!response.ok) throw new Error(`Reset failed: ${response.status}`);
-}
-
-export async function acceptRevision(ticketDigest: string): Promise<void> {
-  const response = await fetch("/api/accept", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ticket_digest: ticketDigest }),
-  });
-  const body = await response.json();
-  if (!response.ok || !body.accepted) {
-    throw new Error(`${body.error?.code ?? "ACCEPT_FAILED"}: ${body.error?.message ?? response.statusText}`);
-  }
 }
