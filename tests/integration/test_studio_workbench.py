@@ -911,6 +911,73 @@ def test_portable_project_stream_allows_the_exact_byte_limit(monkeypatch) -> Non
     assert content == b"12345"
 
 
+def test_project_import_holds_upload_admission_while_waiting_for_session(
+    tmp_path, monkeypatch
+) -> None:
+    manager = StudioSessionManager(root=tmp_path)
+    monkeypatch.setattr(workbench_module, "MAX_CONCURRENT_UPLOAD_BUFFERS", 1)
+    read_uploads: list[str] = []
+    first_read = asyncio.Event()
+
+    async def read_body(request: Request) -> bytes:
+        upload_id = request.headers["x-upload-id"]
+        read_uploads.append(upload_id)
+        if upload_id == "first":
+            first_read.set()
+        return b"{}"
+
+    monkeypatch.setattr(workbench_module, "_read_portable_project_body", read_body)
+
+    async def exercise() -> tuple[tuple[str, ...], list[int]]:
+        async with manager.lease(None) as (session_id, session, _created):
+            pass
+        await session.lock.acquire()
+        import_endpoint = next(
+            route.endpoint
+            for route in workbench_module.create_studio_routes(manager)
+            if route.path == "/api/studio/v1/project-import"
+        )
+
+        def request(upload_id: str) -> Request:
+            async def receive() -> dict[str, object]:
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            return Request(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/api/studio/v1/project-import",
+                    "headers": [
+                        (b"x-character-project-generation", b"0"),
+                        (b"x-upload-id", upload_id.encode()),
+                        (
+                            b"cookie",
+                            f"{STUDIO_SESSION_COOKIE}={session_id}".encode(),
+                        ),
+                    ],
+                },
+                receive,
+            )
+
+        first = asyncio.create_task(import_endpoint(request("first")))
+        try:
+            await asyncio.wait_for(first_read.wait(), timeout=1)
+            second = asyncio.create_task(import_endpoint(request("second")))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            observed_while_locked = tuple(read_uploads)
+        finally:
+            session.lock.release()
+        responses = await asyncio.gather(first, second)
+        return observed_while_locked, [response.status_code for response in responses]
+
+    observed_while_locked, statuses = asyncio.run(exercise())
+
+    assert observed_while_locked == ("first",)
+    assert read_uploads == ["first", "second"]
+    assert statuses == [422, 422]
+
+
 @pytest.mark.parametrize(
     "content_length_headers",
     [

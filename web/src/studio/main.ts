@@ -5,6 +5,7 @@ import {
   prepareStudioBuildPack,
   setStudioSelection,
   StudioApiError,
+  StudioContractError,
   type JsonObject,
 } from "./api";
 import { installStudioStyles } from "./styles";
@@ -105,11 +106,21 @@ const designTarget = (context: StudioContext): DesignTarget | null => (
       : null
 );
 
-const designTargetKey = (target: DesignTarget | null, context: StudioContext | null = null): string | null => (
-  target?.kind === "draft"
-    ? `draft:${target.draft_hash}`
-    : target ? `revision:${target.revision_id}:${context?.headSpecSha256 ?? ""}` : null
+const activeSpecHash = (context: StudioContext): string | null => (
+  context.draft?.specHash ?? context.headSpecSha256
 );
+
+const designTargetKey = (context: StudioContext | null): string | null => {
+  if (!context) return null;
+  const target = designTarget(context);
+  if (!target) return null;
+  return JSON.stringify([
+    context.projectId,
+    target.kind,
+    target.kind === "draft" ? target.draft_hash : target.revision_id,
+    activeSpecHash(context),
+  ]);
+};
 
 const buildPackTargetKey = (context: StudioContext): string | null => (
   context.headRevisionId && context.headSpecSha256
@@ -226,6 +237,7 @@ export async function mountCharacterRobotStudio(
   let refreshSequence = 0;
   let selectionSequence = 0;
   let scenarioSequence = 0;
+  let designOperationEpoch = 0;
   let destroyed = false;
   let preparedForBuildPackTarget: string | null = null;
   let renderedTargetKey: string | null = null;
@@ -277,18 +289,41 @@ export async function mountCharacterRobotStudio(
     onLoadStateChange: setViewState,
   });
 
+  const restoreScenarioButtons = (): void => {
+    root.querySelectorAll<HTMLButtonElement>(".crs-scenario-button").forEach((item) => {
+      item.disabled = false;
+      item.classList.remove("active");
+    });
+  };
+
+  const resetScenarioPlayback = (): void => {
+    scenarioSequence += 1;
+    viewer.stopScenario();
+    restoreScenarioButtons();
+    const track = query<HTMLElement>("#crs-timeline-track");
+    track.style.setProperty("--progress", "0%");
+    track.setAttribute("aria-valuenow", "0");
+    query<HTMLElement>("#crs-motion").textContent = "No scenario selected";
+    query<HTMLElement>("#crs-time").textContent = "0.0s";
+  };
+
+  const designOperationKey = (): string | null => {
+    const targetKey = designTargetKey(context);
+    return targetKey === null ? null : JSON.stringify([designOperationEpoch, targetKey]);
+  };
+
   async function persistSelection(nodeId: string | null): Promise<void> {
     if (!context) return;
     const target = designTarget(context);
     if (!target) return;
-    const targetKey = designTargetKey(target, context);
+    const targetKey = designOperationKey();
     const sequence = ++selectionSequence;
     try {
       const persistedNodeId = await setSelection({ target, node_id: nodeId });
       if (
         destroyed
         || sequence !== selectionSequence
-        || targetKey !== designTargetKey(context ? designTarget(context) : null, context)
+        || targetKey !== designOperationKey()
       ) {
         return;
       }
@@ -447,8 +482,9 @@ export async function mountCharacterRobotStudio(
   const runScenario = async (scenarioId: string, button: HTMLButtonElement): Promise<void> => {
     if (!context) return;
     const target = designTarget(context);
-    if (!target) return;
-    const targetKey = designTargetKey(target, context);
+    const expectedSpecHash = activeSpecHash(context);
+    if (!target || !expectedSpecHash) return;
+    const targetKey = designOperationKey();
     const sequence = ++scenarioSequence;
     root.querySelectorAll<HTMLButtonElement>(".crs-scenario-button").forEach((item) => {
       item.disabled = true;
@@ -459,25 +495,23 @@ export async function mountCharacterRobotStudio(
       if (
         destroyed
         || sequence !== scenarioSequence
-        || targetKey !== designTargetKey(context ? designTarget(context) : null, context)
-        || (scenario.specHash !== null && scenario.specHash !== context?.headSpecSha256)
+        || targetKey !== designOperationKey()
       ) {
         return;
       }
+      if (scenario.specHash !== expectedSpecHash) {
+        throw new StudioContractError(
+          "Scenario preview spec_hash does not match the requested design.",
+        );
+      }
       viewer.playScenario(scenario, renderPlaybackFrame, () => {
         if (sequence !== scenarioSequence) return;
-        root.querySelectorAll<HTMLButtonElement>(".crs-scenario-button").forEach((item) => {
-          item.disabled = false;
-          item.classList.remove("active");
-        });
+        restoreScenarioButtons();
       });
       void refresh();
     } catch (error) {
       if (destroyed || sequence !== scenarioSequence) return;
-      root.querySelectorAll<HTMLButtonElement>(".crs-scenario-button").forEach((item) => {
-        item.disabled = false;
-        item.classList.remove("active");
-      });
+      restoreScenarioButtons();
       query<HTMLElement>("#crs-motion").textContent = error instanceof Error ? error.message : "Scenario preview failed";
     }
   };
@@ -622,6 +656,8 @@ export async function mountCharacterRobotStudio(
       input.value = "";
       return;
     }
+    designOperationEpoch += 1;
+    resetScenarioPlayback();
     const label = input.closest<HTMLLabelElement>(".crs-import-button");
     if (label) label.classList.add("busy");
     void (async () => {
@@ -656,17 +692,12 @@ export async function mountCharacterRobotStudio(
   });
 
   const renderContext = (nextContext: StudioContext): void => {
-    const nextTargetKey = designTargetKey(designTarget(nextContext));
+    const nextTargetKey = designTargetKey(nextContext);
     const targetChanged = renderedTargetKey !== nextTargetKey;
     const previewChanged = loadedGlbUrl !== nextContext.preview.glbUrl;
     if (targetChanged || previewChanged) {
-      scenarioSequence += 1;
-      viewer.stopScenario();
-      const track = query<HTMLElement>("#crs-timeline-track");
-      track.style.setProperty("--progress", "0%");
-      track.setAttribute("aria-valuenow", "0");
-      query<HTMLElement>("#crs-motion").textContent = "No scenario selected";
-      query<HTMLElement>("#crs-time").textContent = "0.0s";
+      designOperationEpoch += 1;
+      resetScenarioPlayback();
     }
     renderedTargetKey = nextTargetKey;
     context = nextContext;

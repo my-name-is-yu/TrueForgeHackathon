@@ -15,6 +15,7 @@ const context = (): StudioContext => ({
   headSpecSha256: "b".repeat(64),
   draft: {
     draftHash: "c".repeat(64),
+    specHash: "d".repeat(64),
     baseRevisionId: "r003",
     spec: {
       name: "Pico",
@@ -133,6 +134,7 @@ describe("mountCharacterRobotStudio", () => {
     });
     const getScenario = vi.fn().mockResolvedValue({
       scenarioId: "greet",
+      specHash: "d".repeat(64),
       durationS: 0.8,
       evidenceLevel: "concept_only",
       keyframes: [],
@@ -583,9 +585,11 @@ describe("mountCharacterRobotStudio", () => {
     await vi.waitFor(() => expect(getScenario).toHaveBeenCalledOnce());
     current = structuredClone(current);
     current.draft!.draftHash = "e".repeat(64);
+    current.draft!.specHash = "f".repeat(64);
     await studio.refresh();
     resolveScenario({
       scenarioId: "greet",
+      specHash: "d".repeat(64),
       durationS: 1,
       evidenceLevel: "concept_only",
       keyframes: [{
@@ -599,6 +603,176 @@ describe("mountCharacterRobotStudio", () => {
     await Promise.resolve();
 
     expect(stopScenario).toHaveBeenCalled();
+    expect(playScenario).not.toHaveBeenCalled();
+    studio.destroy();
+  });
+
+  it("keeps scenario playback running when its audit record advances generation", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const initial = context();
+    const refreshed = structuredClone(initial);
+    refreshed.projectGeneration += 1;
+    const getContext = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(refreshed);
+    const playScenario = vi.fn();
+    const stopScenario = vi.fn();
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext,
+      getScenario: async () => ({
+        scenarioId: "greet",
+        specHash: "d".repeat(64),
+        durationS: 1,
+        evidenceLevel: "concept_only",
+        keyframes: [{
+          timeS: 0,
+          wheels: { leftCommand: 0, rightCommand: 0 },
+          neck: { panDeg: 0, tiltDeg: 0 },
+          face: { expression: "neutral" },
+          soundCue: null,
+        }],
+      }),
+      setSelection: async ({ node_id }) => node_id,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview: vi.fn(),
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario,
+        stopScenario,
+        destroy: vi.fn(),
+      }),
+    });
+    const stopCountAfterMount = stopScenario.mock.calls.length;
+
+    (document.querySelector(".crs-scenario-button") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(playScenario).toHaveBeenCalledOnce());
+    await vi.waitFor(() => {
+      expect(document.querySelector("#crs-revision")?.textContent).toContain("saved g8");
+    });
+
+    expect(stopScenario).toHaveBeenCalledTimes(stopCountAfterMount);
+    studio.destroy();
+  });
+
+  it("invalidates a scenario while an imported project context is still refreshing", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    let current = context();
+    current.draft = null;
+    current.currentSpec = context().draft!.spec;
+    let resolvePostImportContext!: (value: StudioContext) => void;
+    const postImportContext = new Promise<StudioContext>((resolve) => {
+      resolvePostImportContext = resolve;
+    });
+    const getContext = vi.fn()
+      .mockResolvedValueOnce(current)
+      .mockResolvedValueOnce(current)
+      .mockReturnValueOnce(postImportContext);
+    let resolveScenario!: (scenario: ScenarioPreview) => void;
+    const getScenario = vi.fn(() => new Promise<ScenarioPreview>((resolve) => {
+      resolveScenario = resolve;
+    }));
+    const importProject = vi.fn().mockResolvedValue(undefined);
+    const playScenario = vi.fn();
+    const stopScenario = vi.fn();
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext,
+      getScenario,
+      importProject,
+      confirmImport: () => true,
+      setSelection: async ({ node_id }) => node_id,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview: vi.fn(),
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario,
+        stopScenario,
+        destroy: vi.fn(),
+      }),
+    });
+
+    (document.querySelector(".crs-scenario-button") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(getScenario).toHaveBeenCalledOnce());
+
+    const input = document.querySelector<HTMLInputElement>("#crs-import-project")!;
+    const file = new File(["{}"], "shared-project.json", { type: "application/json" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(importProject).toHaveBeenCalledWith(file, 7));
+    await vi.waitFor(() => expect(getContext).toHaveBeenCalledTimes(3));
+
+    resolveScenario({
+      scenarioId: "greet",
+      specHash: "b".repeat(64),
+      durationS: 1,
+      evidenceLevel: "concept_only",
+      keyframes: [{
+        timeS: 0,
+        wheels: { leftCommand: 0, rightCommand: 0 },
+        neck: { panDeg: 0, tiltDeg: 0 },
+        face: { expression: "neutral" },
+        soundCue: null,
+      }],
+    });
+    await Promise.resolve();
+
+    current = structuredClone(current);
+    current.projectGeneration += 1;
+    current.currentSpec!.designBrief = "Imported behavior for the same r003 revision ID.";
+    resolvePostImportContext(current);
+    await vi.waitFor(() => {
+      expect(document.querySelector("#crs-revision")?.textContent).toContain("saved g8");
+    });
+    expect(current.headRevisionId).toBe("r003");
+    expect(stopScenario).toHaveBeenCalled();
+    expect(playScenario).not.toHaveBeenCalled();
+    studio.destroy();
+  });
+
+  it("rejects a scenario response for a different spec and restores its control", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const current = context();
+    current.draft = null;
+    current.currentSpec = context().draft!.spec;
+    const playScenario = vi.fn();
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext: async () => current,
+      getScenario: async () => ({
+        scenarioId: "greet",
+        specHash: "e".repeat(64),
+        durationS: 1,
+        evidenceLevel: "concept_only",
+        keyframes: [{
+          timeS: 0,
+          wheels: { leftCommand: 0, rightCommand: 0 },
+          neck: { panDeg: 0, tiltDeg: 0 },
+          face: { expression: "neutral" },
+          soundCue: null,
+        }],
+      }),
+      setSelection: async ({ node_id }) => node_id,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview: vi.fn(),
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario,
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+
+    const button = document.querySelector<HTMLButtonElement>(".crs-scenario-button")!;
+    button.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector("#crs-motion")?.textContent).toContain(
+        "Scenario preview spec_hash does not match the requested design.",
+      );
+    });
+
+    expect(button.disabled).toBe(false);
+    expect(button.classList.contains("active")).toBe(false);
     expect(playScenario).not.toHaveBeenCalled();
     studio.destroy();
   });

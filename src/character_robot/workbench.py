@@ -42,7 +42,6 @@ from .service import CharacterRobotService, DomainError
 STUDIO_SESSION_COOKIE = "character_robot_session"
 MAX_STUDIO_SESSIONS = 8
 MAX_CONCURRENT_UPLOAD_BUFFERS = 2
-_UPLOAD_BUFFER_ADMISSION = asyncio.Semaphore(MAX_CONCURRENT_UPLOAD_BUFFERS)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 _ARTIFACT_FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
@@ -434,6 +433,8 @@ async def _clear_stale_selection(session: StudioSession) -> None:
 
 
 def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
+    upload_buffer_admission = asyncio.Semaphore(MAX_CONCURRENT_UPLOAD_BUFFERS)
+
     async def tool_definitions_endpoint(_request: Request) -> Response:
         return JSONResponse(studio_tool_definitions())
 
@@ -684,19 +685,20 @@ def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
                     409,
                 )
             expected_generation = int(expected_headers[0])
-            async with _UPLOAD_BUFFER_ADMISSION:
+            async with upload_buffer_admission:
                 content = await _read_portable_project_body(request)
-            async with manager.lease(request.cookies.get(STUDIO_SESSION_COOKIE)) as (
-                session_id,
-                session,
-                created,
-            ):
-                restored = manager.import_project(
-                    session_id,
-                    session,
-                    content,
-                    expected_generation=expected_generation,
-                )
+                try:
+                    async with manager.lease(
+                        request.cookies.get(STUDIO_SESSION_COOKIE)
+                    ) as (session_id, session, created):
+                        restored = manager.import_project(
+                            session_id,
+                            session,
+                            content,
+                            expected_generation=expected_generation,
+                        )
+                finally:
+                    content = b""
             response = JSONResponse(
                 {
                     "imported": True,

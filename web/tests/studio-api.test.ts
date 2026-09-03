@@ -54,6 +54,7 @@ describe("Character Robot Studio API boundary", () => {
       draft: {
         spec,
         draft_hash: "c".repeat(64),
+        spec_hash: "d".repeat(64),
         base_revision_id: "r003",
         preview_artifact: { kind: "glb", sha256: sha, file_name: "preview.glb" },
         warnings: ["Wheel cover clearance is still conceptual."],
@@ -84,6 +85,7 @@ describe("Character Robot Studio API boundary", () => {
     });
 
     expect(context.preview.glbUrl).toBe(`/api/studio/v1/artifacts/${sha}`);
+    expect(context.draft?.specHash).toBe("d".repeat(64));
     expect(context.preview.partNames).toEqual(["body", "beak"]);
     expect(context.draft?.spec).toMatchObject({
       name: "Pico",
@@ -131,6 +133,7 @@ describe("Character Robot Studio API boundary", () => {
       draft: {
         spec,
         draft_hash: "c".repeat(64),
+        spec_hash: "d".repeat(64),
         base_revision_id: "r003",
         preview_artifact: null,
       },
@@ -144,6 +147,7 @@ describe("Character Robot Studio API boundary", () => {
     const scenario = parseScenarioPreview({
       schema_version: "character-robot/v1",
       request_id: "req_123",
+      spec_hash: "d".repeat(64),
       scenario_id: "greet",
       duration_ms: 1000,
       evidence_level: "concept_only",
@@ -154,6 +158,7 @@ describe("Character Robot Studio API boundary", () => {
     });
 
     expect(scenario.durationS).toBe(1);
+    expect(scenario.specHash).toBe("d".repeat(64));
     expect(scenario.keyframes[0]).toMatchObject({
       timeS: 0,
       wheels: { leftCommand: 0.2, rightCommand: 0.6 },
@@ -161,6 +166,22 @@ describe("Character Robot Studio API boundary", () => {
       face: { expression: "happy" },
       soundCue: null,
     });
+  });
+
+  it("rejects a scenario preview without its exact spec identity", () => {
+    expect(() => parseScenarioPreview({
+      scenario_id: "greet",
+      duration_ms: 0,
+      evidence_level: "concept_only",
+      keyframes: [{
+        at_ms: 0,
+        wheel_left: 0,
+        wheel_right: 0,
+        head_pan_deg: 0,
+        head_tilt_deg: 0,
+        face_expression: "neutral",
+      }],
+    })).toThrowError("scenario_preview.spec_hash must be a non-empty string");
   });
 
   it("posts an exact design target when sharing a human selection", async () => {
