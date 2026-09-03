@@ -1987,6 +1987,8 @@ class CharacterRobotService:
         if not 1 <= len(raw_parts) <= 256:
             raise ValueError("compiled CAD parts must contain between 1 and 256 parts")
         parts = tuple(_compiled_part_metadata(part) for part in raw_parts)
+        if len({part.name for part in parts}) != len(parts):
+            raise ValueError("compiled CAD part names must be unique")
         drive_wheels = _drive_wheel_geometry(raw_parts)
 
         geometry_sha256 = str(_value(result, "geometry_sha256"))

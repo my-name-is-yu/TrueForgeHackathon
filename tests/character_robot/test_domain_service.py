@@ -1207,25 +1207,22 @@ def test_inspect_design_reports_missing_glb_without_hiding_compiled_metadata() -
     ]
 
 
-def test_duplicate_compiled_part_names_do_not_break_other_compile_flows() -> None:
+def test_service_rejects_ambiguous_compiled_part_names() -> None:
     service = CharacterRobotService(
         profile_registry=_Profiles(), cad_compiler=_DuplicatePartNameCompiler()
     )
-    created = asyncio.run(
-        service.set_design_draft(
-            SetDesignDraftInput(expected_revision=None, spec=_spec())
-        )
-    )
 
-    inspected = asyncio.run(
-        service.inspect_design(
-            InspectDesignInput(
-                target=DraftTarget(kind="draft", draft_hash=created.draft_hash)
+    with pytest.raises(DomainError) as failure:
+        asyncio.run(
+            service.set_design_draft(
+                SetDesignDraftInput(expected_revision=None, spec=_spec())
             )
         )
-    )
 
-    assert [part.name for part in inspected.compiled_parts].count("wheel_left") == 2
+    assert failure.value.code == "CAD_COMPILE_FAILED"
+    assert (
+        asyncio.run(service.get_studio_context(GetStudioContextInput())).draft is None
+    )
 
 
 def test_non_cad_semantic_edit_reuses_the_exact_compiled_artifacts() -> None:
