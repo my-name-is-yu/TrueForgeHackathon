@@ -1436,10 +1436,25 @@ class CharacterRobotService:
             issues.extend(compiled.issues)
             issues.extend(self._dimension_issues(spec, compiled.dimensions_mm))
             profile = self._get_profile(spec.hardware_profile_id, request_id)
-            known_component_mass_g = _optional_value(
-                _optional_value(profile, "mass"), "known_component_mass_g"
-            )
+            mass = _optional_value(profile, "mass")
+            complete_assembly_mass_g = _optional_value(mass, "complete_assembly_mass_g")
+            known_component_mass_g = _optional_value(mass, "known_component_mass_g")
             if (
+                complete_assembly_mass_g is not None
+                and complete_assembly_mass_g > spec.constraints.maximum_mass_g
+            ):
+                issues.append(
+                    ValidationIssue(
+                        code="complete_assembly_mass_exceeded",
+                        severity="error",
+                        path="constraints.maximum_mass_g",
+                        message="The design mass limit is below the complete assembly mass of the selected profile.",
+                        measured_value=complete_assembly_mass_g,
+                        limit_value=spec.constraints.maximum_mass_g,
+                        suggestion="Raise the mass limit or choose a profile whose complete assembly fits it.",
+                    )
+                )
+            elif (
                 known_component_mass_g is not None
                 and known_component_mass_g > spec.constraints.maximum_mass_g
             ):
