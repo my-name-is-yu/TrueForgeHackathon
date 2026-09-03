@@ -406,6 +406,30 @@ export const semanticInspectionDiagnostics = (
   return diagnostics;
 };
 
+export const faceDisplayInspectionDiagnostic = (
+  faceDisplayAvailable: boolean,
+  frontViewSamples: number,
+): VisualInspectionDiagnostic | null => {
+  if (!faceDisplayAvailable) {
+    return {
+      code: "FACE_DISPLAY_MISSING",
+      severity: "error",
+      message: "The runtime face decorator could not be placed on a semantic surface.",
+      suggestion: "Add a non-degenerate face bezel or head surface.",
+    };
+  }
+  if (frontViewSamples === 0) {
+    return {
+      code: "FACE_DISPLAY_NOT_SAMPLED",
+      severity: "warning",
+      view: "front",
+      message: "The coarse visibility sample did not observe the runtime face in the front view.",
+      suggestion: "Inspect the canonical front render before concluding that the face is occluded.",
+    };
+  }
+  return null;
+};
+
 async function captureDesignVisuals(
   input: JsonObject,
   value: JsonObject,
@@ -542,22 +566,11 @@ async function captureDesignVisuals(
       sampledVisiblePixels: sampleTotals.get(node.nodeId) ?? 0,
     }));
     const diagnostics = semanticInspectionDiagnostics(nodes);
-    if (!rig.faceDisplay) {
-      diagnostics.push({
-        code: "FACE_DISPLAY_MISSING",
-        severity: "error",
-        message: "The runtime face decorator could not be placed on a semantic surface.",
-        suggestion: "Add a non-degenerate face bezel or head surface.",
-      });
-    } else if ((views.find((view) => view.view === "front")?.faceDisplaySamples ?? 0) === 0) {
-      diagnostics.push({
-        code: "FACE_DISPLAY_OCCLUDED",
-        severity: "error",
-        view: "front",
-        message: "The runtime face exists but is not visible from the canonical front view.",
-        suggestion: "Move the face surface beyond occluding geometry.",
-      });
-    }
+    const faceDiagnostic = faceDisplayInspectionDiagnostic(
+      rig.faceDisplay !== null,
+      views.find((view) => view.view === "front")?.faceDisplaySamples ?? 0,
+    );
+    if (faceDiagnostic) diagnostics.push(faceDiagnostic);
     if (diagnosticPartCount > 0) {
       diagnostics.push({
         code: "DIAGNOSTIC_GEOMETRY_EXCLUDED",

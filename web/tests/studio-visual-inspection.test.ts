@@ -5,6 +5,7 @@ import {
   CANONICAL_VIEWS,
   canonicalCameraPosition,
   designTargetsEqual,
+  faceDisplayInspectionDiagnostic,
   parseInspectVisualSource,
   readBoundedArtifactBytes,
   semanticInspectionDiagnostics,
@@ -192,6 +193,19 @@ describe("Studio canonical visual inspection", () => {
     expect(diagnostics[0]).toMatchObject({
       code: "SEMANTIC_NODE_MISSING",
       nodeId: "compiled_beak",
+    });
+  });
+
+  it("treats an unsampled face as inconclusive instead of declaring it occluded", () => {
+    expect(faceDisplayInspectionDiagnostic(true, 0)).toMatchObject({
+      code: "FACE_DISPLAY_NOT_SAMPLED",
+      severity: "warning",
+      view: "front",
+    });
+    expect(faceDisplayInspectionDiagnostic(true, 1)).toBeNull();
+    expect(faceDisplayInspectionDiagnostic(false, 0)).toMatchObject({
+      code: "FACE_DISPLAY_MISSING",
+      severity: "error",
     });
   });
 
