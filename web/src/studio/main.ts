@@ -755,7 +755,7 @@ export async function mountCharacterRobotStudio(
     viewer.selectNode(selectedNodeId);
     renderSelection();
 
-    if (nextContext.preview.glbUrl !== loadedGlbUrl) {
+    if (previewChanged || targetChanged) {
       loadedGlbUrl = nextContext.preview.glbUrl;
       if (!loadedGlbUrl) {
         viewer.clearPreview();

@@ -99,6 +99,67 @@ def _spec_payload() -> dict[str, object]:
     }
 
 
+def _leaf_first_dependency_nodes(kind: str, *, depth: int) -> list[dict[str, object]]:
+    nodes: list[dict[str, object]] = [
+        {
+            "kind": "rounded_solid",
+            "node_id": "base",
+            "role": "chassis_shell",
+            "label": "base",
+            "size_mm": {"x": 40.0, "y": 40.0, "z": 40.0},
+            "corner_radius_mm": 4.0,
+        }
+    ]
+    if kind == "csg":
+        nodes.append(
+            {
+                "kind": "rounded_solid",
+                "node_id": "shared",
+                "role": "ornament",
+                "label": "shared operand",
+                "size_mm": {"x": 10.0, "y": 10.0, "z": 10.0},
+                "corner_radius_mm": 1.0,
+            }
+        )
+    dependency = "base"
+    for index in range(1, depth):
+        node_id = f"node_{index}"
+        common = {
+            "node_id": node_id,
+            "role": "ornament",
+            "label": node_id,
+            "visible": False,
+        }
+        if kind == "attachment":
+            node = {
+                **common,
+                "kind": "rounded_solid",
+                "size_mm": {"x": 10.0, "y": 10.0, "z": 10.0},
+                "corner_radius_mm": 1.0,
+                "attachment": {
+                    "parent_node_id": dependency,
+                    "parent_anchor": "top",
+                },
+            }
+        elif kind == "mirror":
+            node = {
+                **common,
+                "kind": "mirror",
+                "source_node_id": dependency,
+                "plane": "x",
+            }
+        else:
+            node = {
+                **common,
+                "kind": "csg",
+                "operation": "union",
+                "operand_node_ids": [dependency, "shared"],
+            }
+        nodes.append(node)
+        dependency = node_id
+    return nodes
+
+
 def test_public_surface_has_exactly_eight_semantic_operations() -> None:
     assert TOOL_NAMES == (
         "get_studio_context",
@@ -196,6 +257,24 @@ def test_morphology_rejects_unknown_dependencies_cycles_and_excessive_radius() -
     radius["nodes"][0]["corner_radius_mm"] = 40.0
     with pytest.raises(ValidationError, match="shortest side"):
         MorphologyGraph.model_validate(radius)
+
+
+@pytest.mark.parametrize("kind", ["attachment", "mirror", "csg"])
+def test_morphology_rejects_leaf_first_dependency_chains_deeper_than_eight(
+    kind: str,
+) -> None:
+    nodes = _leaf_first_dependency_nodes(kind, depth=9)
+
+    with pytest.raises(ValidationError, match="dependency depth exceeds 8"):
+        MorphologyGraph.model_validate({"nodes": nodes})
+
+
+def test_morphology_accepts_shared_dag_at_dependency_depth_limit() -> None:
+    nodes = _leaf_first_dependency_nodes("csg", depth=8)
+
+    graph = MorphologyGraph.model_validate({"nodes": nodes})
+
+    assert graph.nodes[-1].node_id == "node_7"
 
 
 def test_behavior_timeline_must_start_at_zero_and_be_ascending() -> None:

@@ -1400,6 +1400,24 @@ class CharacterRobotService:
             issues.extend(compiled.issues)
             issues.extend(self._dimension_issues(spec, compiled.dimensions_mm))
             profile = self._get_profile(spec.hardware_profile_id, request_id)
+            known_component_mass_g = _optional_value(
+                _optional_value(profile, "mass"), "known_component_mass_g"
+            )
+            if (
+                known_component_mass_g is not None
+                and known_component_mass_g > spec.constraints.maximum_mass_g
+            ):
+                issues.append(
+                    ValidationIssue(
+                        code="known_component_mass_exceeded",
+                        severity="error",
+                        path="constraints.maximum_mass_g",
+                        message="The design mass limit is below the known mass of the selected profile components.",
+                        measured_value=known_component_mass_g,
+                        limit_value=spec.constraints.maximum_mass_g,
+                        suggestion="Raise the mass limit or choose a profile whose known components fit it.",
+                    )
+                )
             try:
                 simulation = await self._simulate(spec, compiled, profile)
             except SimulationError as error:

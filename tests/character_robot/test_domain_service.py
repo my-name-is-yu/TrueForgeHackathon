@@ -459,6 +459,64 @@ def test_failed_simulation_check_blocks_digital_validation(monkeypatch) -> None:
     ]
 
 
+def test_known_profile_component_mass_above_limit_blocks_build_pack() -> None:
+    service = CharacterRobotService(cad_compiler=_Compiler())
+    spec = _spec()
+    spec = spec.model_copy(
+        update={
+            "constraints": spec.constraints.model_copy(update={"maximum_mass_g": 37.0})
+        }
+    )
+    draft = asyncio.run(
+        service.set_design_draft(SetDesignDraftInput(expected_revision=None, spec=spec))
+    )
+    revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Known component mass must fit the design limit.",
+            )
+        )
+    )
+
+    report = asyncio.run(
+        service.validate_design(
+            ValidateDesignInput(
+                target={
+                    "kind": "revision",
+                    "revision_id": revision.revision.revision_id,
+                }
+            )
+        )
+    ).report
+
+    issue = next(
+        issue
+        for issue in report.issues
+        if issue.code == "known_component_mass_exceeded"
+    )
+    assert issue.severity == "error"
+    assert issue.path == "constraints.maximum_mass_g"
+    assert issue.measured_value == 38.0
+    assert issue.limit_value == 37.0
+    assert report.passed is False
+    assert report.evidence_level == "concept_only"
+
+    build_pack = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id=revision.revision.revision_id,
+                expected_spec_hash=revision.revision.spec_hash,
+            )
+        )
+    )
+    assert build_pack.status == "blocked"
+    assert "known_component_mass_exceeded" in {
+        blocker.code for blocker in build_pack.blockers
+    }
+
+
 def test_simulation_uses_the_compiled_drive_wheel_bounds(monkeypatch) -> None:
     captured: list[dict[str, object]] = []
     model_xml = b'<mujoco model="compiled-wheel-bounds"/>'
@@ -786,12 +844,26 @@ def test_uncommitted_draft_preview_is_recompiled_after_restart(tmp_path) -> None
             SetDesignDraftInput(expected_revision=None, spec=_spec())
         )
     )
+    stale_object_paths = tuple(
+        path
+        for prefix in (artifact_root / "objects" / "sha256").iterdir()
+        for path in prefix.iterdir()
+        if path.is_file()
+    )
+    stale_object_bytes = sum(path.stat().st_size for path in stale_object_paths)
+    assert len(stale_object_paths) == first._artifacts.artifact_count == 4
+    assert stale_object_bytes == first._artifacts.total_bytes
+
     reopened = CharacterRobotService(
         data_root=artifact_root,
         profile_registry=_Profiles(),
         cad_compiler=_Compiler(),
         project_store=ProjectStore(database),
     )
+
+    assert reopened._artifacts.artifact_count == 0
+    assert reopened._artifacts.total_bytes == 0
+    assert all(not path.exists() for path in stale_object_paths)
 
     context = asyncio.run(reopened.get_studio_context(GetStudioContextInput()))
 
@@ -800,6 +872,8 @@ def test_uncommitted_draft_preview_is_recompiled_after_restart(tmp_path) -> None
     assert context.draft.preview_artifact is not None
     assert context.draft.preview_artifact.kind == "glb"
     assert context.recent_runs[-1].kind == "compile"
+    assert reopened._artifacts.artifact_count == 4
+    assert reopened._artifacts.total_bytes == stale_object_bytes
 
 
 def test_custom_compiler_cannot_insert_zip_slip_artifact_name() -> None:

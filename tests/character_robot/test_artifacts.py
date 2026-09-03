@@ -66,7 +66,7 @@ def test_session_artifacts_drop_corrupt_payload_on_read(tmp_path) -> None:
     assert descriptor.sha256 not in store
 
 
-def test_restore_replaces_the_descriptor_index_without_deleting_objects(
+def test_restore_replaces_the_descriptor_index_and_deletes_unindexed_objects(
     tmp_path,
 ) -> None:
     store = SessionArtifactStore(tmp_path)
@@ -74,6 +74,8 @@ def test_restore_replaces_the_descriptor_index_without_deleting_objects(
     discarded = _artifact(b"discarded", name="discarded.glb")
     store.put(retained, b"retained")
     store.put(discarded, b"discarded")
+    interrupted_temporary = store.objects.hash_root / ".tmp-interrupted"
+    interrupted_temporary.write_bytes(b"partial")
 
     store.restore([retained])
 
@@ -82,4 +84,28 @@ def test_restore_replaces_the_descriptor_index_without_deleting_objects(
     assert store.read(retained.sha256) == (b"retained", retained)
     with pytest.raises(ArtifactStoreError, match="not indexed"):
         store.read(discarded.sha256)
-    assert store.objects.path_for(discarded.sha256).is_file()
+    assert not store.objects.path_for(discarded.sha256).exists()
+    assert not interrupted_temporary.exists()
+
+
+def test_restore_refuses_to_sweep_through_a_symlinked_object_root(tmp_path) -> None:
+    session_root = tmp_path / "session"
+    outside_root = tmp_path / "outside"
+    victim_contents = (b"outside-1", b"outside-2")
+    victims = tuple(_artifact(content) for content in victim_contents)
+    victim_paths = tuple(
+        outside_root / "sha256" / victim.sha256[:2] / victim.sha256
+        for victim in victims
+    )
+    for content, victim_path in zip(victim_contents, victim_paths, strict=True):
+        victim_path.parent.mkdir(parents=True, exist_ok=True)
+        victim_path.write_bytes(content)
+    session_root.mkdir()
+    (session_root / "objects").symlink_to(outside_root, target_is_directory=True)
+
+    store = SessionArtifactStore(session_root, maximum_artifacts=1)
+
+    with pytest.raises(ArtifactStoreError, match="object root is invalid"):
+        store.restore(list(victims))
+
+    assert all(path.is_file() for path in victim_paths)

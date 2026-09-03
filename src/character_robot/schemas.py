@@ -275,23 +275,26 @@ class MorphologyGraph(StrictModel):
                 raise ValueError(f"node {node.node_id} cannot reference itself")
             dependencies[node.node_id] = current
 
-        state: dict[str, int] = {}
+        depths: dict[str, int] = {}
+        active: set[str] = set()
 
-        def visit(node_id: str, depth: int) -> None:
-            if depth > 8:
-                raise ValueError("morphology dependency depth exceeds 8")
-            marker = state.get(node_id, 0)
-            if marker == 1:
+        def dependency_depth(node_id: str) -> int:
+            if node_id in depths:
+                return depths[node_id]
+            if node_id in active:
                 raise ValueError("morphology dependencies contain a cycle")
-            if marker == 2:
-                return
-            state[node_id] = 1
+            active.add(node_id)
+            depth = 1
             for dependency in dependencies[node_id]:
-                visit(dependency, depth + 1)
-            state[node_id] = 2
+                depth = max(depth, dependency_depth(dependency) + 1)
+                if depth > 8:
+                    raise ValueError("morphology dependency depth exceeds 8")
+            active.remove(node_id)
+            depths[node_id] = depth
+            return depth
 
         for node_id in by_id:
-            visit(node_id, 1)
+            dependency_depth(node_id)
         return self
 
 

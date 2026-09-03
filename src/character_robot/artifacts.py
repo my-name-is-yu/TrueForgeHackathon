@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from collections import OrderedDict
 from pathlib import Path
 
@@ -69,6 +71,8 @@ class SessionArtifactStore:
 
         Missing or corrupt historical objects are deliberately skipped. Their
         immutable Spec remains available and the compiler can regenerate them.
+        Objects absent from durable manifests are removed so a process restart
+        cannot hide their bytes from the session budget.
         """
 
         self._descriptors.clear()
@@ -85,7 +89,13 @@ class SessionArtifactStore:
                 self._total_bytes -= previous.byte_size
             self._descriptors[descriptor.sha256] = descriptor
             self._total_bytes += descriptor.byte_size
-        self._evict_to_budget()
+        while (
+            len(self._descriptors) > self.maximum_artifacts
+            or self._total_bytes > self.maximum_bytes
+        ):
+            _, descriptor = self._descriptors.popitem(last=False)
+            self._total_bytes -= descriptor.byte_size
+        self._remove_unindexed_objects()
 
     def read(self, digest: str) -> tuple[bytes, ArtifactDescriptor]:
         descriptor = self._descriptors.get(digest)
@@ -122,6 +132,74 @@ class SessionArtifactStore:
         ):
             digest = next(iter(self._descriptors))
             self._drop(digest)
+
+    def _remove_unindexed_objects(self) -> None:
+        indexed = set(self._descriptors)
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        try:
+            object_root_fd = os.open(self.objects.root, directory_flags)
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise ArtifactStoreError(
+                "artifact object root is invalid during restore"
+            ) from error
+        try:
+            try:
+                hash_root_fd = os.open("sha256", directory_flags, dir_fd=object_root_fd)
+            except FileNotFoundError:
+                return
+            try:
+                for prefix in os.listdir(hash_root_fd):
+                    prefix_stat = os.stat(
+                        prefix,
+                        dir_fd=hash_root_fd,
+                        follow_symlinks=False,
+                    )
+                    if prefix.startswith(".tmp-") and stat.S_ISREG(prefix_stat.st_mode):
+                        os.unlink(prefix, dir_fd=hash_root_fd)
+                        continue
+                    if len(prefix) != 2 or any(
+                        char not in "0123456789abcdef" for char in prefix
+                    ):
+                        continue
+                    if not stat.S_ISDIR(prefix_stat.st_mode):
+                        raise ArtifactStoreError(
+                            "artifact object tree is invalid during restore"
+                        )
+                    prefix_fd = os.open(prefix, directory_flags, dir_fd=hash_root_fd)
+                    try:
+                        for digest in os.listdir(prefix_fd):
+                            object_stat = os.stat(
+                                digest,
+                                dir_fd=prefix_fd,
+                                follow_symlinks=False,
+                            )
+                            if (
+                                len(digest) != 64
+                                or not digest.startswith(prefix)
+                                or any(
+                                    char not in "0123456789abcdef" for char in digest
+                                )
+                            ):
+                                continue
+                            if not stat.S_ISREG(object_stat.st_mode):
+                                raise ArtifactStoreError(
+                                    "artifact object tree is invalid during restore"
+                                )
+                            if digest in indexed:
+                                continue
+                            os.unlink(digest, dir_fd=prefix_fd)
+                    finally:
+                        os.close(prefix_fd)
+            finally:
+                os.close(hash_root_fd)
+        except OSError as error:
+            raise ArtifactStoreError(
+                "unindexed artifacts could not be removed during restore"
+            ) from error
+        finally:
+            os.close(object_root_fd)
 
     def _drop(self, digest: str) -> None:
         descriptor = self._descriptors.pop(digest, None)

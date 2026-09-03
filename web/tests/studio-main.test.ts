@@ -316,6 +316,48 @@ describe("mountCharacterRobotStudio", () => {
     studio.destroy();
   });
 
+  it("reloads a reused GLB URL when the active spec changes", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    let current = context();
+    current.preview.glbUrl = "/api/studio/v1/artifacts/shared-preview";
+    const loadPreview = vi.fn().mockResolvedValue(undefined);
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext: async () => current,
+      setSelection: async ({ node_id }) => node_id,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview,
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+    await vi.waitFor(() => expect(loadPreview).toHaveBeenCalledOnce());
+
+    current = structuredClone(current);
+    current.draft!.draftHash = "e".repeat(64);
+    current.draft!.specHash = "f".repeat(64);
+    current.draft!.spec.face = {
+      defaultExpression: "thinking",
+      supportedExpressions: ["thinking", "delighted"],
+    };
+    await studio.refresh();
+
+    await vi.waitFor(() => expect(loadPreview).toHaveBeenCalledTimes(2));
+    expect(loadPreview).toHaveBeenLastCalledWith(
+      "/api/studio/v1/artifacts/shared-preview",
+      expect.objectContaining({
+        face: {
+          defaultExpression: "thinking",
+          supportedExpressions: ["thinking", "delighted"],
+        },
+      }),
+    );
+    studio.destroy();
+  });
+
   it("clears committed geometry and selection when an active draft has no preview", async () => {
     document.body.innerHTML = '<main id="app"></main>';
     const committed = context();
