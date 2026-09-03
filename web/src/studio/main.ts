@@ -625,8 +625,9 @@ export async function mountCharacterRobotStudio(
     if (label) label.classList.add("busy");
     void (async () => {
       try {
+        const preflightSequence = ++refreshSequence;
         const freshContext = await getContext();
-        if (destroyed) return;
+        if (destroyed || preflightSequence !== refreshSequence) return;
         renderContext(freshContext);
         await importProject(file, freshContext.projectGeneration);
         preparedForBuildPackTarget = null;
@@ -714,7 +715,9 @@ export async function mountCharacterRobotStudio(
     }
 
     const validIds = new Set(spec?.morphologyNodes.map((node) => node.nodeId) ?? []);
-    selectedNodeId = nextContext.selectedNodeId && validIds.has(nextContext.selectedNodeId)
+    selectedNodeId = nextContext.preview.glbUrl
+      && nextContext.selectedNodeId
+      && validIds.has(nextContext.selectedNodeId)
       ? nextContext.selectedNodeId
       : null;
     viewer.selectNode(selectedNodeId);
