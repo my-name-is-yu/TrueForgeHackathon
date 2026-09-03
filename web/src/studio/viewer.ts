@@ -325,7 +325,9 @@ export function rigStudioModel(model: THREE.Object3D, spec: CharacterSpecView): 
   }
 
   const headNode = spec.morphologyNodes.find((node) => node.role === "head_shell");
-  const faceBezelNode = spec.morphologyNodes.find((node) => node.role === "face_bezel");
+  const faceBezelNode = spec.morphologyNodes.find(
+    (node) => node.role === "face_bezel" && byName.has(node.nodeId),
+  );
   const head = headNode ? byName.get(headNode.nodeId) : undefined;
   const faceBezel = faceBezelNode ? byName.get(faceBezelNode.nodeId) : undefined;
   const pan = byName.get("neck_pan") ?? byName.get("head_pan");

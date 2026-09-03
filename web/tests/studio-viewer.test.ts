@@ -148,13 +148,22 @@ describe("Character Robot Studio GLB rig", () => {
 
   it("uses the semantic face bezel and places content beyond its front surface", () => {
     const bezelSpec = spec();
-    bezelSpec.morphologyNodes.push({
-      nodeId: "face_bezel",
-      role: "face_bezel",
-      label: "Face bezel",
-      parentNodeId: "head",
-      parentAnchor: "face",
-    });
+    bezelSpec.morphologyNodes.push(
+      {
+        nodeId: "omitted_face_bezel",
+        role: "face_bezel",
+        label: "Omitted face bezel",
+        parentNodeId: "head",
+        parentAnchor: "face",
+      },
+      {
+        nodeId: "face_bezel",
+        role: "face_bezel",
+        label: "Face bezel",
+        parentNodeId: "head",
+        parentAnchor: "face",
+      },
+    );
     const model = new THREE.Group();
     const chassis = mesh("chassis", [0.096, 0.076, 0.064], [0, 0, 0.04]);
     const head = new THREE.Group();
