@@ -275,6 +275,25 @@ class _MissingGlbCompiler(_Compiler):
         )
 
 
+class _DuplicatePartNameCompiler(_Compiler):
+    def compile(self, spec, profile=None):
+        result = super().compile(spec, profile)
+        return replace(
+            result,
+            parts=(
+                *result.parts,
+                _Part(
+                    name="wheel_left",
+                    role="ornament",
+                    bounds=_Bounds(
+                        minimum_mm=(-4.0, -4.0, 50.0),
+                        maximum_mm=(4.0, 4.0, 58.0),
+                    ),
+                ),
+            ),
+        )
+
+
 def _service() -> CharacterRobotService:
     return CharacterRobotService(
         profile_registry=_Profiles(),
@@ -1186,6 +1205,27 @@ def test_inspect_design_reports_missing_glb_without_hiding_compiled_metadata() -
     assert inspected.warnings == [
         "The compiler did not produce a GLB preview artifact."
     ]
+
+
+def test_duplicate_compiled_part_names_do_not_break_other_compile_flows() -> None:
+    service = CharacterRobotService(
+        profile_registry=_Profiles(), cad_compiler=_DuplicatePartNameCompiler()
+    )
+    created = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+
+    inspected = asyncio.run(
+        service.inspect_design(
+            InspectDesignInput(
+                target=DraftTarget(kind="draft", draft_hash=created.draft_hash)
+            )
+        )
+    )
+
+    assert [part.name for part in inspected.compiled_parts].count("wheel_left") == 2
 
 
 def test_non_cad_semantic_edit_reuses_the_exact_compiled_artifacts() -> None:

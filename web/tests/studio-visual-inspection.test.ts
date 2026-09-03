@@ -117,6 +117,15 @@ describe("Studio canonical visual inspection", () => {
     )).toThrow("must contain between 1 and 256 parts");
   });
 
+  it("rejects ambiguous duplicate compiled-part names at the visual boundary", () => {
+    const part = inspectResult().compiled_parts[0];
+    const result = { ...inspectResult(), compiled_parts: [part, { ...part }] };
+    expect(() => parseInspectVisualSource(
+      { target: { kind: "draft", draft_hash: "a".repeat(64) } },
+      result,
+    )).toThrow("contains duplicate names");
+  });
+
   it("returns compact JSON metadata without embedding the PNG payload", () => {
     const inspection: StudioVisualInspection = {
       status: "ready",
