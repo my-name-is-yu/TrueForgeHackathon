@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "Tools-first 3D asset repair harness"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "build123d==0.11.1",
     "mcp==1.26.0",
     "mujoco==3.5.0",
     "mujoco-mcp-server @ git+https://github.com/Rongxuan-Zhou/mujoco-mcp-server.git@ce9bed80ec3698d7b778230abc21f2228a3ce94b",
@@ -25,7 +26,7 @@ requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/asset_autopsy"]
+packages = ["src/asset_autopsy", "src/character_robot"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import secrets
 import shutil
 import tempfile
@@ -18,6 +19,8 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
+
+from character_robot.workbench import StudioSessionManager, create_studio_routes
 
 from .fixture import CASE_ID
 from .schemas import (
@@ -503,9 +506,15 @@ def _query_trace(
 def create_workbench_app(
     *,
     manager: SessionManager | None = None,
+    studio_manager: StudioSessionManager | None = None,
     frontend_dir: Path | None = None,
 ) -> Starlette:
     manager = manager or SessionManager()
+    if studio_manager is None:
+        studio_root = os.environ.get("CHARACTER_ROBOT_STUDIO_ROOT")
+        studio_manager = StudioSessionManager(
+            root=Path(studio_root) if studio_root else None
+        )
     if frontend_dir is None:
         frontend_dir = Path(__file__).resolve().parents[2] / "web" / "dist"
 
@@ -608,6 +617,7 @@ def create_workbench_app(
         )
 
     routes = [
+        *create_studio_routes(studio_manager),
         Route("/api/context", context_endpoint, methods=["GET"]),
         Route("/api/tools/{name:str}", tool_endpoint, methods=["POST"]),
         Route("/api/traces/{run_id:str}", trace_endpoint, methods=["GET"]),
@@ -621,6 +631,22 @@ def create_workbench_app(
                     "/assets",
                     StaticFiles(directory=frontend_dir / "assets"),
                     name="assets",
+                ),
+                Route(
+                    "/studio",
+                    lambda _request: FileResponse(frontend_dir / "index.html"),
+                ),
+                Route(
+                    "/studio/",
+                    lambda _request: FileResponse(frontend_dir / "index.html"),
+                ),
+                Route(
+                    "/autopsy",
+                    lambda _request: FileResponse(frontend_dir / "index.html"),
+                ),
+                Route(
+                    "/autopsy/",
+                    lambda _request: FileResponse(frontend_dir / "index.html"),
                 ),
                 Route("/", lambda _request: FileResponse(frontend_dir / "index.html")),
             ]
