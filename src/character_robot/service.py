@@ -20,8 +20,14 @@ from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from asset_autopsy.storage import MAX_OBJECT_BYTES
+
 from .artifacts import ArtifactStoreError, SessionArtifactStore
-from .maker_pack import QualifiedBuildInstructions, generate_maker_pack_artifacts
+from .maker_pack import (
+    MakerPackResult,
+    QualifiedBuildInstructions,
+    generate_maker_pack_artifacts,
+)
 from .physical_evidence import EvidenceSignatureVerifier, PhysicalEvidenceRecord
 from .project_store import (
     ProjectAlreadyExistsError,
@@ -92,7 +98,7 @@ _EVIDENCE_POLICY = {
     "concept_only": "The design is a bounded concept and has not passed digital checks.",
     "digital_checks_passed": "The exact digital inputs passed the available deterministic checks.",
     "within_qualified_profile": "The design stays within a physically tested hardware profile.",
-    "exact_build_verified": "This exact build revision has recorded physical verification.",
+    "exact_build_verified": "This exact build-affecting artifact subject has recorded physical verification.",
 }
 
 
@@ -186,8 +192,27 @@ class _CompileView:
     compiler_version: str | None
     cad_engine_version: str | None
     profile_id: str | None
-    artifacts: tuple[_CompiledArtifact, ...]
+    artifacts: tuple[ArtifactDescriptor, ...]
     issues: tuple[ValidationIssue, ...]
+
+
+class _BuildPackArchiveTooLarge(ValueError):
+    pass
+
+
+class _BoundedBytesIO(io.BytesIO):
+    def __init__(self, maximum_bytes: int) -> None:
+        super().__init__()
+        if maximum_bytes < 0:
+            raise ValueError("archive byte budget cannot be negative")
+        self.maximum_bytes = maximum_bytes
+
+    def write(self, data: bytes) -> int:
+        if self.tell() + len(data) > self.maximum_bytes:
+            raise _BuildPackArchiveTooLarge(
+                "normalized Build Pack exceeds its artifact byte budget"
+            )
+        return super().write(data)
 
 
 class CharacterRobotService:
@@ -211,7 +236,7 @@ class CharacterRobotService:
         ) = None,
         physical_records: Sequence[PhysicalEvidenceRecord] = (),
         evidence_verifier: EvidenceSignatureVerifier | None = None,
-        exact_build_manifest_sha256: str | None = None,
+        exact_build_subject_sha256: str | None = None,
         runtime_catalog: RuntimeCatalog | None = None,
         qualified_build_instructions: QualifiedBuildInstructions | None = None,
     ) -> None:
@@ -237,7 +262,7 @@ class CharacterRobotService:
         self.manufacturing_validator = manufacturing_validator
         self.physical_records = tuple(physical_records)
         self.evidence_verifier = evidence_verifier
-        self.exact_build_manifest_sha256 = exact_build_manifest_sha256
+        self.exact_build_subject_sha256 = exact_build_subject_sha256
         self.runtime_catalog = runtime_catalog
         self.qualified_build_instructions = qualified_build_instructions
         self._lock = asyncio.Lock()
@@ -807,7 +832,7 @@ class CharacterRobotService:
                 return result
 
             required_cad = {"glb", "step", "stl", "3mf"}
-            available = {artifact.descriptor.kind for artifact in compiled.artifacts}
+            available = {artifact.kind for artifact in compiled.artifacts}
             missing = sorted(required_cad.difference(available))
             if missing:
                 missing_issue = ValidationIssue(
@@ -830,16 +855,71 @@ class CharacterRobotService:
 
             profile = self._get_profile(revision.spec.hardware_profile_id, request_id)
             try:
-                maker_pack = generate_maker_pack_artifacts(
+                # Physical records are excluded while deriving their build subject;
+                # otherwise the evidence artifact would make the digest self-referential.
+                provisional_maker_pack = generate_maker_pack_artifacts(
                     revision.spec,
                     profile,
                     report,
                     physical_records=self.physical_records,
                     evidence_verifier=self.evidence_verifier,
-                    exact_build_manifest_sha256=self.exact_build_manifest_sha256,
+                    exact_build_subject_sha256=None,
                     runtime_catalog=self.runtime_catalog,
                     qualified_instructions=self.qualified_build_instructions,
                 )
+                provisional_artifacts = self._build_pack_constituents(
+                    revision,
+                    report,
+                    simulation,
+                    compiled,
+                    provisional_maker_pack,
+                    request_id,
+                )
+                build_subject_hash = self._build_subject_hash(
+                    revision,
+                    compiled,
+                    simulation,
+                    provisional_artifacts,
+                    provisional_maker_pack.profile_sha256,
+                )
+                exact_subject_matches = (
+                    self.exact_build_subject_sha256 == build_subject_hash
+                )
+                if exact_subject_matches:
+                    maker_pack = generate_maker_pack_artifacts(
+                        revision.spec,
+                        profile,
+                        report,
+                        physical_records=self.physical_records,
+                        evidence_verifier=self.evidence_verifier,
+                        exact_build_subject_sha256=build_subject_hash,
+                        runtime_catalog=self.runtime_catalog,
+                        qualified_instructions=self.qualified_build_instructions,
+                    )
+                    artifacts = self._build_pack_constituents(
+                        revision,
+                        report,
+                        simulation,
+                        compiled,
+                        maker_pack,
+                        request_id,
+                    )
+                    if (
+                        self._build_subject_hash(
+                            revision,
+                            compiled,
+                            simulation,
+                            artifacts,
+                            maker_pack.profile_sha256,
+                        )
+                        != build_subject_hash
+                    ):
+                        raise ValueError(
+                            "exact evidence changed the immutable build subject"
+                        )
+                else:
+                    maker_pack = provisional_maker_pack
+                    artifacts = provisional_artifacts
             except Exception as error:
                 code = str(
                     getattr(error, "code", "MAKER_PACK_GENERATION_FAILED")
@@ -871,87 +951,82 @@ class CharacterRobotService:
                 self._persist(request_id)
                 return result
 
-            generated = [
-                self._bytes_artifact(
-                    artifact.kind,
-                    artifact.file_name,
-                    artifact.media_type,
-                    artifact.content,
-                    experimental=artifact.experimental,
-                )
-                for artifact in maker_pack.artifacts
-            ]
-            pack_experimental = not maker_pack.replication_ready
-            generated.extend(
-                [
-                    self._bytes_artifact(
-                        "spec_json",
-                        "character-robot-spec.json",
-                        "application/json",
-                        _canonical_json_bytes(revision.spec.model_dump(mode="json")),
-                        experimental=pack_experimental,
-                    ),
-                    self._bytes_artifact(
-                        "validation_json",
-                        "validation-report.json",
-                        "application/json",
-                        _canonical_json_bytes(report.model_dump(mode="json")),
-                        experimental=pack_experimental,
-                    ),
-                    self._bytes_artifact(
-                        "project_snapshot_json",
-                        "character-robot-project.json",
-                        "application/json",
-                        self._portable_project_bytes(revision.summary.revision_id),
-                        experimental=pack_experimental,
-                    ),
-                ]
+            packaging_warnings: list[ValidationIssue] = []
+            constituent_bytes = sum(
+                artifact.descriptor.byte_size for artifact in artifacts
             )
-            if simulation is not None:
-                generated.extend(
-                    [
-                        self._bytes_artifact(
-                            "mjcf",
-                            "simulation.mjcf",
-                            "application/xml",
-                            simulation.model_xml,
-                            experimental=pack_experimental,
-                        ),
-                        self._bytes_artifact(
-                            "simulation_json",
-                            "simulation-report.json",
-                            "application/json",
-                            simulation.canonical_report(),
-                            experimental=pack_experimental,
-                        ),
-                    ]
+            if constituent_bytes > self._artifacts.maximum_bytes:
+                issue = ValidationIssue(
+                    code="build_pack_artifacts_too_large",
+                    severity="error",
+                    path="build_pack",
+                    message="The Build Pack constituents exceed this session's artifact budget.",
+                    measured_value=float(constituent_bytes),
+                    limit_value=float(self._artifacts.maximum_bytes),
+                    suggestion="Reduce the generated artifacts or use a future streaming artifact store.",
                 )
-            cad_artifacts = [
-                _CompiledArtifact(
-                    descriptor=artifact.descriptor.model_copy(
-                        update={"experimental": pack_experimental}
+                self._record_run(
+                    kind="build_pack",
+                    spec=revision.spec,
+                    started=pack_started,
+                    cache_hit=False,
+                    cad_engine_version=compiled.cad_engine_version,
+                    simulation_engine_version=(
+                        simulation.engine_version if simulation is not None else None
                     ),
-                    content=artifact.content,
+                    error_codes=[issue.code],
                 )
-                for artifact in compiled.artifacts
-            ]
-            artifacts = cad_artifacts + generated
-            artifacts.append(
-                self._bytes_artifact(
-                    "build_pack_zip",
-                    "character-robot-build-pack.zip",
-                    "application/zip",
-                    self._normalized_build_pack_bytes(artifacts),
-                    experimental=pack_experimental,
+                result = PrepareBuildPackOutput(
+                    schema_version=SCHEMA_VERSION,
+                    request_id=request_id,
+                    status="blocked",
+                    manifest=None,
+                    blockers=[issue],
+                    next_action="Reduce the exact artifact set before preparing another Build Pack.",
                 )
+                self._persist(request_id)
+                return result
+
+            archive_budget = min(
+                MAX_OBJECT_BYTES,
+                self._artifacts.maximum_bytes - constituent_bytes,
             )
+            try:
+                archive_content = self._normalized_build_pack_bytes(
+                    artifacts,
+                    maximum_bytes=archive_budget,
+                )
+            except _BuildPackArchiveTooLarge:
+                packaging_warnings.append(
+                    ValidationIssue(
+                        code="aggregate_build_pack_omitted",
+                        severity="warning",
+                        path="build_pack",
+                        message="The aggregate ZIP exceeds the bounded object or session budget; every constituent remains available separately.",
+                        measured_value=None,
+                        limit_value=float(archive_budget),
+                        suggestion="Download the manifest's constituent artifacts individually.",
+                    )
+                )
+            else:
+                artifacts.append(
+                    self._bytes_artifact(
+                        "build_pack_zip",
+                        "character-robot-build-pack.zip",
+                        "application/zip",
+                        archive_content,
+                        experimental=not maker_pack.replication_ready,
+                    )
+                )
             for artifact in artifacts:
                 self._store_artifact(artifact, request_id)
             manifest_payload = {
                 "revision_id": revision.summary.revision_id,
                 "spec_hash": revision.summary.spec_hash,
+                "build_subject_hash": build_subject_hash,
                 "geometry_sha256": compiled.geometry_sha256,
                 "profile_id": revision.spec.hardware_profile_id,
+                "profile_sha256": maker_pack.profile_sha256,
                 "catalog_version": revision.spec.versions.catalog,
                 "compiler_version": revision.spec.versions.compiler,
                 "cad_engine_version": compiled.cad_engine_version,
@@ -975,6 +1050,17 @@ class CharacterRobotService:
                 for existing in self._artifact_manifests
             ):
                 self._artifact_manifests.append(manifest)
+            maker_blocker_codes = list(maker_pack.blockers)
+            if (
+                self.exact_build_subject_sha256 is not None
+                and not exact_subject_matches
+            ):
+                maker_blocker_codes = [
+                    code
+                    for code in maker_blocker_codes
+                    if code != "exact_build_subject_missing"
+                ]
+                maker_blocker_codes.append("exact_build_subject_mismatch")
             physical_blockers = [
                 ValidationIssue(
                     code=code,
@@ -983,8 +1069,10 @@ class CharacterRobotService:
                     message=self._maker_blocker_message(code),
                     suggestion="Complete and sign the corresponding physical evidence before claiming a reproducible build.",
                 )
-                for code in maker_pack.blockers
+                for code in maker_blocker_codes
             ]
+            result_warnings = [*physical_blockers, *packaging_warnings]
+            warning_codes = [issue.code for issue in result_warnings]
             self._record_run(
                 kind="build_pack",
                 spec=revision.spec,
@@ -994,7 +1082,7 @@ class CharacterRobotService:
                 simulation_engine_version=(
                     simulation.engine_version if simulation is not None else None
                 ),
-                warning_codes=maker_pack.blockers,
+                warning_codes=warning_codes,
             )
             result = PrepareBuildPackOutput(
                 schema_version=SCHEMA_VERSION,
@@ -1003,11 +1091,19 @@ class CharacterRobotService:
                     "ready" if maker_pack.replication_ready else "experimental_ready"
                 ),
                 manifest=manifest,
-                blockers=physical_blockers,
+                blockers=result_warnings,
                 next_action=(
-                    "Download the exact verified Build Pack; installation and hardware actions remain human-only."
+                    (
+                        "Download the exact verified constituent artifacts individually; the aggregate ZIP exceeded this session's bounded storage."
+                        if packaging_warnings
+                        else "Download the exact verified Build Pack; installation and hardware actions remain human-only."
+                    )
                     if maker_pack.replication_ready
-                    else "Download the experimental pack for review only; resolve every physical evidence blocker before printing, energizing, or claiming replication."
+                    else (
+                        "Download the experimental constituent artifacts individually; resolve every physical evidence blocker before printing, energizing, or claiming replication."
+                        if packaging_warnings
+                        else "Download the experimental pack for review only; resolve every physical evidence blocker before printing, energizing, or claiming replication."
+                    )
                 ),
             )
             self._persist(request_id)
@@ -1506,26 +1602,32 @@ class CharacterRobotService:
             return None
         cache_key = _cad_cache_key(spec, profile)
         if cached := self._compile_cache.get(cache_key):
-            self._compile_cache.move_to_end(cache_key)
-            self._record_run(
-                kind="compile",
-                spec=spec,
-                started=started,
-                cache_hit=True,
-                cad_engine_version=cached.cad_engine_version,
-                warning_codes=[
-                    issue.code for issue in cached.issues if issue.severity != "error"
-                ],
-                error_codes=[
-                    issue.code for issue in cached.issues if issue.severity == "error"
-                ],
-            )
-            return cached
+            if self._compile_artifacts_available(cached):
+                self._compile_cache.move_to_end(cache_key)
+                self._record_run(
+                    kind="compile",
+                    spec=spec,
+                    started=started,
+                    cache_hit=True,
+                    cad_engine_version=cached.cad_engine_version,
+                    warning_codes=[
+                        issue.code
+                        for issue in cached.issues
+                        if issue.severity != "error"
+                    ],
+                    error_codes=[
+                        issue.code
+                        for issue in cached.issues
+                        if issue.severity == "error"
+                    ],
+                )
+                return cached
+            self._compile_cache.pop(cache_key, None)
         try:
             result = self.cad_compiler.compile(spec, profile)
             if inspect.isawaitable(result):
                 result = await result
-            compiled = self._compile_view(result)
+            compiled, artifact_payloads = self._compile_view(result)
             if (
                 compiled.compiler_version is not None
                 and compiled.compiler_version != spec.versions.compiler
@@ -1594,12 +1696,12 @@ class CharacterRobotService:
             )
             self._persist(request_id)
             raise domain_error from None
+        for artifact in artifact_payloads:
+            self._store_artifact(artifact, request_id)
         self._compile_cache[cache_key] = compiled
         self._compile_cache.move_to_end(cache_key)
         while len(self._compile_cache) > _MAX_COMPILE_CACHE_ENTRIES:
             self._compile_cache.popitem(last=False)
-        for artifact in compiled.artifacts:
-            self._store_artifact(artifact, request_id)
         self._record_run(
             kind="compile",
             spec=spec,
@@ -1614,6 +1716,14 @@ class CharacterRobotService:
             ],
         )
         return compiled
+
+    def _compile_artifacts_available(self, compiled: _CompileView) -> bool:
+        try:
+            for descriptor in compiled.artifacts:
+                self._artifacts.read(descriptor.sha256)
+        except ArtifactStoreError:
+            return False
+        return True
 
     def _store_artifact(self, artifact: _CompiledArtifact, request_id: str) -> None:
         try:
@@ -1666,7 +1776,9 @@ class CharacterRobotService:
         del self._recent_runs[:-64]
         return run_id
 
-    def _compile_view(self, result: object) -> _CompileView:
+    def _compile_view(
+        self, result: object
+    ) -> tuple[_CompileView, tuple[_CompiledArtifact, ...]]:
         dimensions_value = _value(result, "dimensions_mm")
         if isinstance(dimensions_value, PositiveVec3):
             dimensions = dimensions_value
@@ -1699,14 +1811,17 @@ class CharacterRobotService:
             artifacts.append(_CompiledArtifact(descriptor=descriptor, content=content))
 
         issues = tuple(self._coerce_issue(issue) for issue in _value(result, "issues"))
-        return _CompileView(
-            dimensions_mm=dimensions,
-            geometry_sha256=geometry_sha256,
-            compiler_version=_optional_value(result, "compiler_version"),
-            cad_engine_version=_optional_value(result, "build123d_version"),
-            profile_id=_optional_value(result, "profile_id"),
-            artifacts=tuple(artifacts),
-            issues=issues,
+        return (
+            _CompileView(
+                dimensions_mm=dimensions,
+                geometry_sha256=geometry_sha256,
+                compiler_version=_optional_value(result, "compiler_version"),
+                cad_engine_version=_optional_value(result, "build123d_version"),
+                profile_id=_optional_value(result, "profile_id"),
+                artifacts=tuple(artifact.descriptor for artifact in artifacts),
+                issues=issues,
+            ),
+            tuple(artifacts),
         )
 
     def _coerce_issue(self, issue: object) -> ValidationIssue:
@@ -1738,11 +1853,7 @@ class CharacterRobotService:
         if compiled is None:
             return None
         return next(
-            (
-                artifact.descriptor
-                for artifact in compiled.artifacts
-                if artifact.descriptor.kind == kind
-            ),
+            (artifact for artifact in compiled.artifacts if artifact.kind == kind),
             None,
         )
 
@@ -1752,7 +1863,7 @@ class CharacterRobotService:
         profile = self._get_profile(spec.hardware_profile_id, request_id)
         compiled = self._compile_cache.get(_cad_cache_key(spec, profile))
         cached = self._artifact_of_kind(compiled, "glb")
-        if cached is not None:
+        if cached is not None and cached.sha256 in self._artifacts:
             return cached
         spec_hash = _model_hash(spec)
         return next(
@@ -1788,6 +1899,133 @@ class CharacterRobotService:
             content=content,
         )
 
+    def _build_pack_constituents(
+        self,
+        revision: _Revision,
+        report: ValidationReport,
+        simulation: MotionSimulationResult | None,
+        compiled: _CompileView,
+        maker_pack: MakerPackResult,
+        request_id: str,
+    ) -> list[_CompiledArtifact]:
+        pack_experimental = not maker_pack.replication_ready
+        generated = [
+            self._bytes_artifact(
+                artifact.kind,
+                artifact.file_name,
+                artifact.media_type,
+                artifact.content,
+                experimental=artifact.experimental,
+            )
+            for artifact in maker_pack.artifacts
+        ]
+        generated.extend(
+            [
+                self._bytes_artifact(
+                    "spec_json",
+                    "character-robot-spec.json",
+                    "application/json",
+                    _canonical_json_bytes(revision.spec.model_dump(mode="json")),
+                    experimental=pack_experimental,
+                ),
+                self._bytes_artifact(
+                    "validation_json",
+                    "validation-report.json",
+                    "application/json",
+                    _canonical_json_bytes(report.model_dump(mode="json")),
+                    experimental=pack_experimental,
+                ),
+                self._bytes_artifact(
+                    "project_snapshot_json",
+                    "character-robot-project.json",
+                    "application/json",
+                    self._portable_project_bytes(revision.summary.revision_id),
+                    experimental=pack_experimental,
+                ),
+            ]
+        )
+        if simulation is not None:
+            generated.extend(
+                [
+                    self._bytes_artifact(
+                        "mjcf",
+                        "simulation.mjcf",
+                        "application/xml",
+                        simulation.model_xml,
+                        experimental=pack_experimental,
+                    ),
+                    self._bytes_artifact(
+                        "simulation_json",
+                        "simulation-report.json",
+                        "application/json",
+                        simulation.canonical_report(),
+                        experimental=pack_experimental,
+                    ),
+                ]
+            )
+        cad_artifacts: list[_CompiledArtifact] = []
+        for descriptor in compiled.artifacts:
+            try:
+                content, _ = self._artifacts.read(descriptor.sha256)
+            except ArtifactStoreError:
+                raise self._error(
+                    request_id,
+                    "ARTIFACT_NOT_FOUND",
+                    "A compiled CAD artifact is no longer available for this Build Pack.",
+                    True,
+                    503,
+                    "Regenerate the exact revision and prepare its Build Pack again.",
+                ) from None
+            cad_artifacts.append(
+                _CompiledArtifact(
+                    descriptor=descriptor.model_copy(
+                        update={"experimental": pack_experimental}
+                    ),
+                    content=content,
+                )
+            )
+        return [*cad_artifacts, *generated]
+
+    @staticmethod
+    def _build_subject_hash(
+        revision: _Revision,
+        compiled: _CompileView,
+        simulation: MotionSimulationResult | None,
+        artifacts: Sequence[_CompiledArtifact],
+        profile_sha256: str,
+    ) -> str:
+        artifact_subjects = [
+            {
+                "kind": artifact.descriptor.kind,
+                "file_name": artifact.descriptor.file_name,
+                "media_type": artifact.descriptor.media_type,
+                "sha256": artifact.descriptor.sha256,
+                "byte_size": artifact.descriptor.byte_size,
+            }
+            for artifact in artifacts
+            if artifact.descriptor.kind != "physical_evidence_json"
+        ]
+        payload = {
+            "schema_version": "character-build-subject/v1",
+            "revision_id": revision.summary.revision_id,
+            "spec_hash": revision.summary.spec_hash,
+            "geometry_sha256": compiled.geometry_sha256,
+            "profile_id": revision.spec.hardware_profile_id,
+            "profile_sha256": profile_sha256,
+            "catalog_version": revision.spec.versions.catalog,
+            "compiler_version": revision.spec.versions.compiler,
+            "cad_engine_version": compiled.cad_engine_version,
+            "simulation_engine_version": (
+                simulation.engine_version if simulation is not None else None
+            ),
+            "firmware_runtime_version": revision.spec.versions.firmware_runtime,
+            "artifacts": sorted(
+                artifact_subjects,
+                key=lambda artifact: (artifact["file_name"], artifact["kind"]),
+            ),
+        }
+        return _hash_json(payload)
+
     def _portable_project_bytes(self, revision_id: str) -> bytes:
         """Return deterministic source history scoped to one exact revision."""
 
@@ -1816,6 +2054,8 @@ class CharacterRobotService:
     @staticmethod
     def _normalized_build_pack_bytes(
         artifacts: Sequence[_CompiledArtifact],
+        *,
+        maximum_bytes: int = MAX_OBJECT_BYTES,
     ) -> bytes:
         file_names = [artifact.descriptor.file_name for artifact in artifacts]
         if any(
@@ -1834,7 +2074,7 @@ class CharacterRobotService:
                 ],
             }
         )
-        stream = io.BytesIO()
+        stream = _BoundedBytesIO(maximum_bytes)
         with zipfile.ZipFile(
             stream,
             "w",
@@ -1865,7 +2105,8 @@ class CharacterRobotService:
             "runtime_release_not_published": "The fixed runtime release has no published, digest-pinned binary yet.",
             "profile_catalog_is_digital_only": "The selected hardware catalog remains digital-only.",
             "signed_profile_evidence_incomplete": "Required signed profile measurements and load tests are incomplete.",
-            "exact_build_manifest_missing": "No exact-build manifest is bound to this revision.",
+            "exact_build_subject_missing": "No exact-build subject is bound to this revision.",
+            "exact_build_subject_mismatch": "The configured exact-build digest does not match this generated build subject.",
             "signed_exact_build_evidence_incomplete": "The exact print, assembly, 100-cycle, and emergency-stop evidence is incomplete.",
             "provisional_bom_incomplete": "The BOM still contains unselected motors, servos, battery, and fasteners.",
             "provisional_wiring_incomplete": "Wiring assignments and electrical limits still require measurement.",

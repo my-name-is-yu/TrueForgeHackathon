@@ -266,6 +266,33 @@ def test_draft_mutations_resolve_the_hardware_profile_once() -> None:
     assert profiles.get_calls == 2
 
 
+def test_compile_cache_keeps_descriptors_and_recompiles_evicted_payloads() -> None:
+    compiler = _Compiler()
+    service = CharacterRobotService(
+        profile_registry=_Profiles(),
+        cad_compiler=compiler,
+    )
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+
+    cached = next(iter(service._compile_cache.values()))
+    assert all(not hasattr(artifact, "content") for artifact in cached.artifacts)
+    service._artifacts._drop(cached.artifacts[0].sha256)
+
+    asyncio.run(
+        service.validate_design(
+            ValidateDesignInput(
+                target=DraftTarget(kind="draft", draft_hash=draft.draft_hash)
+            )
+        )
+    )
+
+    assert compiler.calls == 2
+
+
 def test_unknown_profile_is_rejected_without_a_cad_compiler() -> None:
     profiles = _Profiles()
     service = CharacterRobotService(profile_registry=profiles, cad_compiler=None)
@@ -881,6 +908,7 @@ def test_first_commit_is_r000_and_build_pack_is_manifest_only_experimental() -> 
     assert prepared.human_action_required is True
     assert prepared.manifest.download_requires_human_action is True
     assert prepared.manifest.evidence_level == "digital_checks_passed"
+    assert len(prepared.manifest.build_subject_hash) == 64
     assert not hasattr(prepared.manifest.artifacts[0], "url")
     assert {artifact.kind for artifact in prepared.manifest.artifacts} >= {
         "glb",
@@ -953,6 +981,71 @@ def test_first_commit_is_r000_and_build_pack_is_manifest_only_experimental() -> 
     assert regenerated_old_revision.manifest.manifest_hash == (
         prepared.manifest.manifest_hash
     )
+
+
+def test_oversized_aggregate_is_omitted_without_losing_constituents() -> None:
+    service = _service()
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    committed = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Bounded aggregate test.",
+            )
+        )
+    )
+    request = PrepareBuildPackInput(
+        revision_id="r000",
+        expected_spec_hash=committed.revision.spec_hash,
+    )
+    first = asyncio.run(service.prepare_build_pack(request))
+    assert first.manifest is not None
+    constituents = [
+        artifact
+        for artifact in first.manifest.artifacts
+        if artifact.kind != "build_pack_zip"
+    ]
+    constituent_bytes = sum(artifact.byte_size for artifact in constituents)
+
+    service._artifacts.maximum_bytes = constituent_bytes
+    without_archive = asyncio.run(service.prepare_build_pack(request))
+
+    assert without_archive.status == "experimental_ready"
+    assert without_archive.manifest is not None
+    assert "build_pack_zip" not in {
+        artifact.kind for artifact in without_archive.manifest.artifacts
+    }
+    assert "aggregate_build_pack_omitted" in {
+        issue.code for issue in without_archive.blockers
+    }
+    for artifact in without_archive.manifest.artifacts:
+        assert service.read_artifact(artifact.sha256)[0]
+
+    service._artifacts.maximum_bytes = constituent_bytes - 1
+    blocked = asyncio.run(service.prepare_build_pack(request))
+    assert blocked.status == "blocked"
+    assert blocked.manifest is None
+    assert [issue.code for issue in blocked.blockers] == [
+        "build_pack_artifacts_too_large"
+    ]
+
+
+def test_normalized_build_pack_stops_at_its_archive_byte_limit() -> None:
+    service = _service()
+    artifact = service._bytes_artifact(
+        "spec_json",
+        "character-robot-spec.json",
+        "application/json",
+        b"x" * 1024,
+    )
+
+    with pytest.raises(ValueError, match="artifact byte budget"):
+        service._normalized_build_pack_bytes([artifact], maximum_bytes=32)
 
 
 def test_validation_and_build_pack_stay_blocked_without_a_compiler() -> None:

@@ -166,8 +166,10 @@ describe("Character Robot Studio API boundary", () => {
       manifest: {
         revision_id: "r003",
         spec_hash: digest("a"),
+        build_subject_hash: digest("e"),
         geometry_sha256: digest("b"),
         profile_id: "m5-cores3-goplus2/v1",
+        profile_sha256: digest("f"),
         catalog_version: "hardware-catalog-v1",
         compiler_version: "character-cad-v1",
         cad_engine_version: "0.11.1",
@@ -188,8 +190,10 @@ describe("Character Robot Studio API boundary", () => {
 
     expect(result.manifest).toMatchObject({
       manifestHash: digest("c"),
+      buildSubjectHash: digest("e"),
       specHash: digest("a"),
       geometrySha256: digest("b"),
+      profileSha256: digest("f"),
       compilerVersion: "character-cad-v1",
       cadEngineVersion: "0.11.1",
     });

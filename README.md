@@ -66,9 +66,11 @@ measured dimensions and the minimum required expansion, leaving the existing dra
 Revisions are immutable; the first committed draft becomes `r000` (an empty Studio has no
 revision). Clicking a semantic part stores an exact draft/revision-bound selection for the next
 `get_studio_context` call. The experimental manifest binds the canonical Spec, geometry, catalog,
-compiler, CAD-engine, firmware-runtime versions, and every artifact digest. Preparing a manifest
-never purchases parts, flashes hardware, or downloads files; downloads remain visible human
-actions in the Studio.
+compiler, CAD-engine, firmware-runtime versions, and every artifact digest. Its
+`build_subject_hash` separately binds the build-affecting files without the self-referential
+physical-evidence envelope; exact-build records can promote only that service-derived subject.
+Preparing a manifest never purchases parts, flashes hardware, or downloads files; downloads remain
+visible human actions in the Studio.
 
 Scenario playback rigs the compiler GLB in the browser as wheels plus pan → tilt → generated head
 subtree. Deterministic face-display content follows the head and switches from the Spec's expression
@@ -79,8 +81,10 @@ provisional BOM and wiring, assembly/calibration instructions, `character.json`,
 fixed-runtime configuration ZIP, calibration template, internally compiled MJCF, simulation and
 validation reports, a physical-evidence gate, and a portable project snapshot. CoreS3 and Pi use
 separate fixed runtime targets; neither bundle contains model-generated source or an executable.
-The same files and a canonical internal index are also packaged into one normalized Build Pack ZIP.
-The runtime lock explicitly reports that no digest-pinned release binary is published yet.
+The same files and a canonical internal index are also packaged into one normalized Build Pack ZIP
+when it fits the bounded object and session budgets. If only the aggregate is too large, the
+manifest keeps every individual artifact available and reports that the ZIP was omitted. The
+runtime lock explicitly reports that no digest-pinned release binary is published yet.
 
 The Maker validation kernel distinguishes manufacturer specifications, physical measurements,
 values derived from measurements, and planning allowances. It checks one-solid/manifold status,
@@ -91,8 +95,9 @@ before those checks can raise evidence above `digital_checks_passed`. Physical r
 the exact profile/catalog/Spec/build digests and require signed profile tests plus exact-print,
 assembly, 100-cycle, and emergency-stop evidence for the strongest level.
 
-Generated payloads use the existing content-addressed ObjectStore instead of accumulating in
-Python heap memory. With `CHARACTER_ROBOT_STUDIO_ROOT` configured, a SQLite/WAL ProjectStore
+Generated payloads use the existing content-addressed ObjectStore; the compile cache retains only
+descriptors and reloads bytes only while packaging or downloading. With
+`CHARACTER_ROBOT_STUDIO_ROOT` configured, a SQLite/WAL ProjectStore
 atomically persists draft, immutable revisions, recent runs, and artifact manifests with an
 optimistic generation guard. The browser session can reopen that project after a server restart,
 and the descriptor index is rebuilt from verified manifest digests. CAD runs in a bounded child

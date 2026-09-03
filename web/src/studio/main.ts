@@ -63,7 +63,7 @@ const EVIDENCE_COPY: Record<EvidenceLevel, { label: string; detail: string }> = 
   },
   exact_build_verified: {
     label: "Exact build verified",
-    detail: "This exact artifact manifest has a recorded physical build",
+    detail: "This exact build subject has a recorded physical build",
   },
 };
 
@@ -95,8 +95,7 @@ const activeProfile = (
 
 const activeEvidence = (
   context: StudioContext,
-  profile: HardwareProfileSummary | null,
-): EvidenceLevel => context.latestValidation?.evidenceLevel ?? profile?.evidenceLevel ?? "concept_only";
+): EvidenceLevel => context.latestValidation?.evidenceLevel ?? "concept_only";
 
 const designTarget = (context: StudioContext): DesignTarget | null => (
   context.draft
@@ -547,6 +546,8 @@ export async function mountCharacterRobotStudio(
           ].join(" · "),
         ),
         create("code", undefined, `manifest sha256 ${result.manifest.manifestHash}`),
+        create("code", undefined, `build subject sha256 ${result.manifest.buildSubjectHash}`),
+        create("code", undefined, `profile sha256 ${result.manifest.profileSha256}`),
         create("code", undefined, `spec sha256 ${result.manifest.specHash}`),
         create("code", undefined, `geometry sha256 ${result.manifest.geometrySha256}`),
       );
@@ -654,7 +655,7 @@ export async function mountCharacterRobotStudio(
     context = nextContext;
     const spec = activeSpec(nextContext);
     const profile = activeProfile(nextContext, spec);
-    const evidence = activeEvidence(nextContext, profile);
+    const evidence = activeEvidence(nextContext);
     const evidenceCopy = EVIDENCE_COPY[evidence];
 
     const evidenceBadge = query<HTMLElement>("#crs-evidence");

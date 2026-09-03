@@ -158,8 +158,10 @@ export type BuildPackResult = {
 export type BuildPackManifest = {
   revisionId: string;
   specHash: string;
+  buildSubjectHash: string;
   geometrySha256: string;
   profileId: string;
+  profileSha256: string;
   catalogVersion: string;
   compilerVersion: string;
   cadEngineVersion: string;

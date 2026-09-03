@@ -290,7 +290,7 @@ def evaluate_physical_evidence(
     catalog_version: str,
     profile_sha256: str,
     spec_sha256: str,
-    exact_build_manifest_sha256: str | None,
+    exact_build_subject_sha256: str | None,
     records: tuple[PhysicalEvidenceRecord, ...] = (),
     verifier: EvidenceSignatureVerifier | None = None,
 ) -> EvidenceEvaluation:
@@ -301,8 +301,8 @@ def evaluate_physical_evidence(
     _require_safe_id(catalog_version, "catalog version")
     _require_sha256(profile_sha256, "profile digest")
     _require_sha256(spec_sha256, "spec digest")
-    if exact_build_manifest_sha256 is not None:
-        _require_sha256(exact_build_manifest_sha256, "exact build manifest digest")
+    if exact_build_subject_sha256 is not None:
+        _require_sha256(exact_build_subject_sha256, "exact build subject digest")
 
     if not digital_checks_passed:
         return EvidenceEvaluation(
@@ -330,8 +330,8 @@ def evaluate_physical_evidence(
         elif record.subject == "profile" and record.subject_sha256 != profile_sha256:
             reason = "subject_mismatch"
         elif record.subject == "exact_build" and (
-            exact_build_manifest_sha256 is None
-            or record.subject_sha256 != exact_build_manifest_sha256
+            exact_build_subject_sha256 is None
+            or record.subject_sha256 != exact_build_subject_sha256
         ):
             reason = "subject_mismatch"
         elif record.subject == "exact_build" and record.spec_sha256 != spec_sha256:
@@ -356,8 +356,8 @@ def evaluate_physical_evidence(
     level: EvidenceLevel = "digital_checks_passed"
     if profile_qualification != "digital_only" and not missing_profile:
         level = "within_qualified_profile"
-        if exact_build_manifest_sha256 is None:
-            blockers.append("exact_build_manifest_missing")
+        if exact_build_subject_sha256 is None:
+            blockers.append("exact_build_subject_missing")
         elif missing_exact:
             blockers.append("signed_exact_build_evidence_incomplete")
         else:

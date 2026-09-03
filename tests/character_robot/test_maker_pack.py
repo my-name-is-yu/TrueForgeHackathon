@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import zipfile
+from dataclasses import dataclass
 from dataclasses import replace
 from io import BytesIO
 
 import pytest
 
+from character_robot.cad import CadCompiler
 from character_robot.maker_pack import (
     MakerPackError,
     QualifiedBuildInstructions,
@@ -18,13 +21,22 @@ from character_robot.physical_evidence import (
     sign_evidence_record,
 )
 from character_robot.profiles import ProfileRegistry
+from character_robot.project_store import ProjectStore
 from character_robot.runtime import (
     DEFAULT_RUNTIME_TARGETS,
     RuntimeCatalog,
     RuntimeRelease,
     compile_runtime_bundle,
 )
-from character_robot.schemas import CharacterRobotSpec, PositiveVec3, ValidationReport
+from character_robot.schemas import (
+    CharacterRobotSpec,
+    CreateRevisionFromDraftInput,
+    PositiveVec3,
+    PrepareBuildPackInput,
+    SetDesignDraftInput,
+    ValidationReport,
+)
+from character_robot.service import CharacterRobotService
 
 from test_domain_schemas import _spec_payload
 from test_physical_evidence import _KEY, _all_records
@@ -114,8 +126,26 @@ def test_maker_pack_rejects_validation_for_a_different_spec() -> None:
     assert caught.value.code == "VALIDATION_SPEC_MISMATCH"
 
 
-def test_qualified_inputs_have_a_real_non_experimental_completion_path() -> None:
-    spec = _spec()
+@dataclass(frozen=True)
+class _ManufacturingResult:
+    evidence_level: str = "within_qualified_profile"
+    issues: tuple[object, ...] = ()
+
+
+class _QualifiedProfiles:
+    def __init__(self, profile: object) -> None:
+        self.profile = profile
+
+    def get_profile(self, profile_id: str) -> object:
+        if profile_id != self.profile.profile_id:
+            raise RuntimeError("profile not found")
+        return self.profile
+
+    def list_profiles(self) -> tuple[object, ...]:
+        return (self.profile,)
+
+
+def _qualified_inputs(spec: CharacterRobotSpec, exact_subject_sha: str):
     profile = replace(
         ProfileRegistry().get_profile(spec.hardware_profile_id),
         qualification="profile_qualified",
@@ -130,13 +160,12 @@ def test_qualified_inputs_have_a_real_non_experimental_completion_path() -> None
         ).encode()
     ).hexdigest()
     spec_sha = compile_runtime_bundle(spec, profile).spec_sha256
-    exact_manifest_sha = "c" * 64
     records = tuple(
         sign_evidence_record(
             replace(
                 record,
                 subject_sha256=(
-                    profile_sha if record.subject == "profile" else exact_manifest_sha
+                    profile_sha if record.subject == "profile" else exact_subject_sha
                 ),
                 spec_sha256=None if record.subject == "profile" else spec_sha,
                 signature_sha256="0" * 64,
@@ -180,6 +209,15 @@ def test_qualified_inputs_have_a_real_non_experimental_completion_path() -> None
         },
         assembly_markdown=b"# Verified assembly\n\nFollow the qualified lab procedure.\n",
     )
+    return profile, records, RuntimeCatalog((published_target,)), instructions
+
+
+def test_qualified_inputs_have_a_real_non_experimental_completion_path() -> None:
+    spec = _spec()
+    exact_subject_sha = "c" * 64
+    profile, records, runtime_catalog, instructions = _qualified_inputs(
+        spec, exact_subject_sha
+    )
 
     result = generate_maker_pack_artifacts(
         spec,
@@ -187,8 +225,8 @@ def test_qualified_inputs_have_a_real_non_experimental_completion_path() -> None
         _report(spec).model_copy(update={"evidence_level": "within_qualified_profile"}),
         physical_records=records,
         evidence_verifier=HmacSha256EvidenceVerifier({"local-lab": _KEY}),
-        exact_build_manifest_sha256=exact_manifest_sha,
-        runtime_catalog=RuntimeCatalog((published_target,)),
+        exact_build_subject_sha256=exact_subject_sha,
+        runtime_catalog=runtime_catalog,
         qualified_instructions=instructions,
     )
 
@@ -199,3 +237,87 @@ def test_qualified_inputs_have_a_real_non_experimental_completion_path() -> None
     assert {artifact.file_name for artifact in result.artifacts}.issuperset(
         {"bom.json", "wiring.json", "calibration.json"}
     )
+
+
+def test_service_only_promotes_evidence_for_its_derived_build_subject(tmp_path) -> None:
+    spec = _spec()
+    provisional_profile, _, runtime_catalog, instructions = _qualified_inputs(
+        spec, "0" * 64
+    )
+    profiles = _QualifiedProfiles(provisional_profile)
+    data_root = tmp_path / "qualified-project"
+    database = data_root / "project.sqlite3"
+
+    candidate = CharacterRobotService(
+        data_root=data_root,
+        project_id="qualified-project",
+        profile_registry=profiles,
+        cad_compiler=CadCompiler(profiles),
+        project_store=ProjectStore(database),
+        manufacturing_validator=lambda _spec, _compiled: _ManufacturingResult(),
+        runtime_catalog=runtime_catalog,
+        qualified_build_instructions=instructions,
+    )
+    draft = asyncio.run(
+        candidate.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=spec)
+        )
+    )
+    committed = asyncio.run(
+        candidate.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Exact build candidate.",
+            )
+        )
+    )
+    request = PrepareBuildPackInput(
+        revision_id="r000",
+        expected_spec_hash=committed.revision.spec_hash,
+    )
+    provisional = asyncio.run(candidate.prepare_build_pack(request))
+    assert provisional.manifest is not None
+    build_subject_hash = provisional.manifest.build_subject_hash
+
+    _, wrong_records, _, _ = _qualified_inputs(spec, "c" * 64)
+    mismatched = CharacterRobotService(
+        data_root=data_root,
+        project_id="qualified-project",
+        profile_registry=profiles,
+        cad_compiler=CadCompiler(profiles),
+        project_store=ProjectStore(database),
+        manufacturing_validator=lambda _spec, _compiled: _ManufacturingResult(),
+        physical_records=wrong_records,
+        evidence_verifier=HmacSha256EvidenceVerifier({"local-lab": _KEY}),
+        exact_build_subject_sha256="c" * 64,
+        runtime_catalog=runtime_catalog,
+        qualified_build_instructions=instructions,
+    )
+    rejected = asyncio.run(mismatched.prepare_build_pack(request))
+    assert rejected.status == "experimental_ready"
+    assert rejected.manifest is not None
+    assert rejected.manifest.build_subject_hash == build_subject_hash
+    assert "exact_build_subject_mismatch" in {issue.code for issue in rejected.blockers}
+
+    _, exact_records, _, _ = _qualified_inputs(spec, build_subject_hash)
+    verified = CharacterRobotService(
+        data_root=data_root,
+        project_id="qualified-project",
+        profile_registry=profiles,
+        cad_compiler=CadCompiler(profiles),
+        project_store=ProjectStore(database),
+        manufacturing_validator=lambda _spec, _compiled: _ManufacturingResult(),
+        physical_records=exact_records,
+        evidence_verifier=HmacSha256EvidenceVerifier({"local-lab": _KEY}),
+        exact_build_subject_sha256=build_subject_hash,
+        runtime_catalog=runtime_catalog,
+        qualified_build_instructions=instructions,
+    )
+    ready = asyncio.run(verified.prepare_build_pack(request))
+
+    assert ready.status == "ready"
+    assert ready.manifest is not None
+    assert ready.manifest.evidence_level == "exact_build_verified"
+    assert ready.manifest.build_subject_hash == build_subject_hash
+    assert all(not artifact.experimental for artifact in ready.manifest.artifacts)

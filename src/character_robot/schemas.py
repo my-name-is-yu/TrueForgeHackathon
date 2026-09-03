@@ -596,8 +596,10 @@ class ArtifactDescriptor(StrictModel):
 class ArtifactManifest(StrictModel):
     revision_id: RevisionId
     spec_hash: Sha256
+    build_subject_hash: Sha256
     geometry_sha256: Sha256
     profile_id: ProfileId
+    profile_sha256: Sha256
     catalog_version: SafeIdentifier
     compiler_version: SafeIdentifier
     cad_engine_version: ShortText | None = None

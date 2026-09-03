@@ -32,8 +32,10 @@ describe("Character Robot Studio WebMCP", () => {
             manifest: {
               revision_id: "r003",
               spec_hash: "b".repeat(64),
+              build_subject_hash: "a".repeat(64),
               geometry_sha256: "e".repeat(64),
               profile_id: "m5-cores3-goplus2/v1",
+              profile_sha256: "9".repeat(64),
               catalog_version: "hardware-catalog-v1",
               compiler_version: "character-cad-v1",
               cad_engine_version: "0.11.1",

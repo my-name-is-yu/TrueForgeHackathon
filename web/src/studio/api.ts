@@ -540,8 +540,10 @@ const parseBuildPackManifest = (value: unknown, path: string): BuildPackManifest
   return {
     revisionId: requiredString(manifest.revision_id, `${path}.revision_id`),
     specHash: sha256(manifest.spec_hash, `${path}.spec_hash`),
+    buildSubjectHash: sha256(manifest.build_subject_hash, `${path}.build_subject_hash`),
     geometrySha256: sha256(manifest.geometry_sha256, `${path}.geometry_sha256`),
     profileId: requiredString(manifest.profile_id, `${path}.profile_id`),
+    profileSha256: sha256(manifest.profile_sha256, `${path}.profile_sha256`),
     catalogVersion: requiredString(manifest.catalog_version, `${path}.catalog_version`),
     compilerVersion: requiredString(manifest.compiler_version, `${path}.compiler_version`),
     cadEngineVersion: requiredString(manifest.cad_engine_version, `${path}.cad_engine_version`),

@@ -397,10 +397,16 @@ def generate_maker_pack_artifacts(
     *,
     physical_records: tuple[PhysicalEvidenceRecord, ...] = (),
     evidence_verifier: EvidenceSignatureVerifier | None = None,
-    exact_build_manifest_sha256: str | None = None,
+    exact_build_subject_sha256: str | None = None,
     runtime_catalog: RuntimeCatalog | None = None,
     qualified_instructions: QualifiedBuildInstructions | None = None,
 ) -> MakerPackResult:
+    """Compile maker files against a caller-derived immutable build subject.
+
+    This layer verifies signed records but cannot derive the subject because CAD,
+    validation, and project artifacts are owned by CharacterRobotService.
+    """
+
     runtime_bundle = compile_runtime_bundle(spec, profile, catalog=runtime_catalog)
     if validation_report.spec_hash != runtime_bundle.spec_sha256:
         raise MakerPackError(
@@ -426,7 +432,7 @@ def generate_maker_pack_artifacts(
         catalog_version=spec.versions.catalog,
         profile_sha256=profile_sha256,
         spec_sha256=runtime_bundle.spec_sha256,
-        exact_build_manifest_sha256=exact_build_manifest_sha256,
+        exact_build_subject_sha256=exact_build_subject_sha256,
         records=physical_records,
         verifier=evidence_verifier,
     )
@@ -501,7 +507,7 @@ def generate_maker_pack_artifacts(
     evidence_payload = {
         "effective_evidence_level": effective_evidence_level,
         "evaluation": evidence.to_dict(),
-        "exact_build_manifest_sha256": exact_build_manifest_sha256,
+        "exact_build_subject_sha256": exact_build_subject_sha256,
         "hardware_profile_id": profile.profile_id,
         "profile_sha256": profile_sha256,
         "records": [record.to_dict() for record in physical_records],

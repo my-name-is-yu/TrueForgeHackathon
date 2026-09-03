@@ -64,8 +64,10 @@ def _manifest(spec: CharacterRobotSpec) -> ArtifactManifest:
     provisional = ArtifactManifest(
         revision_id="r000",
         spec_hash=spec_sha256(spec),
+        build_subject_hash=hashlib.sha256(b"build subject").hexdigest(),
         geometry_sha256=hashlib.sha256(b"geometry").hexdigest(),
         profile_id=spec.hardware_profile_id,
+        profile_sha256=hashlib.sha256(b"profile").hexdigest(),
         catalog_version=spec.versions.catalog,
         compiler_version=spec.versions.compiler,
         cad_engine_version="0.11.1",

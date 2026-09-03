@@ -78,8 +78,10 @@ const buildPack = (specHash = "b".repeat(64)): BuildPackResult => ({
   manifest: {
     revisionId: "r003",
     specHash,
+    buildSubjectHash: "a".repeat(64),
     geometrySha256: "e".repeat(64),
     profileId: "m5-cores3-goplus2/v1",
+    profileSha256: "9".repeat(64),
     catalogVersion: "hardware-catalog-v1",
     compilerVersion: "character-cad-v1",
     cadEngineVersion: "0.11.1",
@@ -205,6 +207,12 @@ describe("mountCharacterRobotStudio", () => {
     expect(artifact.getAttribute("href")).toBe(`/api/studio/v1/artifacts/${"d".repeat(64)}`);
     expect(document.querySelector(".crs-manifest")?.textContent).toContain("character-cad-v1");
     expect(document.querySelector(".crs-manifest")?.textContent).toContain("CAD 0.11.1");
+    expect(document.querySelector(".crs-manifest")?.textContent).toContain(
+      `build subject sha256 ${"a".repeat(64)}`,
+    );
+    expect(document.querySelector(".crs-manifest")?.textContent).toContain(
+      `profile sha256 ${"9".repeat(64)}`,
+    );
     expect(document.querySelector("#crs-artifacts")?.textContent).toContain("runtime_release_not_published");
     expect(document.querySelector("#crs-artifacts")?.textContent).toContain("pinned runtime binary has not been published");
     expect(artifact.textContent).toContain("d".repeat(64));
@@ -233,6 +241,35 @@ describe("mountCharacterRobotStudio", () => {
 
     studio.destroy();
   });
+
+  it.each(["within_qualified_profile", "exact_build_verified"] as const)(
+    "keeps an unvalidated design at concept-only evidence for a %s profile",
+    async (profileEvidenceLevel) => {
+      document.body.innerHTML = '<main id="app"></main>';
+      const current = context();
+      current.profiles[0].evidenceLevel = profileEvidenceLevel;
+      current.latestValidation = null;
+      const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+        getContext: async () => current,
+        setSelection: async ({ node_id }) => node_id,
+        registerTools: async () => false,
+        createViewer: () => ({
+          loadPreview: vi.fn(),
+          clearPreview: vi.fn(),
+          selectNode: vi.fn(),
+          playScenario: vi.fn(),
+          stopScenario: vi.fn(),
+          destroy: vi.fn(),
+        }),
+      });
+
+      expect(document.querySelector("#crs-evidence")?.textContent).toBe("Concept only");
+      expect(document.querySelector("#crs-evidence-detail")?.textContent).toBe(
+        "Digital concept — not build or safety verified",
+      );
+      studio.destroy();
+    },
+  );
 
   it("clears a failed replacement GLB and retries the current URL", async () => {
     document.body.innerHTML = '<main id="app"></main>';

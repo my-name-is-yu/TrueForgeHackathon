@@ -19,7 +19,7 @@ from character_robot.profiles import ProfileRegistry
 _KEY = b"trusted-lab-key-material-000000000"
 _PROFILE_SHA = "a" * 64
 _SPEC_SHA = "b" * 64
-_MANIFEST_SHA = "c" * 64
+_BUILD_SUBJECT_SHA = "c" * 64
 _METRICS = {
     "component_dimensions": (("components_measured_count", 9, "count"),),
     "electrical_limits": (
@@ -51,7 +51,7 @@ def _record(test: str, subject: str) -> PhysicalEvidenceRecord:
     record = PhysicalEvidenceRecord(
         record_id=f"{test}-record",
         subject=subject,
-        subject_sha256=_PROFILE_SHA if subject == "profile" else _MANIFEST_SHA,
+        subject_sha256=_PROFILE_SHA if subject == "profile" else _BUILD_SUBJECT_SHA,
         spec_sha256=None if subject == "profile" else _SPEC_SHA,
         profile_id="m5-cores3-goplus2/v1",
         catalog_version="hardware-catalog-v1",
@@ -77,7 +77,7 @@ def _all_records() -> tuple[PhysicalEvidenceRecord, ...]:
     )
 
 
-def _evaluate(*, qualification: str, records=(), manifest=_MANIFEST_SHA):
+def _evaluate(*, qualification: str, records=(), subject=_BUILD_SUBJECT_SHA):
     return evaluate_physical_evidence(
         digital_checks_passed=True,
         profile_qualification=qualification,
@@ -85,7 +85,7 @@ def _evaluate(*, qualification: str, records=(), manifest=_MANIFEST_SHA):
         catalog_version="hardware-catalog-v1",
         profile_sha256=_PROFILE_SHA,
         spec_sha256=_SPEC_SHA,
-        exact_build_manifest_sha256=manifest,
+        exact_build_subject_sha256=subject,
         records=tuple(records),
         verifier=HmacSha256EvidenceVerifier({"local-lab": _KEY}),
     )
@@ -119,7 +119,7 @@ def test_current_profiles_cannot_be_promoted_even_with_complete_signed_evidence(
         catalog_version="hardware-catalog-v1",
         profile_sha256=_PROFILE_SHA,
         spec_sha256=_SPEC_SHA,
-        exact_build_manifest_sha256=_MANIFEST_SHA,
+        exact_build_subject_sha256=_BUILD_SUBJECT_SHA,
         records=records,
         verifier=HmacSha256EvidenceVerifier({"local-lab": _KEY}),
     )
@@ -169,7 +169,7 @@ def test_failed_digital_checks_override_physical_records() -> None:
         catalog_version="hardware-catalog-v1",
         profile_sha256=_PROFILE_SHA,
         spec_sha256=_SPEC_SHA,
-        exact_build_manifest_sha256=_MANIFEST_SHA,
+        exact_build_subject_sha256=_BUILD_SUBJECT_SHA,
         records=_all_records(),
         verifier=HmacSha256EvidenceVerifier({"local-lab": _KEY}),
     )
@@ -184,7 +184,7 @@ def test_cycle_evidence_requires_at_least_100_observed_cycles() -> None:
         PhysicalEvidenceRecord(
             record_id="short-cycle-record",
             subject="exact_build",
-            subject_sha256=_MANIFEST_SHA,
+            subject_sha256=_BUILD_SUBJECT_SHA,
             spec_sha256=_SPEC_SHA,
             profile_id="m5-cores3-goplus2/v1",
             catalog_version="hardware-catalog-v1",
