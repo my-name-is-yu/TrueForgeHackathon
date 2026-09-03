@@ -28,7 +28,6 @@ RejectionReason = Literal[
     "catalog_mismatch",
     "subject_mismatch",
     "spec_mismatch",
-    "metric_invalid",
 ]
 EvidenceTest = Literal[
     "component_dimensions",
@@ -125,6 +124,9 @@ def _validate_metric_contract(measurements: tuple[Measurement, ...]) -> None:
         if measurement.metric in seen:
             raise ValueError("physical evidence must not contain duplicate metrics")
         seen.add(measurement.metric)
+        value = measurement.value
+        if isinstance(value, bool):
+            raise ValueError("measurement booleans are not numeric values")
         canonical_unit = _CANONICAL_UNITS.get(measurement.metric)
         if canonical_unit is None:
             continue
@@ -132,9 +134,6 @@ def _validate_metric_contract(measurements: tuple[Measurement, ...]) -> None:
             raise ValueError(
                 f"{measurement.metric} must use canonical unit {canonical_unit}"
             )
-        value = measurement.value
-        if isinstance(value, bool):
-            raise ValueError("measurement booleans are not numeric values")
         if measurement.metric in _COUNT_METRICS and (
             not isinstance(value, int) or value < 0
         ):
