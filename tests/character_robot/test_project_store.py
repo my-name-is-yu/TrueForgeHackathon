@@ -149,6 +149,21 @@ def test_two_store_instances_reject_a_stale_generation(tmp_path: Path) -> None:
     assert second.load_project("duck-project").generation == 1
 
 
+def test_blank_project_restore_can_start_above_an_earlier_store_generation(
+    tmp_path: Path,
+) -> None:
+    store = ProjectStore(tmp_path / "projects.sqlite3")
+    store.create_project("duck-project")
+
+    restored = store.restore_blank_project(
+        _populated_snapshot(),
+        generation=7,
+    )
+
+    assert restored.generation == 7
+    assert store.load_project("duck-project") == restored
+
+
 def test_invalid_snapshot_is_rejected_without_advancing_storage(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path / "projects.sqlite3")
     store.create_project("duck-project")

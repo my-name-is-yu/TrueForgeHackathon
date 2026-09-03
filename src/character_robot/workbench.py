@@ -167,9 +167,13 @@ class StudioSessionManager:
     def reset(self, session_id: str, session: StudioSession) -> None:
         if self.sessions.get(session_id) is not session or not session.lock.locked():
             raise RuntimeError("reset requires the leased current session")
+        next_generation = session.service.project_generation + 1
         previous_root = self._validated_generation_path(session.data_root)
         replacement = self._new_session(session_id, publish=False)
         try:
+            replacement.service.advance_blank_project_generation(
+                next_generation=next_generation
+            )
             self._publish_generation(replacement.data_root)
         except Exception:
             self._delete_generation(replacement.data_root)
@@ -205,7 +209,10 @@ class StudioSessionManager:
         previous_root = self._validated_generation_path(session.data_root)
         replacement = self._new_session(session_id, publish=False)
         try:
-            restored = replacement.service.restore_portable_project(snapshot)
+            restored = replacement.service.restore_portable_project(
+                snapshot,
+                next_generation=expected_generation + 1,
+            )
             self._publish_generation(replacement.data_root)
         except Exception:
             self._delete_generation(replacement.data_root)

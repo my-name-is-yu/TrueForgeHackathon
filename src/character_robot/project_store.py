@@ -390,6 +390,66 @@ class ProjectStore:
                 ) from error
         return next_snapshot
 
+    def restore_blank_project(
+        self, snapshot: ProjectSnapshot, *, generation: int
+    ) -> ProjectSnapshot:
+        if (
+            not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or generation < 1
+        ):
+            raise ProjectValidationError("generation must be a positive integer")
+        validated = self._validate_snapshot(snapshot)
+        if validated.generation != 0:
+            raise ProjectValidationError(
+                "restored project snapshot must start at generation zero"
+            )
+        restored = self._validate_snapshot(
+            validated.model_copy(update={"generation": generation})
+        )
+        payload, digest = self._encode(restored)
+
+        with self._lock, self._connection() as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    """
+                    UPDATE projects
+                    SET generation = ?, snapshot_json = ?, snapshot_sha256 = ?
+                    WHERE project_id = ? AND generation = 0
+                    """,
+                    (
+                        restored.generation,
+                        payload,
+                        digest,
+                        restored.project_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    current = connection.execute(
+                        "SELECT generation FROM projects WHERE project_id = ?",
+                        (restored.project_id,),
+                    ).fetchone()
+                    connection.rollback()
+                    if current is None:
+                        raise ProjectNotFoundError(
+                            f"project {restored.project_id!r} does not exist"
+                        )
+                    raise ProjectConflictError(
+                        restored.project_id,
+                        0,
+                        int(current[0]),
+                    )
+                connection.commit()
+            except ProjectStoreError:
+                raise
+            except sqlite3.Error as error:
+                connection.rollback()
+                raise ProjectStoreError(
+                    "project could not be restored atomically"
+                ) from error
+        return restored
+
     def list_project_ids(self) -> tuple[str, ...]:
         with self._lock, self._connection() as connection:
             try:
