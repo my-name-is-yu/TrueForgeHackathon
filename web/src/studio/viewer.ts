@@ -199,6 +199,29 @@ const semanticNodeId = (
   return null;
 };
 
+export const selectableSemanticNodeId = (
+  intersections: readonly { object: THREE.Object3D }[],
+  model: THREE.Object3D,
+  partNames: ReadonlySet<string>,
+): string | null => {
+  for (const intersection of intersections) {
+    let candidate: THREE.Object3D | null = intersection.object;
+    let visible = false;
+    while (candidate && candidate !== model.parent) {
+      if (!candidate.visible) break;
+      if (candidate === model) {
+        visible = true;
+        break;
+      }
+      candidate = candidate.parent;
+    }
+    if (!visible) continue;
+    const nodeId = semanticNodeId(intersection.object, model, partNames);
+    if (nodeId) return nodeId;
+  }
+  return null;
+};
+
 export const partLocalBounds = (
   object: THREE.Object3D,
   semanticNodeIds: ReadonlySet<string> = new Set(),
@@ -228,10 +251,26 @@ export const partLocalBounds = (
   return found ? result : null;
 };
 
-export const hideDiagnosticGeometry = (model: THREE.Object3D): void => {
-  model.traverse((object) => {
-    if (object.name.toLowerCase().startsWith("keepout_")) object.visible = false;
-  });
+export const hideDiagnosticGeometry = (
+  model: THREE.Object3D,
+  semanticNodeIds: ReadonlySet<string> = new Set(),
+): void => {
+  const visit = (object: THREE.Object3D): void => {
+    const metadataId = typeof object.userData.node_id === "string"
+      ? object.userData.node_id
+      : null;
+    if (
+      (metadataId && semanticNodeIds.has(metadataId))
+      || (object.name && semanticNodeIds.has(object.name))
+    ) return;
+    if (object.name.toLowerCase().startsWith("keepout_")) {
+      object.visible = false;
+      return;
+    }
+    object.children.forEach(visit);
+  };
+
+  visit(model);
 };
 
 const attach = (parent: THREE.Object3D, child: THREE.Object3D): void => {
@@ -563,8 +602,11 @@ export function createStudioViewer(
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObject(model, true)[0];
-    const nodeId = hit ? semanticNodeId(hit.object, model, partNames) : null;
+    const nodeId = selectableSemanticNodeId(
+      raycaster.intersectObject(model, true),
+      model,
+      partNames,
+    );
     selectNode(nodeId);
     options.onSelectionChange?.(nodeId);
   };
@@ -589,8 +631,8 @@ export function createStudioViewer(
             }
             clearModel();
             model = gltf.scene;
-            hideDiagnosticGeometry(model);
             partNames = new Set(spec.morphologyNodes.map((node) => node.nodeId));
+            hideDiagnosticGeometry(model, partNames);
             rig = rigStudioModel(model, spec);
             model.traverse((object) => {
               if (object instanceof THREE.Mesh) {

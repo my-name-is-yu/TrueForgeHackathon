@@ -9,6 +9,7 @@ import {
   partLocalBounds,
   prefersReducedMotion,
   rigStudioModel,
+  selectableSemanticNodeId,
 } from "../src/studio/viewer";
 
 const spec = (): CharacterSpecView => ({
@@ -185,15 +186,52 @@ describe("Character Robot Studio GLB rig", () => {
     rig.dispose();
   });
 
-  it("hides compiler diagnostic keepouts without hiding character parts", () => {
+  it("hides compiler diagnostic keepouts without hiding semantic keepout-prefixed parts", () => {
     const model = new THREE.Group();
     const keepout = mesh("keepout_front_access", [1, 1, 1], [0, 0, 0]);
     const character = mesh("head", [1, 1, 1], [0, 0, 0]);
-    model.add(keepout, character);
+    const semanticKeepout = new THREE.Group();
+    semanticKeepout.name = "keepout_hat";
+    const semanticSurface = mesh("keepout_hat_primitive_0", [1, 1, 1], [0, 0, 0]);
+    semanticKeepout.add(semanticSurface);
+    model.add(keepout, character, semanticKeepout);
 
-    hideDiagnosticGeometry(model);
+    hideDiagnosticGeometry(model, new Set(["head", "keepout_hat"]));
 
     expect(keepout.visible).toBe(false);
     expect(character.visible).toBe(true);
+    expect(semanticKeepout.visible).toBe(true);
+    expect(semanticSurface.visible).toBe(true);
+  });
+
+  it("skips effectively hidden intersections when selecting a semantic part", () => {
+    const model = new THREE.Group();
+    const keepout = new THREE.Group();
+    keepout.name = "keepout_front_access";
+    const keepoutSurface = mesh("keepout_surface", [1, 1, 1], [0, 0, 1]);
+    keepout.add(keepoutSurface);
+    const head = new THREE.Group();
+    head.name = "head";
+    const headSurface = mesh("head_primitive_0", [1, 1, 1], [0, 0, 0]);
+    head.add(headSurface);
+    model.add(keepout, head);
+    hideDiagnosticGeometry(model, new Set(["head"]));
+    model.updateWorldMatrix(true, true);
+    const raycaster = new THREE.Raycaster(
+      new THREE.Vector3(0, 0, 5),
+      new THREE.Vector3(0, 0, -1),
+    );
+    const intersections = raycaster.intersectObject(model, true);
+
+    const selected = selectableSemanticNodeId(
+      intersections,
+      model,
+      new Set(["head"]),
+    );
+
+    expect(keepout.visible).toBe(false);
+    expect(keepoutSurface.visible).toBe(true);
+    expect(intersections[0].object).toBe(keepoutSurface);
+    expect(selected).toBe("head");
   });
 });
