@@ -360,6 +360,7 @@ export function parseStudioContext(value: unknown): StudioContext {
       ? {
         spec: parseSpec(rawDraft.spec, "context.draft.spec"),
         draftHash: requiredString(rawDraft.draft_hash, "context.draft.draft_hash"),
+        specHash: sha256(rawDraft.spec_hash, "context.draft.spec_hash"),
         baseRevisionId: optionalString(rawDraft.base_revision_id, "context.draft.base_revision_id"),
       }
       : null,
@@ -431,6 +432,7 @@ export function parseScenarioPreview(value: unknown): ScenarioPreview {
   });
   return {
     scenarioId: requiredString(scenario, "scenario_preview.scenario_id"),
+    specHash: sha256(preview.spec_hash, "scenario_preview.spec_hash"),
     durationS: duration,
     evidenceLevel: evidenceLevel(preview.evidence_level ?? "concept_only", "scenario_preview.evidence_level"),
     keyframes,

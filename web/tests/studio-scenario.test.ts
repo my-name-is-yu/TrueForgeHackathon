@@ -6,6 +6,7 @@ describe("sampleScenario", () => {
   it("interpolates normalized wheel commands while holding discrete face and sound states", () => {
     const scenario = {
       scenarioId: "greet",
+      specHash: "d".repeat(64),
       durationS: 2,
       evidenceLevel: "concept_only" as const,
       keyframes: [

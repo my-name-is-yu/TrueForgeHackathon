@@ -90,6 +90,7 @@ export type StudioPreview = {
 export type StudioDraft = {
   spec: CharacterSpecView;
   draftHash: string;
+  specHash: string;
   baseRevisionId: string | null;
 };
 
@@ -127,6 +128,7 @@ export type ScenarioFrame = {
 
 export type ScenarioPreview = {
   scenarioId: string;
+  specHash: string;
   durationS: number;
   evidenceLevel: EvidenceLevel;
   keyframes: ScenarioFrame[];
