@@ -84,6 +84,62 @@ _REQUIRED_METRICS: Mapping[EvidenceTest, frozenset[str]] = MappingProxyType(
         "emergency_stop": frozenset({"stop_time_ms"}),
     }
 )
+_CANONICAL_UNITS: Mapping[str, str] = MappingProxyType(
+    {
+        "components_measured_count": "count",
+        "peak_current_a": "A",
+        "minimum_operating_voltage_v": "V",
+        "connections_tested_count": "count",
+        "sweeps_tested_count": "count",
+        "minimum_clearance_mm": "mm",
+        "assembly_mass_g": "g",
+        "cog_height_mm": "mm",
+        "maximum_temperature_c": "degC",
+        "duration_s": "s",
+        "successful_boots_count": "count",
+        "parts_inspected_count": "count",
+        "assembly_time_min": "min",
+        "completed_cycles": "count",
+        "stop_time_ms": "ms",
+    }
+)
+_COUNT_METRICS = frozenset(
+    metric for metric, unit in _CANONICAL_UNITS.items() if unit == "count"
+)
+_STRICTLY_POSITIVE_METRICS = frozenset(
+    {
+        "peak_current_a",
+        "minimum_operating_voltage_v",
+        "assembly_mass_g",
+        "duration_s",
+        "assembly_time_min",
+        "stop_time_ms",
+    }
+)
+
+
+def _validate_metric_contract(measurements: tuple[Measurement, ...]) -> None:
+    seen: set[str] = set()
+    for measurement in measurements:
+        if measurement.metric in seen:
+            raise ValueError("physical evidence must not contain duplicate metrics")
+        seen.add(measurement.metric)
+        value = measurement.value
+        if isinstance(value, bool):
+            raise ValueError("measurement booleans are not numeric values")
+        canonical_unit = _CANONICAL_UNITS.get(measurement.metric)
+        if canonical_unit is None:
+            continue
+        if measurement.unit != canonical_unit:
+            raise ValueError(
+                f"{measurement.metric} must use canonical unit {canonical_unit}"
+            )
+        if measurement.metric in _COUNT_METRICS and (
+            not isinstance(value, int) or value < 0
+        ):
+            raise ValueError(f"{measurement.metric} must be a non-negative integer")
+        if measurement.metric in _STRICTLY_POSITIVE_METRICS and value <= 0:
+            raise ValueError(f"{measurement.metric} must be strictly positive")
 
 
 def _require_safe_id(value: str, label: str) -> None:
@@ -162,6 +218,7 @@ class PhysicalEvidenceRecord:
             raise ValueError("performed_at must use UTC")
         if not self.measurements:
             raise ValueError("physical evidence must contain measurements")
+        _validate_metric_contract(self.measurements)
         metrics = {measurement.metric for measurement in self.measurements}
         missing = _REQUIRED_METRICS[self.test].difference(metrics)
         if missing:

@@ -195,3 +195,106 @@ def test_cycle_evidence_requires_at_least_100_observed_cycles() -> None:
             signer_id="local-lab",
             signature_sha256="0" * 64,
         )
+
+
+@pytest.mark.parametrize(
+    ("metric", "value", "unit", "message"),
+    [
+        ("stop_time_ms", -50, "ms", "strictly positive"),
+        ("stop_time_ms", 50, "bananas", "canonical unit"),
+        ("completed_cycles", True, "count", "booleans"),
+        ("completed_cycles", 1.5, "count", "non-negative integer"),
+    ],
+)
+def test_signed_malformed_measurements_cannot_be_created_for_promotion(
+    metric: str, value: object, unit: str, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        PhysicalEvidenceRecord(
+            record_id="malformed-record",
+            subject="exact_build",
+            subject_sha256=_BUILD_SUBJECT_SHA,
+            spec_sha256=_SPEC_SHA,
+            profile_id="m5-cores3-goplus2/v1",
+            catalog_version="hardware-catalog-v1",
+            test="emergency_stop"
+            if metric == "stop_time_ms"
+            else "standard_motion_100_cycles",
+            performed_at="2026-09-03T00:00:00Z",
+            measurements=(Measurement(metric, value, unit),),
+            passed=True,
+            signer_id="local-lab",
+            signature_sha256="0" * 64,
+        )
+
+
+def test_combined_malformed_measurement_is_rejected_at_admission_boundary() -> None:
+    with pytest.raises(ValueError, match="canonical unit|strictly positive"):
+        PhysicalEvidenceRecord(
+            record_id="combined-malformed-record",
+            subject="exact_build",
+            subject_sha256=_BUILD_SUBJECT_SHA,
+            spec_sha256=_SPEC_SHA,
+            profile_id="m5-cores3-goplus2/v1",
+            catalog_version="hardware-catalog-v1",
+            test="emergency_stop",
+            performed_at="2026-09-03T00:00:00Z",
+            measurements=(Measurement("stop_time_ms", -50, "bananas"),),
+            passed=True,
+            signer_id="local-lab",
+            signature_sha256="0" * 64,
+        )
+
+
+def test_unknown_boolean_metric_is_rejected_even_with_valid_required_metric() -> None:
+    with pytest.raises(ValueError, match="booleans"):
+        PhysicalEvidenceRecord(
+            record_id="unknown-boolean-record",
+            subject="exact_build",
+            subject_sha256=_BUILD_SUBJECT_SHA,
+            spec_sha256=_SPEC_SHA,
+            profile_id="m5-cores3-goplus2/v1",
+            catalog_version="hardware-catalog-v1",
+            test="emergency_stop",
+            performed_at="2026-09-03T00:00:00Z",
+            measurements=(
+                Measurement("stop_time_ms", 50, "ms"),
+                Measurement("future_flag", True, "boolean"),
+            ),
+            passed=True,
+            signer_id="local-lab",
+            signature_sha256="0" * 64,
+        )
+
+
+def test_duplicate_metric_names_are_rejected() -> None:
+    with pytest.raises(ValueError, match="duplicate metrics"):
+        PhysicalEvidenceRecord(
+            record_id="duplicate-record",
+            subject="exact_build",
+            subject_sha256=_BUILD_SUBJECT_SHA,
+            spec_sha256=_SPEC_SHA,
+            profile_id="m5-cores3-goplus2/v1",
+            catalog_version="hardware-catalog-v1",
+            test="emergency_stop",
+            performed_at="2026-09-03T00:00:00Z",
+            measurements=(
+                Measurement("stop_time_ms", 50, "ms"),
+                Measurement("stop_time_ms", 60, "ms"),
+            ),
+            passed=True,
+            signer_id="local-lab",
+            signature_sha256="0" * 64,
+        )
+
+
+def test_temperature_can_be_signed_with_a_negative_value() -> None:
+    record = _record("thermal_run", "profile")
+    record = replace(
+        record,
+        measurements=(
+            Measurement("maximum_temperature_c", -10, "degC"),
+            Measurement("duration_s", 1, "s"),
+        ),
+    )
+    assert sign_evidence_record(record, key=_KEY).measurements[0].value == -10
