@@ -91,6 +91,10 @@ describe("Character Robot Studio WebMCP", () => {
     expect((packChanged.mock.calls[0][0] as CustomEvent).detail).toMatchObject({
       tool: "prepare_build_pack",
       ok: true,
+      buildPackTarget: {
+        revisionId: "r003",
+        specHash: "b".repeat(64),
+      },
       buildPackResult: {
         status: "experimental_ready",
         manifest: { revisionId: "r003", cadEngineVersion: "0.11.1" },

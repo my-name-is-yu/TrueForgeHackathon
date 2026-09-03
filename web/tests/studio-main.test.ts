@@ -328,6 +328,37 @@ describe("mountCharacterRobotStudio", () => {
     }));
     await Promise.resolve();
     expect(document.querySelector(".crs-manifest")).toBeNull();
+
+    document.dispatchEvent(new CustomEvent(STUDIO_CHANGED_EVENT, {
+      detail: {
+        tool: "prepare_build_pack",
+        ok: true,
+        buildPackTarget: {
+          revisionId: "r003",
+          specHash: "b".repeat(64),
+        },
+        buildPackResult: {
+          status: "blocked",
+          manifest: null,
+          artifacts: [],
+          blockers: [{
+            code: "stale_blocker",
+            severity: "error",
+            path: "simulation",
+            message: "This blocker belongs to the previous spec.",
+            measuredValue: null,
+            limitValue: null,
+            suggestion: null,
+          }],
+          nextAction: "Revise the previous spec.",
+          humanActionRequired: true,
+        },
+      },
+    }));
+    await Promise.resolve();
+    expect(document.querySelector("#crs-artifacts")?.textContent).not.toContain(
+      "This blocker belongs to the previous spec.",
+    );
     studio.destroy();
   });
 

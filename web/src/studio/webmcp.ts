@@ -25,6 +25,10 @@ export type StudioChangedDetail = {
   tool: StudioToolName;
   ok: boolean;
   buildPackResult?: BuildPackResult;
+  buildPackTarget?: {
+    revisionId: string;
+    specHash: string;
+  };
   error?: {
     code: string;
     message: string;
@@ -130,11 +134,20 @@ export async function registerStudioWebMcpTools(
           const buildPackResult = definition.name === "prepare_build_pack"
             ? parseBuildPackResult(result)
             : undefined;
+          const buildPackTarget = definition.name === "prepare_build_pack"
+            && typeof input.revision_id === "string"
+            && typeof input.expected_spec_hash === "string"
+            ? {
+                revisionId: input.revision_id,
+                specHash: input.expected_spec_hash,
+              }
+            : undefined;
           document_.dispatchEvent(new CustomEvent<StudioChangedDetail>(STUDIO_CHANGED_EVENT, {
             detail: {
               tool: definition.name,
               ok: true,
               ...(buildPackResult ? { buildPackResult } : {}),
+              ...(buildPackTarget ? { buildPackTarget } : {}),
             },
           }));
           return result;

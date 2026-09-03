@@ -765,9 +765,17 @@ export async function mountCharacterRobotStudio(
     if (detail?.ok && detail.tool === "prepare_build_pack" && detail.buildPackResult) {
       const manifest = detail.buildPackResult.manifest;
       const currentTarget = context ? buildPackTargetKey(context) : null;
+      const responseTarget = detail.buildPackTarget ?? (manifest ? {
+        revisionId: manifest.revisionId,
+        specHash: manifest.specHash,
+      } : null);
+      const responseTargetMatches = context && responseTarget
+        && responseTarget.revisionId === context.headRevisionId
+        && responseTarget.specHash === context.headSpecSha256;
       if (
         context
         && currentTarget
+        && responseTargetMatches
         && (manifest === null || (
           manifest.revisionId === context.headRevisionId
           && manifest.specHash === context.headSpecSha256
