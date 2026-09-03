@@ -26,6 +26,9 @@ export type StudioChangedDetail = {
   ok: boolean;
   buildPackResult?: BuildPackResult;
   buildPackTarget?: {
+    projectId: string;
+    projectGeneration: number;
+    operationEpoch: number;
     revisionId: string;
     specHash: string;
   };
@@ -34,6 +37,12 @@ export type StudioChangedDetail = {
     message: string;
     nextAction: string | null;
   };
+};
+
+export type StudioBuildPackResponseIdentity = {
+  projectId: string;
+  projectGeneration: number;
+  operationEpoch: number;
 };
 
 export type StudioToolDefinition = {
@@ -120,6 +129,7 @@ export async function getStudioToolDefinitions(): Promise<StudioToolDefinition[]
 
 export async function registerStudioWebMcpTools(
   document_: Document = document,
+  getBuildPackResponseIdentity: () => StudioBuildPackResponseIdentity | null = () => null,
 ): Promise<boolean> {
   const modelContext = (document_ as ModelContextDocument).modelContext;
   if (typeof modelContext?.registerTool !== "function") return false;
@@ -130,6 +140,9 @@ export async function registerStudioWebMcpTools(
       ...definition,
       execute: async (input: JsonObject) => {
         try {
+          const buildPackResponseIdentity = definition.name === "prepare_build_pack"
+            ? getBuildPackResponseIdentity()
+            : null;
           const result = await callStudioTool(definition.name, input);
           const buildPackResult = definition.name === "prepare_build_pack"
             ? parseBuildPackResult(result)
@@ -137,7 +150,9 @@ export async function registerStudioWebMcpTools(
           const buildPackTarget = definition.name === "prepare_build_pack"
             && typeof input.revision_id === "string"
             && typeof input.expected_spec_hash === "string"
+            && buildPackResponseIdentity
             ? {
+                ...buildPackResponseIdentity,
                 revisionId: input.revision_id,
                 specHash: input.expected_spec_hash,
               }

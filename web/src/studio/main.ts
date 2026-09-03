@@ -24,6 +24,7 @@ import { createStudioViewer, type StudioViewer } from "./viewer";
 import {
   registerStudioWebMcpTools,
   STUDIO_CHANGED_EVENT,
+  type StudioBuildPackResponseIdentity,
   type StudioChangedDetail,
 } from "./webmcp";
 
@@ -39,7 +40,10 @@ export type CharacterRobotStudioDependencies = {
   importProject?: (file: File, expectedGeneration: number) => Promise<void>;
   confirmImport?: () => boolean;
   setSelection?: (input: { target: DesignTarget; node_id: string | null }) => Promise<string | null>;
-  registerTools?: (document_: Document) => Promise<boolean>;
+  registerTools?: (
+    document_: Document,
+    getBuildPackResponseIdentity: () => StudioBuildPackResponseIdentity | null,
+  ) => Promise<boolean>;
   createViewer?: (
     container: HTMLElement,
     options: {
@@ -122,7 +126,7 @@ const designTargetKey = (context: StudioContext | null): string | null => {
   ]);
 };
 
-const buildPackTargetKey = (context: StudioContext): string | null => (
+const buildPackDisplayTargetKey = (context: StudioContext): string | null => (
   context.headRevisionId && context.headSpecSha256
     ? JSON.stringify([context.projectId, context.headRevisionId, context.headSpecSha256])
     : null
@@ -310,6 +314,26 @@ export async function mountCharacterRobotStudio(
   const designOperationKey = (): string | null => {
     const targetKey = designTargetKey(context);
     return targetKey === null ? null : JSON.stringify([designOperationEpoch, targetKey]);
+  };
+
+  const buildPackResponseIdentity = (): StudioBuildPackResponseIdentity | null => (
+    context
+      ? {
+          projectId: context.projectId,
+          projectGeneration: context.projectGeneration,
+          operationEpoch: designOperationEpoch,
+        }
+      : null
+  );
+
+  const matchesBuildPackResponseIdentity = (
+    identity: StudioBuildPackResponseIdentity,
+  ): boolean => {
+    const currentIdentity = buildPackResponseIdentity();
+    return currentIdentity !== null
+      && identity.projectId === currentIdentity.projectId
+      && identity.projectGeneration === currentIdentity.projectGeneration
+      && identity.operationEpoch === currentIdentity.operationEpoch;
   };
 
   async function persistSelection(nodeId: string | null): Promise<void> {
@@ -612,7 +636,9 @@ export async function mountCharacterRobotStudio(
     if (!context?.headRevisionId || !context.headSpecSha256) return;
     const revisionId = context.headRevisionId;
     const specHash = context.headSpecSha256;
-    const requestedTarget = buildPackTargetKey(context);
+    const requestedTarget = buildPackDisplayTargetKey(context);
+    const responseIdentity = buildPackResponseIdentity();
+    if (!responseIdentity) return;
     const button = query<HTMLButtonElement>("#crs-prepare-pack");
     button.disabled = true;
     button.textContent = "Preparing manifest…";
@@ -625,7 +651,8 @@ export async function mountCharacterRobotStudio(
       if (
         destroyed
         || !context
-        || buildPackTargetKey(context) !== requestedTarget
+        || !matchesBuildPackResponseIdentity(responseIdentity)
+        || buildPackDisplayTargetKey(context) !== requestedTarget
         || (result.manifest !== null && (
           result.manifest.revisionId !== revisionId || result.manifest.specHash !== specHash
         ))
@@ -736,7 +763,7 @@ export async function mountCharacterRobotStudio(
 
     const buildButton = query<HTMLButtonElement>("#crs-prepare-pack");
     buildButton.disabled = !nextContext.headRevisionId || !nextContext.headSpecSha256;
-    if (preparedForBuildPackTarget !== buildPackTargetKey(nextContext)) {
+    if (preparedForBuildPackTarget !== buildPackDisplayTargetKey(nextContext)) {
       preparedForBuildPackTarget = null;
       query<HTMLElement>("#crs-artifacts").replaceChildren();
       query<HTMLElement>("#crs-build-copy").textContent = nextContext.headRevisionId
@@ -755,7 +782,7 @@ export async function mountCharacterRobotStudio(
     viewer.selectNode(selectedNodeId);
     renderSelection();
 
-    if (nextContext.preview.glbUrl !== loadedGlbUrl) {
+    if (previewChanged || targetChanged) {
       loadedGlbUrl = nextContext.preview.glbUrl;
       if (!loadedGlbUrl) {
         viewer.clearPreview();
@@ -815,12 +842,10 @@ export async function mountCharacterRobotStudio(
       : null;
     if (detail?.ok && detail.tool === "prepare_build_pack" && detail.buildPackResult) {
       const manifest = detail.buildPackResult.manifest;
-      const currentTarget = context ? buildPackTargetKey(context) : null;
-      const responseTarget = detail.buildPackTarget ?? (manifest ? {
-        revisionId: manifest.revisionId,
-        specHash: manifest.specHash,
-      } : null);
+      const currentTarget = context ? buildPackDisplayTargetKey(context) : null;
+      const responseTarget = detail.buildPackTarget;
       const responseTargetMatches = context && responseTarget
+        && matchesBuildPackResponseIdentity(responseTarget)
         && responseTarget.revisionId === context.headRevisionId
         && responseTarget.specHash === context.headSpecSha256;
       if (
@@ -844,7 +869,7 @@ export async function mountCharacterRobotStudio(
   if (context) {
     const webmcpStatus = query<HTMLElement>("#crs-webmcp");
     try {
-      const registered = await registerTools(document);
+      const registered = await registerTools(document, buildPackResponseIdentity);
       webmcpStatus.className = registered ? "crs-pill ready" : "crs-pill";
       webmcpStatus.textContent = registered ? "8 site tools ready" : "Site tools unavailable";
     } catch (error) {

@@ -353,13 +353,54 @@ def _compile_morphology(
 ) -> list[_CompiledPart]:
     nodes = payload["morphology"]["nodes"]
     by_id = {node["node_id"]: node for node in nodes}
+    dependency_depths: dict[str, int] = {}
+    validating: set[str] = set()
+
+    def dependency_depth(node_id: str) -> int:
+        if node_id in dependency_depths:
+            return dependency_depths[node_id]
+        if node_id in validating:
+            raise CadCompileError(
+                "CAD_INPUT_INVALID",
+                "Morphology dependencies are cyclic or too deep.",
+            )
+        validating.add(node_id)
+        node = by_id[node_id]
+        dependencies: list[str] = []
+        if node["kind"] == "csg":
+            dependencies.extend(node["operand_node_ids"])
+        elif node["kind"] == "mirror":
+            dependencies.append(node["source_node_id"])
+        attachment = node.get("attachment")
+        if attachment is not None:
+            dependencies.append(str(attachment["parent_node_id"]))
+        depth = 1
+        for dependency in dependencies:
+            if dependency not in by_id:
+                raise CadCompileError(
+                    "CAD_INPUT_INVALID",
+                    "Morphology dependencies reference an unknown node.",
+                )
+            depth = max(depth, dependency_depth(dependency) + 1)
+            if depth > 8:
+                raise CadCompileError(
+                    "CAD_INPUT_INVALID",
+                    "Morphology dependencies are cyclic or too deep.",
+                )
+        validating.remove(node_id)
+        dependency_depths[node_id] = depth
+        return depth
+
+    for node_id in by_id:
+        dependency_depth(node_id)
+
     compiled: dict[str, Any] = {}
     active: set[str] = set()
 
-    def compile_node(node_id: str, depth: int = 1) -> Any:
+    def compile_node(node_id: str) -> Any:
         if node_id in compiled:
             return compiled[node_id]
-        if node_id in active or depth > 8:
+        if node_id in active:
             raise CadCompileError(
                 "CAD_INPUT_INVALID",
                 "Morphology dependencies are cyclic or too deep.",
@@ -371,8 +412,7 @@ def _compile_morphology(
             shape = _primitive_shape(build123d, node)
         elif kind == "csg":
             operands = [
-                compile_node(operand_id, depth + 1)
-                for operand_id in node["operand_node_ids"]
+                compile_node(operand_id) for operand_id in node["operand_node_ids"]
             ]
             shape = operands[0]
             if node["operation"] == "union":
@@ -383,7 +423,7 @@ def _compile_morphology(
                 for operand in operands[1:]:
                     shape = shape & operand
         elif kind == "mirror":
-            source = compile_node(node["source_node_id"], depth + 1)
+            source = compile_node(node["source_node_id"])
             shape = source.mirror(
                 _mirror_plane(
                     build123d,
@@ -398,7 +438,7 @@ def _compile_morphology(
             )
         attachment = node.get("attachment")
         if attachment is not None:
-            compile_node(str(attachment["parent_node_id"]), depth + 1)
+            compile_node(str(attachment["parent_node_id"]))
         shape = _apply_attachment(build123d, shape, attachment, compiled)
         if not shape.solids() or shape.volume <= 0:
             raise CadCompileError(

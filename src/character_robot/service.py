@@ -31,6 +31,7 @@ from .maker_pack import (
 )
 from .physical_evidence import EvidenceSignatureVerifier, PhysicalEvidenceRecord
 from .project_store import (
+    PROJECT_MANIFEST_LIMIT,
     PROJECT_REVISION_LIMIT,
     ProjectAlreadyExistsError,
     PersistedDraft,
@@ -1088,8 +1089,6 @@ class CharacterRobotService:
                     )
                 else:
                     artifacts.append(archive)
-            for artifact in artifacts:
-                self._store_artifact(artifact, request_id)
             manifest_payload = {
                 "revision_id": revision.summary.revision_id,
                 "spec_hash": revision.summary.spec_hash,
@@ -1115,10 +1114,47 @@ class CharacterRobotService:
                 **manifest_payload,
                 manifest_hash=_hash_json(manifest_payload),
             )
-            if all(
+            is_new_manifest = all(
                 existing.manifest_hash != manifest.manifest_hash
                 for existing in self._artifact_manifests
+            )
+            if (
+                is_new_manifest
+                and len(self._artifact_manifests) >= PROJECT_MANIFEST_LIMIT
             ):
+                capacity_issue = ValidationIssue(
+                    code="artifact_manifest_limit_reached",
+                    severity="error",
+                    path="build_pack",
+                    message="This Studio project has reached its immutable Build Pack manifest limit.",
+                    measured_value=float(len(self._artifact_manifests) + 1),
+                    limit_value=float(PROJECT_MANIFEST_LIMIT),
+                    suggestion="Start a new Studio project before preparing a distinct Build Pack.",
+                )
+                self._record_run(
+                    kind="build_pack",
+                    spec=revision.spec,
+                    started=pack_started,
+                    cache_hit=False,
+                    cad_engine_version=compiled.cad_engine_version,
+                    simulation_engine_version=(
+                        simulation.engine_version if simulation is not None else None
+                    ),
+                    error_codes=[capacity_issue.code],
+                )
+                result = PrepareBuildPackOutput(
+                    schema_version=SCHEMA_VERSION,
+                    request_id=request_id,
+                    status="blocked",
+                    manifest=None,
+                    blockers=[capacity_issue],
+                    next_action="Start a new Studio project before preparing another distinct Build Pack.",
+                )
+                self._persist(request_id)
+                return result
+            for artifact in artifacts:
+                self._store_artifact(artifact, request_id)
+            if is_new_manifest:
                 self._artifact_manifests.append(manifest)
             maker_blocker_codes = list(maker_pack.blockers)
             if (
@@ -1400,6 +1436,24 @@ class CharacterRobotService:
             issues.extend(compiled.issues)
             issues.extend(self._dimension_issues(spec, compiled.dimensions_mm))
             profile = self._get_profile(spec.hardware_profile_id, request_id)
+            known_component_mass_g = _optional_value(
+                _optional_value(profile, "mass"), "known_component_mass_g"
+            )
+            if (
+                known_component_mass_g is not None
+                and known_component_mass_g > spec.constraints.maximum_mass_g
+            ):
+                issues.append(
+                    ValidationIssue(
+                        code="known_component_mass_exceeded",
+                        severity="error",
+                        path="constraints.maximum_mass_g",
+                        message="The design mass limit is below the known mass of the selected profile components.",
+                        measured_value=known_component_mass_g,
+                        limit_value=spec.constraints.maximum_mass_g,
+                        suggestion="Raise the mass limit or choose a profile whose known components fit it.",
+                    )
+                )
             try:
                 simulation = await self._simulate(spec, compiled, profile)
             except SimulationError as error:

@@ -152,6 +152,77 @@ def _glb_node_names(content: bytes) -> set[str]:
     return {node["name"] for node in document["nodes"] if "name" in node}
 
 
+def _leaf_first_cad_dependency_nodes(
+    kind: str, *, depth: int
+) -> list[dict[str, object]]:
+    nodes: list[dict[str, object]] = [
+        {
+            "node_id": "base",
+            "role": "chassis_shell",
+            "label": "base",
+            "kind": "rounded_solid",
+            "size_mm": {"x": 40.0, "y": 40.0, "z": 40.0},
+            "corner_radius_mm": 4.0,
+            "attachment": None,
+            "visible": True,
+        }
+    ]
+    if kind == "csg":
+        nodes.append(
+            {
+                "node_id": "shared",
+                "role": "ornament",
+                "label": "shared operand",
+                "kind": "rounded_solid",
+                "size_mm": {"x": 10.0, "y": 10.0, "z": 10.0},
+                "corner_radius_mm": 1.0,
+                "attachment": None,
+                "visible": False,
+            }
+        )
+    dependency = "base"
+    for index in range(1, depth):
+        node_id = f"node_{index}"
+        common = {
+            "node_id": node_id,
+            "role": "ornament",
+            "label": node_id,
+            "attachment": None,
+            "visible": False,
+        }
+        if kind == "attachment":
+            node = {
+                **common,
+                "kind": "rounded_solid",
+                "size_mm": {"x": 10.0, "y": 10.0, "z": 10.0},
+                "corner_radius_mm": 1.0,
+                "attachment": {
+                    "parent_node_id": dependency,
+                    "parent_anchor": "top",
+                    "translation_mm": {"x": 0.0, "y": 0.0, "z": 0.0},
+                    "rotation_deg": {"x": 0.0, "y": 0.0, "z": 0.0},
+                },
+            }
+        elif kind == "mirror":
+            node = {
+                **common,
+                "kind": "mirror",
+                "source_node_id": dependency,
+                "plane": "x",
+                "offset_mm": 0.0,
+            }
+        else:
+            node = {
+                **common,
+                "kind": "csg",
+                "operation": "union",
+                "operand_node_ids": [dependency, "shared"],
+            }
+        nodes.append(node)
+        dependency = node_id
+    return nodes
+
+
 def test_compiler_generates_single_source_preview_and_cad_artifacts() -> None:
     spec = CharacterRobotSpec.model_validate(_spec_payload())
 
@@ -200,6 +271,42 @@ def test_compiler_generates_single_source_preview_and_cad_artifacts() -> None:
         assert artifact.sha256 == hashlib.sha256(artifact.content).hexdigest()
         assert artifact.experimental is True
         assert artifact.byte_size > 0
+
+
+@pytest.mark.parametrize("kind", ["attachment", "mirror", "csg"])
+def test_cad_preflight_rejects_leaf_first_dependency_chains_deeper_than_eight(
+    kind: str,
+) -> None:
+    payload = {
+        "morphology": {
+            "nodes": _leaf_first_cad_dependency_nodes(kind, depth=9),
+        }
+    }
+
+    with pytest.raises(CadCompileError) as error_info:
+        cad_module._compile_morphology(object(), payload)
+
+    assert error_info.value.code == "CAD_INPUT_INVALID"
+    assert error_info.value.safe_message == (
+        "Morphology dependencies are cyclic or too deep."
+    )
+
+
+def test_cad_compile_accepts_shared_dag_at_dependency_depth_limit() -> None:
+    nodes = _leaf_first_cad_dependency_nodes("csg", depth=8)
+    nodes[-1]["visible"] = True
+    payload = {
+        "morphology": {"nodes": nodes},
+        "appearance": {
+            "primary_color": "#F4C542",
+            "secondary_color": "#FFF2B2",
+            "accent_color": "#EF7F1A",
+        },
+    }
+
+    parts = cad_module._compile_morphology(cad_module._load_build123d(), payload)
+
+    assert [part.name for part in parts] == ["node_7"]
 
 
 def test_nested_csg_operands_are_not_exported_as_duplicate_parts(tmp_path) -> None:

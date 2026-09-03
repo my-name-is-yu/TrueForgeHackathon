@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { mountCharacterRobotStudio } from "../src/studio/main";
+import {
+  mountCharacterRobotStudio,
+  type CharacterRobotStudioDependencies,
+} from "../src/studio/main";
 import { StudioApiError } from "../src/studio/api";
 import type { BuildPackResult, ScenarioPreview, StudioContext } from "../src/studio/types";
 import { STUDIO_CHANGED_EVENT } from "../src/studio/webmcp";
@@ -143,6 +146,9 @@ describe("mountCharacterRobotStudio", () => {
     const prepareBuildPack = vi.fn().mockResolvedValue(preparedPack);
     const importProject = vi.fn().mockResolvedValue(undefined);
     const setSelection = vi.fn().mockResolvedValue("beak");
+    let getBuildPackResponseIdentity!: Parameters<NonNullable<
+      CharacterRobotStudioDependencies["registerTools"]
+    >>[1];
 
     const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
       getContext: async () => context(),
@@ -151,7 +157,10 @@ describe("mountCharacterRobotStudio", () => {
       importProject,
       confirmImport: () => true,
       setSelection,
-      registerTools: async () => true,
+      registerTools: async (_document, getIdentity) => {
+        getBuildPackResponseIdentity = getIdentity;
+        return true;
+      },
       createViewer: () => ({
         loadPreview: vi.fn(),
         clearPreview: vi.fn(),
@@ -191,6 +200,11 @@ describe("mountCharacterRobotStudio", () => {
       detail: {
         tool: "prepare_build_pack",
         ok: true,
+        buildPackTarget: {
+          ...getBuildPackResponseIdentity()!,
+          revisionId: "r003",
+          specHash: "b".repeat(64),
+        },
         buildPackResult: preparedPack,
       },
     }));
@@ -312,6 +326,48 @@ describe("mountCharacterRobotStudio", () => {
     expect(loadPreview).toHaveBeenLastCalledWith(
       "/api/studio/v1/artifacts/new-preview",
       current.draft!.spec,
+    );
+    studio.destroy();
+  });
+
+  it("reloads a reused GLB URL when the active spec changes", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    let current = context();
+    current.preview.glbUrl = "/api/studio/v1/artifacts/shared-preview";
+    const loadPreview = vi.fn().mockResolvedValue(undefined);
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext: async () => current,
+      setSelection: async ({ node_id }) => node_id,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview,
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+    await vi.waitFor(() => expect(loadPreview).toHaveBeenCalledOnce());
+
+    current = structuredClone(current);
+    current.draft!.draftHash = "e".repeat(64);
+    current.draft!.specHash = "f".repeat(64);
+    current.draft!.spec.face = {
+      defaultExpression: "thinking",
+      supportedExpressions: ["thinking", "delighted"],
+    };
+    await studio.refresh();
+
+    await vi.waitFor(() => expect(loadPreview).toHaveBeenCalledTimes(2));
+    expect(loadPreview).toHaveBeenLastCalledWith(
+      "/api/studio/v1/artifacts/shared-preview",
+      expect.objectContaining({
+        face: {
+          defaultExpression: "thinking",
+          supportedExpressions: ["thinking", "delighted"],
+        },
+      }),
     );
     studio.destroy();
   });
@@ -478,11 +534,17 @@ describe("mountCharacterRobotStudio", () => {
     const prepareBuildPack = vi.fn(() => new Promise<BuildPackResult>((resolve) => {
       resolveBuildPack = resolve;
     }));
+    let getBuildPackResponseIdentity!: Parameters<NonNullable<
+      CharacterRobotStudioDependencies["registerTools"]
+    >>[1];
     const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
       getContext: async () => current,
       prepareBuildPack,
       setSelection: async ({ node_id }) => node_id,
-      registerTools: async () => false,
+      registerTools: async (_document, getIdentity) => {
+        getBuildPackResponseIdentity = getIdentity;
+        return false;
+      },
       createViewer: () => ({
         loadPreview: vi.fn(),
         clearPreview: vi.fn(),
@@ -493,8 +555,18 @@ describe("mountCharacterRobotStudio", () => {
       }),
     });
 
+    const initialResponseIdentity = getBuildPackResponseIdentity()!;
     document.dispatchEvent(new CustomEvent(STUDIO_CHANGED_EVENT, {
-      detail: { tool: "prepare_build_pack", ok: true, buildPackResult: buildPack() },
+      detail: {
+        tool: "prepare_build_pack",
+        ok: true,
+        buildPackTarget: {
+          ...initialResponseIdentity,
+          revisionId: "r003",
+          specHash: "b".repeat(64),
+        },
+        buildPackResult: buildPack(),
+      },
     }));
     await vi.waitFor(() => expect(document.querySelector(".crs-manifest")).not.toBeNull());
 
@@ -519,7 +591,16 @@ describe("mountCharacterRobotStudio", () => {
     expect(document.querySelector(".crs-manifest")).toBeNull();
 
     document.dispatchEvent(new CustomEvent(STUDIO_CHANGED_EVENT, {
-      detail: { tool: "prepare_build_pack", ok: true, buildPackResult: buildPack() },
+      detail: {
+        tool: "prepare_build_pack",
+        ok: true,
+        buildPackTarget: {
+          ...initialResponseIdentity,
+          revisionId: "r003",
+          specHash: "b".repeat(64),
+        },
+        buildPackResult: buildPack(),
+      },
     }));
     await Promise.resolve();
     expect(document.querySelector(".crs-manifest")).toBeNull();
@@ -529,6 +610,7 @@ describe("mountCharacterRobotStudio", () => {
         tool: "prepare_build_pack",
         ok: true,
         buildPackTarget: {
+          ...initialResponseIdentity,
           revisionId: "r003",
           specHash: "b".repeat(64),
         },
@@ -554,6 +636,112 @@ describe("mountCharacterRobotStudio", () => {
     expect(document.querySelector("#crs-artifacts")?.textContent).not.toContain(
       "This blocker belongs to the previous spec.",
     );
+    studio.destroy();
+  });
+
+  it("ignores delayed direct and WebMCP build packs across an identity-preserving import", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const initial = context();
+    initial.draft = null;
+    initial.currentSpec = context().draft!.spec;
+    const imported = structuredClone(initial);
+    imported.projectGeneration += 1;
+    imported.currentSpec!.designBrief = "Imported history for the same r003 revision and Spec.";
+    const afterPack = structuredClone(imported);
+    afterPack.projectGeneration += 2;
+    afterPack.artifactManifestCount += 1;
+    let resolvePostImportContext!: (value: StudioContext) => void;
+    const postImportContext = new Promise<StudioContext>((resolve) => {
+      resolvePostImportContext = resolve;
+    });
+    const getContext = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(postImportContext)
+      .mockResolvedValue(afterPack);
+    let resolveStalePack!: (result: BuildPackResult) => void;
+    const freshPack = structuredClone(buildPack());
+    freshPack.manifest!.manifestHash = "1".repeat(64);
+    freshPack.artifacts[0].fileName = "fresh-pico-body.stl";
+    const prepareBuildPack = vi.fn()
+      .mockImplementationOnce(() => new Promise<BuildPackResult>((resolve) => {
+        resolveStalePack = resolve;
+      }))
+      .mockResolvedValueOnce(freshPack);
+    const importProject = vi.fn().mockResolvedValue(undefined);
+    let getBuildPackResponseIdentity!: Parameters<NonNullable<
+      CharacterRobotStudioDependencies["registerTools"]
+    >>[1];
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext,
+      prepareBuildPack,
+      importProject,
+      confirmImport: () => true,
+      setSelection: async ({ node_id }) => node_id,
+      registerTools: async (_document, getIdentity) => {
+        getBuildPackResponseIdentity = getIdentity;
+        return false;
+      },
+      createViewer: () => ({
+        loadPreview: vi.fn(),
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+
+    const staleResponseIdentity = getBuildPackResponseIdentity()!;
+    (document.querySelector("#crs-prepare-pack") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(prepareBuildPack).toHaveBeenCalledOnce());
+
+    const input = document.querySelector<HTMLInputElement>("#crs-import-project")!;
+    const file = new File(["{}"], "shared-project.json", { type: "application/json" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(importProject).toHaveBeenCalledWith(file, 7));
+    await vi.waitFor(() => expect(getContext).toHaveBeenCalledTimes(3));
+
+    resolveStalePack(buildPack());
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLButtonElement>("#crs-prepare-pack")?.textContent)
+        .toBe("Prepare build pack");
+    });
+    expect(document.querySelector(".crs-manifest")).toBeNull();
+    expect(document.querySelector(".crs-artifact")).toBeNull();
+
+    resolvePostImportContext(imported);
+    await vi.waitFor(() => {
+      expect(document.querySelector("#crs-revision")?.textContent).toContain("saved g8");
+    });
+    expect(document.querySelector("#crs-brief")?.textContent).toContain("Imported history");
+    expect(initial.headRevisionId).toBe(imported.headRevisionId);
+    expect(initial.headSpecSha256).toBe(imported.headSpecSha256);
+    document.dispatchEvent(new CustomEvent(STUDIO_CHANGED_EVENT, {
+      detail: {
+        tool: "prepare_build_pack",
+        ok: true,
+        buildPackTarget: {
+          ...staleResponseIdentity,
+          revisionId: "r003",
+          specHash: "b".repeat(64),
+        },
+        buildPackResult: buildPack(),
+      },
+    }));
+    await Promise.resolve();
+    expect(document.querySelector(".crs-manifest")).toBeNull();
+
+    (document.querySelector("#crs-prepare-pack") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(prepareBuildPack).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => {
+      expect(document.querySelector(".crs-manifest")?.textContent).toContain("1".repeat(64));
+    });
+    await vi.waitFor(() => {
+      expect(document.querySelector("#crs-revision")?.textContent).toContain("saved g10");
+    });
+    expect(document.querySelector(".crs-artifact")?.textContent).toContain("fresh-pico-body.stl");
     studio.destroy();
   });
 
