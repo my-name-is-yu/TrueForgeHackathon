@@ -470,6 +470,7 @@ export async function mountCharacterRobotStudio(
           item.classList.remove("active");
         });
       });
+      void refresh();
     } catch (error) {
       if (destroyed || sequence !== scenarioSequence) return;
       root.querySelectorAll<HTMLButtonElement>(".crs-scenario-button").forEach((item) => {
@@ -596,6 +597,7 @@ export async function mountCharacterRobotStudio(
       ) return;
       preparedForBuildPackTarget = requestedTarget;
       renderBuildPack(result);
+      void refresh();
     } catch (error) {
       query<HTMLElement>("#crs-build-copy").textContent = error instanceof Error
         ? error.message
@@ -621,21 +623,34 @@ export async function mountCharacterRobotStudio(
     }
     const label = input.closest<HTMLLabelElement>(".crs-import-button");
     if (label) label.classList.add("busy");
-    void importProject(file, context?.projectGeneration ?? 0)
-      .then(() => {
+    void (async () => {
+      try {
+        const freshContext = await getContext();
+        if (destroyed) return;
+        renderContext(freshContext);
+        await importProject(file, freshContext.projectGeneration);
         preparedForBuildPackTarget = null;
         query<HTMLElement>("#crs-artifacts").replaceChildren();
-        return refresh();
-      })
-      .catch((error: unknown) => {
+        await refresh();
+      } catch (error: unknown) {
+        const staleProject = error instanceof StudioApiError && error.code === "STALE_PROJECT";
+        if (staleProject) {
+          transientToolWarning = {
+            code: error.code,
+            message: error.message,
+            severity: "warning",
+            suggestion: error.nextAction,
+          };
+          await refresh();
+        }
         query<HTMLElement>("#crs-build-copy").textContent = error instanceof Error
           ? error.message
           : "The shared project could not be imported.";
-      })
-      .finally(() => {
+      } finally {
         input.value = "";
         if (label) label.classList.remove("busy");
-      });
+      }
+    })();
   });
 
   const renderContext = (nextContext: StudioContext): void => {

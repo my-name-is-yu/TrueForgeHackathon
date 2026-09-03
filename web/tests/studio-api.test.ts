@@ -109,6 +109,36 @@ describe("Character Robot Studio API boundary", () => {
     });
   });
 
+  it("does not borrow the committed preview while a draft is active", () => {
+    const context = parseStudioContext({
+      schema_version: "character-robot/v1",
+      head_revision_id: "r003",
+      head_spec_sha256: "b".repeat(64),
+      current_spec: spec,
+      current_preview_artifact: {
+        kind: "glb",
+        sha256: "a".repeat(64),
+        file_name: "committed.glb",
+      },
+      preview: {
+        preview_artifact: {
+          kind: "glb",
+          sha256: "d".repeat(64),
+          file_name: "stale-preview.glb",
+        },
+      },
+      draft: {
+        spec,
+        draft_hash: "c".repeat(64),
+        base_revision_id: "r003",
+        preview_artifact: null,
+      },
+      hardware_profiles: [],
+    });
+
+    expect(context.preview.glbUrl).toBeNull();
+  });
+
   it("normalizes flat wheel, neck and face keyframes for playback", () => {
     const scenario = parseScenarioPreview({
       schema_version: "character-robot/v1",

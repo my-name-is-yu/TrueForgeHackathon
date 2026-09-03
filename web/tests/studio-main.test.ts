@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { mountCharacterRobotStudio } from "../src/studio/main";
+import { StudioApiError } from "../src/studio/api";
 import type { BuildPackResult, ScenarioPreview, StudioContext } from "../src/studio/types";
 import { STUDIO_CHANGED_EVENT } from "../src/studio/webmcp";
 
@@ -310,6 +311,118 @@ describe("mountCharacterRobotStudio", () => {
       "/api/studio/v1/artifacts/new-preview",
       current.draft!.spec,
     );
+    studio.destroy();
+  });
+
+  it("clears committed geometry and selection when an active draft has no preview", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const committed = context();
+    committed.draft = null;
+    committed.currentSpec = context().draft!.spec;
+    committed.preview.glbUrl = "/api/studio/v1/artifacts/committed-preview";
+    committed.selectedNodeId = "beak";
+    let current = committed;
+    const loadPreview = vi.fn().mockResolvedValue(undefined);
+    const clearPreview = vi.fn();
+    const selectNode = vi.fn();
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext: async () => current,
+      setSelection: async ({ node_id }) => node_id,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview,
+        clearPreview,
+        selectNode,
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+    await vi.waitFor(() => expect(loadPreview).toHaveBeenCalledOnce());
+
+    current = context();
+    await studio.refresh();
+
+    expect(clearPreview).toHaveBeenCalledOnce();
+    expect(selectNode).toHaveBeenLastCalledWith(null);
+    expect(document.querySelector("#crs-view-status")?.textContent).toBe("Waiting for preview");
+    expect(loadPreview).toHaveBeenCalledOnce();
+    studio.destroy();
+  });
+
+  it("gets a fresh durable generation before importing and refreshes after the import", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const initial = context();
+    const fresh = structuredClone(initial);
+    fresh.projectGeneration = 9;
+    const getContext = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(fresh)
+      .mockResolvedValue(fresh);
+    const importProject = vi.fn().mockResolvedValue(undefined);
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext,
+      importProject,
+      confirmImport: () => true,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview: vi.fn(),
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+
+    const input = document.querySelector<HTMLInputElement>("#crs-import-project")!;
+    const file = new File(["{}"], "shared-project.json", { type: "application/json" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await vi.waitFor(() => expect(importProject).toHaveBeenCalledWith(file, 9));
+    expect(getContext).toHaveBeenCalledTimes(3);
+    expect(document.querySelector("#crs-revision")?.textContent).toContain("saved g9");
+    studio.destroy();
+  });
+
+  it("refreshes after a stale import so the same file can be selected again", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const current = context();
+    const getContext = vi.fn().mockResolvedValue(current);
+    const importProject = vi.fn()
+      .mockRejectedValueOnce(new StudioApiError(
+        "STALE_PROJECT",
+        "The project changed before import.",
+        409,
+        true,
+        "Refresh and retry the import.",
+      ))
+      .mockResolvedValueOnce(undefined);
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext,
+      importProject,
+      confirmImport: () => true,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview: vi.fn(),
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+
+    const input = document.querySelector<HTMLInputElement>("#crs-import-project")!;
+    const file = new File(["{}"], "shared-project.json", { type: "application/json" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(importProject).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(getContext).toHaveBeenCalledTimes(3));
+
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(importProject).toHaveBeenCalledTimes(2));
     studio.destroy();
   });
 

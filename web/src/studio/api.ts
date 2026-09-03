@@ -333,9 +333,9 @@ export function parseStudioContext(value: unknown): StudioContext {
   const activeSpec = rawDraft?.spec ?? rawCurrentSpec;
   const activeSpecView = activeSpec ? parseSpec(activeSpec, "context.active_spec") : null;
   const rawArtifact = optionalRecord(
-    preview.preview_artifact
-      ?? rawDraft?.preview_artifact
-      ?? context.current_preview_artifact,
+    rawDraft
+      ? rawDraft.preview_artifact
+      : (preview.preview_artifact ?? context.current_preview_artifact),
     "context.preview_artifact",
   );
   const artifactSha = optionalString(rawArtifact?.sha256, "context.preview_artifact.sha256");
