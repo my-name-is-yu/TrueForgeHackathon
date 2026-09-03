@@ -362,12 +362,6 @@ _TOOL_DESCRIPTIONS = {
         "exact immutable revision. This never downloads, purchases, or flashes anything."
     ),
 }
-_READ_ONLY_TOOLS = {
-    "get_studio_context",
-    "inspect_design",
-    "preview_scenario",
-    "validate_design",
-}
 
 
 def studio_tool_definitions() -> list[dict[str, Any]]:
@@ -378,7 +372,7 @@ def studio_tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": _TOOL_MODELS[name].model_json_schema(
                 mode="validation", by_alias=True
             ),
-            "annotations": {"readOnlyHint": name in _READ_ONLY_TOOLS},
+            "annotations": {"readOnlyHint": False},
         }
         for name in TOOL_NAMES
     ]

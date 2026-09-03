@@ -17,15 +17,26 @@ describe("Character Robot Studio WebMCP", () => {
       name,
       description: `${name} description`,
       inputSchema: { type: "object", additionalProperties: false },
-      annotations: { readOnlyHint: name === "get_studio_context" },
+      annotations: { readOnlyHint: false },
     }));
+    let responseIdentity = {
+      projectId: "project-pico",
+      projectGeneration: 7,
+      operationEpoch: 3,
+    };
     const fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => definitions })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true, result: { refreshed: true } }) })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({
+      .mockImplementationOnce(async () => {
+        responseIdentity = {
+          projectId: "project-pico",
+          projectGeneration: 8,
+          operationEpoch: 4,
+        };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
           ok: true,
           result: {
             status: "experimental_ready",
@@ -56,7 +67,8 @@ describe("Character Robot Studio WebMCP", () => {
             next_action: "Review the manifest.",
             human_action_required: true,
           },
-        }),
+          }),
+        };
       });
     vi.stubGlobal("fetch", fetch);
     const registerTool = vi.fn();
@@ -65,9 +77,12 @@ describe("Character Robot Studio WebMCP", () => {
       value: { registerTool },
     });
 
-    await expect(registerStudioWebMcpTools(document)).resolves.toBe(true);
+    await expect(registerStudioWebMcpTools(document, () => responseIdentity)).resolves.toBe(true);
     expect(registerTool.mock.calls.map(([tool]) => tool.name)).toEqual(STUDIO_TOOL_NAMES);
     expect(registerTool).toHaveBeenCalledTimes(8);
+    expect(registerTool.mock.calls.map(([tool]) => tool.annotations)).toEqual(
+      STUDIO_TOOL_NAMES.map(() => ({ readOnlyHint: false })),
+    );
 
     const changed = vi.fn();
     document.addEventListener(STUDIO_CHANGED_EVENT, changed, { once: true });
@@ -94,6 +109,9 @@ describe("Character Robot Studio WebMCP", () => {
       tool: "prepare_build_pack",
       ok: true,
       buildPackTarget: {
+        projectId: "project-pico",
+        projectGeneration: 7,
+        operationEpoch: 3,
         revisionId: "r003",
         specHash: "b".repeat(64),
       },

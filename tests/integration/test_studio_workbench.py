@@ -218,6 +218,10 @@ def test_studio_http_flow_uses_real_cad_and_keeps_artifacts_in_session(
         assert [tool["name"] for tool in definitions.json()] == list(TOOL_NAMES)
         assert len(definitions.json()) == 8
         assert all(isinstance(tool["inputSchema"], dict) for tool in definitions.json())
+        assert all(
+            tool["annotations"] == {"readOnlyHint": False}
+            for tool in definitions.json()
+        )
 
         blank = client.get("/api/studio/v1/context")
         assert blank.status_code == 200
