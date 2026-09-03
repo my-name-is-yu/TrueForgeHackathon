@@ -432,11 +432,41 @@ class CharacterRobotService:
             ) from None
         return content, descriptor.media_type, descriptor.file_name
 
-    def restore_portable_project(self, snapshot: ProjectSnapshot) -> ProjectSnapshot:
+    def restore_portable_project(
+        self,
+        snapshot: ProjectSnapshot,
+        *,
+        next_generation: int,
+    ) -> ProjectSnapshot:
         """Restore a validated human import into a newly created blank session."""
 
+        return self._replace_blank_project(snapshot, next_generation=next_generation)
+
+    def advance_blank_project_generation(
+        self, *, next_generation: int
+    ) -> ProjectSnapshot:
+        """Bind a newly created blank replacement to its session generation."""
+
+        return self._replace_blank_project(
+            self._snapshot(), next_generation=next_generation
+        )
+
+    def _replace_blank_project(
+        self,
+        snapshot: ProjectSnapshot,
+        *,
+        next_generation: int,
+    ) -> ProjectSnapshot:
         if self._draft is not None or self._revisions or self._artifact_manifests:
-            raise ProjectStoreError("portable imports require a blank project session")
+            raise ProjectStoreError(
+                "project replacement requires a blank project session"
+            )
+        if (
+            not isinstance(next_generation, int)
+            or isinstance(next_generation, bool)
+            or next_generation <= self._project_generation
+        ):
+            raise ProjectStoreError("replacement generation must advance")
         candidate = snapshot.model_copy(
             update={
                 "project_id": self.project_id,
@@ -444,13 +474,15 @@ class CharacterRobotService:
             }
         )
         if self.project_store is not None:
-            saved = self.project_store.save_project(
-                candidate, expected_generation=self._project_generation
+            saved = self.project_store.restore_blank_project(
+                candidate,
+                generation=next_generation,
             )
             self._hydrate(saved)
             return saved
-        self._hydrate(candidate)
-        return candidate
+        restored = candidate.model_copy(update={"generation": next_generation})
+        self._hydrate(restored)
+        return restored
 
     async def get_studio_context(
         self, value: GetStudioContextInput

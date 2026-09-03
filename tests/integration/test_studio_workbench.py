@@ -11,6 +11,7 @@ from starlette.testclient import TestClient
 
 from asset_autopsy.workbench import SessionManager, create_workbench_app
 import character_robot.workbench as workbench_module
+from character_robot.project_store import ProjectStore
 from character_robot.schemas import (
     TOOL_NAMES,
     CreateRevisionFromDraftInput,
@@ -198,6 +199,30 @@ def _app(tmp_path):
     return create_workbench_app(
         manager=SessionManager(root=tmp_path / "autopsy-sessions"),
         studio_manager=StudioSessionManager(root=tmp_path / "studio-sessions"),
+        frontend_dir=frontend,
+    )
+
+
+def _storage_mode_app(tmp_path, *, durable: bool):
+    frontend = tmp_path / "frontend"
+    (frontend / "assets").mkdir(parents=True, exist_ok=True)
+    (frontend / "index.html").write_text("<!doctype html>", encoding="utf-8")
+
+    def create_service(path):
+        return CharacterRobotService(
+            data_root=path,
+            cad_compiler=None,
+            project_store=(
+                ProjectStore(path / "character-project.sqlite3") if durable else None
+            ),
+        )
+
+    return create_workbench_app(
+        manager=SessionManager(root=tmp_path / "autopsy-sessions"),
+        studio_manager=StudioSessionManager(
+            root=tmp_path / "studio-sessions" if durable else None,
+            service_factory=create_service,
+        ),
         frontend_dir=frontend,
     )
 
@@ -1138,6 +1163,113 @@ def test_ephemeral_project_import_rejects_a_generation_read_before_mutation() ->
     assert draft_name == "Pip after import preflight"
 
 
+@pytest.mark.parametrize("durable", [False, True], ids=["ephemeral", "durable"])
+def test_project_import_advances_generation_and_rejects_reuse(
+    tmp_path, durable
+) -> None:
+    source = CharacterRobotService(
+        data_root=tmp_path / "source",
+        cad_compiler=None,
+    )
+
+    async def export_project() -> bytes:
+        draft = await source.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec_payload())
+        )
+        await source.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Portable project for ephemeral import.",
+            )
+        )
+        return source._portable_project_bytes("r000")
+
+    app = _storage_mode_app(tmp_path, durable=durable)
+    exported = asyncio.run(export_project())
+
+    with TestClient(app) as client:
+        initial = client.get("/api/studio/v1/context")
+        assert initial.status_code == 200
+        initial_generation = initial.json()["project_generation"]
+
+        imported = client.post(
+            "/api/studio/v1/project-import",
+            content=exported,
+            headers={
+                "Content-Type": "application/json",
+                "X-Character-Project-Generation": str(initial_generation),
+            },
+        )
+        first_generation = imported.json()["project_generation"]
+        imported_again = client.post(
+            "/api/studio/v1/project-import",
+            content=exported,
+            headers={
+                "Content-Type": "application/json",
+                "X-Character-Project-Generation": str(first_generation),
+            },
+        )
+        current = client.get("/api/studio/v1/context")
+        stale = client.post(
+            "/api/studio/v1/project-import",
+            content=exported,
+            headers={
+                "Content-Type": "application/json",
+                "X-Character-Project-Generation": str(first_generation),
+            },
+        )
+
+    imported_again_generation = imported_again.json()["project_generation"]
+    assert initial_generation == 0
+    assert imported.status_code == 200
+    assert first_generation > initial_generation
+    assert imported_again.status_code == 200
+    assert imported_again_generation > first_generation
+    assert imported_again_generation >= 2
+    assert current.status_code == 200
+    assert current.json()["project_generation"] >= imported_again_generation
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "STALE_PROJECT"
+
+
+@pytest.mark.parametrize("durable", [False, True], ids=["ephemeral", "durable"])
+def test_project_reset_advances_generation_and_rejects_the_old_import_header(
+    tmp_path, durable
+) -> None:
+    app = _storage_mode_app(tmp_path, durable=durable)
+
+    with TestClient(app) as client:
+        initial = client.get("/api/studio/v1/context")
+        assert initial.status_code == 200
+        _tool(
+            client,
+            "set_design_draft",
+            {"expected_revision": None, "spec": _spec_payload()},
+        )
+        before_reset = client.get("/api/studio/v1/context")
+        assert before_reset.status_code == 200
+        before_generation = before_reset.json()["project_generation"]
+
+        reset = client.post("/api/studio/v1/reset")
+        after_reset = client.get("/api/studio/v1/context")
+        stale = client.post(
+            "/api/studio/v1/project-import",
+            content=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Character-Project-Generation": str(before_generation),
+            },
+        )
+
+    assert reset.status_code == 200
+    assert after_reset.status_code == 200
+    assert after_reset.json()["project_generation"] > before_generation
+    assert after_reset.json()["draft"] is None
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "STALE_PROJECT"
+
+
 def test_project_import_maps_client_disconnect_to_typed_response(
     tmp_path, monkeypatch
 ) -> None:
@@ -1195,7 +1327,8 @@ def test_interrupted_project_import_keeps_the_previous_generation_restart_visibl
             exported = session.service._portable_project_bytes("r000")
             expected_generation = session.service.project_generation
 
-            def stop_before_restore(_service, _snapshot):
+            def stop_before_restore(_service, _snapshot, *, next_generation):
+                assert next_generation == expected_generation + 1
                 raise SimulatedProcessExit
 
             with monkeypatch.context() as patch:
