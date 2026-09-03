@@ -290,6 +290,32 @@ def test_blank_context_exposes_profiles_without_creating_a_baseline_revision() -
     assert context.recent_runs == []
 
 
+def test_ephemeral_service_advances_generation_after_each_state_change() -> None:
+    service = _service()
+    initial = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    after_draft = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+    asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Ephemeral generation regression.",
+            )
+        )
+    )
+    after_revision = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+
+    assert initial.project_generation == 0
+    assert after_draft.project_generation > initial.project_generation
+    assert after_revision.project_generation > after_draft.project_generation
+
+
 def test_draft_mutations_resolve_the_hardware_profile_once() -> None:
     profiles = _Profiles()
     service = CharacterRobotService(
