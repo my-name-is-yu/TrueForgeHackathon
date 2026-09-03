@@ -234,4 +234,15 @@ describe("Character Robot Studio GLB rig", () => {
     expect(intersections[0].object).toBe(keepoutSurface);
     expect(selected).toBe("head");
   });
+
+  it("keeps a visible semantic part whose role overrides a keepout-like name", () => {
+    const model = new THREE.Group();
+    const ornament = mesh("keepout_hat", [1, 1, 1], [0, 0, 0]);
+    ornament.userData.compiled_role = "ornament";
+    model.add(ornament);
+
+    hideDiagnosticGeometry(model);
+
+    expect(ornament.visible).toBe(true);
+  });
 });

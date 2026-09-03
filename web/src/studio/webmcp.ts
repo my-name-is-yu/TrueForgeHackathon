@@ -39,11 +39,19 @@ export type StudioChangedDetail = {
   };
 };
 
-export type StudioBuildPackResponseIdentity = {
+export type StudioOperationIdentity = {
   projectId: string;
   projectGeneration: number;
   operationEpoch: number;
 };
+
+export type StudioBuildPackResponseIdentity = StudioOperationIdentity;
+
+export type StudioVisualInspectionRunner = (
+  input: JsonObject,
+  result: JsonObject,
+  identity: StudioOperationIdentity | null,
+) => Promise<JsonObject>;
 
 export type StudioToolDefinition = {
   name: StudioToolName;
@@ -129,7 +137,8 @@ export async function getStudioToolDefinitions(): Promise<StudioToolDefinition[]
 
 export async function registerStudioWebMcpTools(
   document_: Document = document,
-  getBuildPackResponseIdentity: () => StudioBuildPackResponseIdentity | null = () => null,
+  getOperationIdentity: () => StudioOperationIdentity | null = () => null,
+  inspectVisuals?: StudioVisualInspectionRunner,
 ): Promise<boolean> {
   const modelContext = (document_ as ModelContextDocument).modelContext;
   if (typeof modelContext?.registerTool !== "function") return false;
@@ -140,19 +149,30 @@ export async function registerStudioWebMcpTools(
       ...definition,
       execute: async (input: JsonObject) => {
         try {
-          const buildPackResponseIdentity = definition.name === "prepare_build_pack"
-            ? getBuildPackResponseIdentity()
+          const operationIdentity = definition.name === "prepare_build_pack"
+            || definition.name === "inspect_design"
+            ? getOperationIdentity()
             : null;
           const result = await callStudioTool(definition.name, input);
+          let toolResult = result;
+          if (definition.name === "inspect_design" && inspectVisuals) {
+            if (!isRecord(result)) {
+              throw new Error("STUDIO_TOOL_RESULT_INVALID: inspect_design result was not an object");
+            }
+            toolResult = {
+              ...result,
+              visual_inspection: await inspectVisuals(input, result, operationIdentity),
+            };
+          }
           const buildPackResult = definition.name === "prepare_build_pack"
             ? parseBuildPackResult(result)
             : undefined;
           const buildPackTarget = definition.name === "prepare_build_pack"
             && typeof input.revision_id === "string"
             && typeof input.expected_spec_hash === "string"
-            && buildPackResponseIdentity
+            && operationIdentity
             ? {
-                ...buildPackResponseIdentity,
+                ...operationIdentity,
                 revisionId: input.revision_id,
                 specHash: input.expected_spec_hash,
               }
@@ -165,7 +185,7 @@ export async function registerStudioWebMcpTools(
               ...(buildPackTarget ? { buildPackTarget } : {}),
             },
           }));
-          return result;
+          return toolResult;
         } catch (error) {
           const apiError = error instanceof StudioApiError ? error : null;
           document_.dispatchEvent(new CustomEvent<StudioChangedDetail>(STUDIO_CHANGED_EVENT, {

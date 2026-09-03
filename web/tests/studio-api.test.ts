@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   getStudioContext,
+  parseCharacterSpecView,
   parseBuildPackResult,
   parseScenarioPreview,
   parseStudioContext,
@@ -42,6 +43,18 @@ const spec = {
 
 describe("Character Robot Studio API boundary", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it("rejects a non-boolean morphology visibility flag", () => {
+    expect(() => parseCharacterSpecView({
+      ...spec,
+      morphology: {
+        nodes: [{
+          ...spec.morphology.nodes[0],
+          visible: "false",
+        }],
+      },
+    }, "spec")).toThrow("spec.morphology.nodes[0].visible must be a boolean");
+  });
 
   it("parses the domain context and derives its compiler GLB URL", () => {
     const sha = "a".repeat(64);

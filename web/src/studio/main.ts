@@ -1,4 +1,5 @@
 import {
+  callStudioTool,
   getScenarioPreview,
   getStudioContext,
   importStudioProject,
@@ -22,10 +23,17 @@ import type {
 } from "./types";
 import { createStudioViewer, type StudioViewer } from "./viewer";
 import {
+  designTargetsEqual,
+  inspectDesignVisuals,
+  visualInspectionToolResult,
+  type StudioVisualInspection,
+} from "./visual-inspection";
+import {
   registerStudioWebMcpTools,
   STUDIO_CHANGED_EVENT,
-  type StudioBuildPackResponseIdentity,
   type StudioChangedDetail,
+  type StudioOperationIdentity,
+  type StudioVisualInspectionRunner,
 } from "./webmcp";
 
 export type CharacterRobotStudio = {
@@ -42,8 +50,14 @@ export type CharacterRobotStudioDependencies = {
   setSelection?: (input: { target: DesignTarget; node_id: string | null }) => Promise<string | null>;
   registerTools?: (
     document_: Document,
-    getBuildPackResponseIdentity: () => StudioBuildPackResponseIdentity | null,
+    getOperationIdentity: () => StudioOperationIdentity | null,
+    inspectVisuals?: StudioVisualInspectionRunner,
   ) => Promise<boolean>;
+  captureVisualInspection?: (
+    input: JsonObject,
+    result: JsonObject,
+  ) => Promise<StudioVisualInspection>;
+  inspectDesign?: (input: JsonObject) => Promise<JsonObject>;
   createViewer?: (
     container: HTMLElement,
     options: {
@@ -82,6 +96,10 @@ const create = <K extends keyof HTMLElementTagNameMap>(
   if (text !== undefined) element.textContent = text;
   return element;
 };
+
+const isJsonObject = (value: unknown): value is JsonObject => (
+  typeof value === "object" && value !== null && !Array.isArray(value)
+);
 
 const shortHash = (value: string | null): string => (
   value ? `${value.slice(0, 10)}…${value.slice(-6)}` : "No committed hash"
@@ -164,7 +182,16 @@ const template = `
             <div id="crs-timeline-track" class="crs-timeline-track" role="progressbar" aria-label="Scenario playback" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
             <div class="crs-timeline-meta"><span id="crs-motion" aria-live="polite">No scenario selected</span><span id="crs-time">0.0s</span></div>
           </div>
+          <button id="crs-inspect-views" class="crs-inspect-button" type="button" disabled>Inspect 4 views</button>
         </div>
+        <section id="crs-visual-inspection" class="crs-visual-inspection" aria-live="polite" hidden>
+          <div class="crs-inspection-head">
+            <div><p class="crs-section-label">Codex visual evidence</p><strong id="crs-inspection-source">No inspection</strong></div>
+            <span id="crs-inspection-status" class="crs-pill">Not inspected</span>
+          </div>
+          <div id="crs-inspection-views" class="crs-inspection-views"></div>
+          <div id="crs-inspection-diagnostics" class="crs-inspection-diagnostics"></div>
+        </section>
       </section>
 
       <aside class="crs-sidebar">
@@ -224,6 +251,14 @@ export async function mountCharacterRobotStudio(
   ));
   const setSelection = dependencies.setSelection ?? setStudioSelection;
   const registerTools = dependencies.registerTools ?? registerStudioWebMcpTools;
+  const captureVisualInspection = dependencies.captureVisualInspection ?? inspectDesignVisuals;
+  const inspectDesign = dependencies.inspectDesign ?? (async (input: JsonObject) => {
+    const result = await callStudioTool("inspect_design", input);
+    if (typeof result !== "object" || result === null || Array.isArray(result)) {
+      throw new StudioContractError("inspect_design result must be an object");
+    }
+    return result as JsonObject;
+  });
 
   const query = <T extends HTMLElement>(selector: string): T => {
     const element = root.querySelector<T>(selector);
@@ -241,6 +276,9 @@ export async function mountCharacterRobotStudio(
   let refreshSequence = 0;
   let selectionSequence = 0;
   let scenarioSequence = 0;
+  let inspectionSequence = 0;
+  let manualInspectionSequence = 0;
+  let manualInspectionPending = false;
   let designOperationEpoch = 0;
   let destroyed = false;
   let preparedForBuildPackTarget: string | null = null;
@@ -293,6 +331,137 @@ export async function mountCharacterRobotStudio(
     onLoadStateChange: setViewState,
   });
 
+  const visualInspectionPanel = query<HTMLElement>("#crs-visual-inspection");
+
+  const updateInspectionButton = (): void => {
+    const button = query<HTMLButtonElement>("#crs-inspect-views");
+    button.disabled = manualInspectionPending || !context || designTarget(context) === null;
+    button.textContent = manualInspectionPending ? "Capturing views…" : "Inspect 4 views";
+  };
+
+  const clearVisualInspection = (): void => {
+    inspectionSequence += 1;
+    visualInspectionPanel.hidden = true;
+    query<HTMLElement>("#crs-inspection-views").replaceChildren();
+    query<HTMLElement>("#crs-inspection-diagnostics").replaceChildren();
+  };
+
+  const renderVisualInspection = (inspection: StudioVisualInspection): void => {
+    visualInspectionPanel.hidden = false;
+    const status = query<HTMLElement>("#crs-inspection-status");
+    const source = query<HTMLElement>("#crs-inspection-source");
+    const views = query<HTMLElement>("#crs-inspection-views");
+    const diagnostics = query<HTMLElement>("#crs-inspection-diagnostics");
+    views.replaceChildren();
+    diagnostics.replaceChildren();
+    status.className = `crs-pill ${inspection.status === "ready" ? "ready" : "error"}`;
+    status.textContent = inspection.status === "ready" ? "4 views captured" : "Unavailable";
+    if (inspection.source) {
+      const target = inspection.source.target.kind === "draft"
+        ? `draft ${shortHash(inspection.source.target.draft_hash)}`
+        : inspection.source.target.revision_id;
+      source.textContent = `${target} · GLB ${shortHash(inspection.source.glbSha256)}`;
+    } else {
+      source.textContent = inspection.message ?? "Canonical renders are unavailable";
+    }
+    inspection.views.forEach((view) => {
+      const figure = create("figure", "crs-inspection-view");
+      const image = create("img") as HTMLImageElement;
+      image.src = view.dataUrl;
+      image.alt = `${view.label} canonical render of the inspected character robot`;
+      image.width = view.widthPx;
+      image.height = view.heightPx;
+      const caption = create("figcaption");
+      caption.append(
+        create("strong", undefined, view.label),
+        create("span", undefined, `${view.visibleNodeIds.length} semantic parts visible`),
+      );
+      figure.append(image, caption);
+      views.append(figure);
+    });
+    const relevantDiagnostics = inspection.diagnostics.filter((item) => item.severity !== "info");
+    if (relevantDiagnostics.length === 0) {
+      diagnostics.append(create(
+        "p",
+        "crs-inspection-note",
+        "No structural render diagnostics. Codex must still compare these views with the requested motif and design brief.",
+      ));
+    } else {
+      relevantDiagnostics.forEach((diagnostic) => {
+        const item = create("p", `crs-inspection-note ${diagnostic.severity}`);
+        item.append(
+          create("strong", undefined, diagnostic.code),
+          document.createTextNode(diagnostic.message),
+        );
+        diagnostics.append(item);
+      });
+    }
+  };
+
+  const unavailableVisualInspection = (code: string, message: string): StudioVisualInspection => ({
+    status: "unavailable",
+    code,
+    message,
+    renderContractVersion: "studio-render-v1",
+    views: [],
+    nodes: [],
+    diagnostics: [{ code, severity: "warning", message }],
+  });
+
+  const runVisualInspection: StudioVisualInspectionRunner = async (input, result, identity) => {
+    const operationKey = designOperationKey();
+    const expectedSpecHash = context ? activeSpecHash(context) : null;
+    const currentTarget = context ? designTarget(context) : null;
+    const requested = input.target;
+    const requestedTarget = isJsonObject(requested)
+      && requested.kind === "draft"
+      && typeof requested.draft_hash === "string"
+      ? { kind: "draft" as const, draft_hash: requested.draft_hash }
+      : isJsonObject(requested)
+        && requested.kind === "revision"
+        && typeof requested.revision_id === "string"
+        ? { kind: "revision" as const, revision_id: requested.revision_id }
+        : null;
+    if (
+      !identity
+      || !matchesVisualOperationIdentity(identity)
+      || !currentTarget
+      || !requestedTarget
+      || !designTargetsEqual(currentTarget, requestedTarget)
+    ) {
+      const unavailable = unavailableVisualInspection(
+        "VISUAL_TARGET_MISMATCH",
+        "Canonical views are only captured for the design currently shown in Studio.",
+      );
+      return visualInspectionToolResult(unavailable);
+    }
+    const sequence = ++inspectionSequence;
+    const inspection = await captureVisualInspection(input, result);
+    if (
+      destroyed
+      || !matchesVisualOperationIdentity(identity)
+      || operationKey !== designOperationKey()
+    ) {
+      return visualInspectionToolResult(unavailableVisualInspection(
+        "VISUAL_TARGET_CHANGED",
+        "The active design changed while canonical views were rendering.",
+      ));
+    }
+    if (
+      inspection.status === "ready"
+      && (!inspection.source || inspection.source.specHash !== expectedSpecHash)
+    ) {
+      const unavailable = unavailableVisualInspection(
+        "VISUAL_SPEC_MISMATCH",
+        "Canonical views were rendered for a different design specification.",
+      );
+      if (sequence === inspectionSequence) renderVisualInspection(unavailable);
+      return visualInspectionToolResult(unavailable);
+    }
+    if (sequence === inspectionSequence) renderVisualInspection(inspection);
+    return visualInspectionToolResult(inspection);
+  };
+
   const restoreScenarioButtons = (): void => {
     root.querySelectorAll<HTMLButtonElement>(".crs-scenario-button").forEach((item) => {
       item.disabled = false;
@@ -316,7 +485,7 @@ export async function mountCharacterRobotStudio(
     return targetKey === null ? null : JSON.stringify([designOperationEpoch, targetKey]);
   };
 
-  const buildPackResponseIdentity = (): StudioBuildPackResponseIdentity | null => (
+  const studioOperationIdentity = (): StudioOperationIdentity | null => (
     context
       ? {
           projectId: context.projectId,
@@ -327,14 +496,73 @@ export async function mountCharacterRobotStudio(
   );
 
   const matchesBuildPackResponseIdentity = (
-    identity: StudioBuildPackResponseIdentity,
+    identity: StudioOperationIdentity,
   ): boolean => {
-    const currentIdentity = buildPackResponseIdentity();
+    const currentIdentity = studioOperationIdentity();
     return currentIdentity !== null
       && identity.projectId === currentIdentity.projectId
       && identity.projectGeneration === currentIdentity.projectGeneration
       && identity.operationEpoch === currentIdentity.operationEpoch;
   };
+
+  const matchesVisualOperationIdentity = (
+    identity: StudioOperationIdentity,
+  ): boolean => {
+    const currentIdentity = studioOperationIdentity();
+    return currentIdentity !== null
+      && identity.projectId === currentIdentity.projectId
+      && identity.operationEpoch === currentIdentity.operationEpoch;
+  };
+
+  query<HTMLButtonElement>("#crs-inspect-views").addEventListener("click", () => {
+    const button = query<HTMLButtonElement>("#crs-inspect-views");
+    const target = context ? designTarget(context) : null;
+    const identity = studioOperationIdentity();
+    const operationKey = designOperationKey();
+    if (!target || !identity || button.disabled || manualInspectionPending) return;
+    const sequence = ++manualInspectionSequence;
+    manualInspectionPending = true;
+    updateInspectionButton();
+    void (async () => {
+      try {
+        const input = { target };
+        const result = await inspectDesign(input);
+        if (
+          destroyed
+          || sequence !== manualInspectionSequence
+          || !matchesVisualOperationIdentity(identity)
+          || operationKey !== designOperationKey()
+        ) return;
+        await runVisualInspection(input, result, identity);
+      } catch (error) {
+        if (
+          destroyed
+          || sequence !== manualInspectionSequence
+          || !matchesVisualOperationIdentity(identity)
+          || operationKey !== designOperationKey()
+        ) return;
+        renderVisualInspection({
+          status: "unavailable",
+          code: "VISUAL_INSPECTION_FAILED",
+          message: error instanceof Error ? error.message : "Canonical views could not be captured.",
+          renderContractVersion: "studio-render-v1",
+          views: [],
+          nodes: [],
+          diagnostics: [{
+            code: "VISUAL_INSPECTION_FAILED",
+            severity: "error",
+            message: error instanceof Error ? error.message : "Canonical views could not be captured.",
+          }],
+        });
+      } finally {
+        if (destroyed || sequence !== manualInspectionSequence) return;
+        await refresh();
+        if (destroyed || sequence !== manualInspectionSequence) return;
+        manualInspectionPending = false;
+        updateInspectionButton();
+      }
+    })();
+  });
 
   async function persistSelection(nodeId: string | null): Promise<void> {
     if (!context) return;
@@ -637,7 +865,7 @@ export async function mountCharacterRobotStudio(
     const revisionId = context.headRevisionId;
     const specHash = context.headSpecSha256;
     const requestedTarget = buildPackDisplayTargetKey(context);
-    const responseIdentity = buildPackResponseIdentity();
+    const responseIdentity = studioOperationIdentity();
     if (!responseIdentity) return;
     const button = query<HTMLButtonElement>("#crs-prepare-pack");
     button.disabled = true;
@@ -725,6 +953,7 @@ export async function mountCharacterRobotStudio(
     if (targetChanged || previewChanged) {
       designOperationEpoch += 1;
       resetScenarioPlayback();
+      clearVisualInspection();
     }
     renderedTargetKey = nextTargetKey;
     context = nextContext;
@@ -763,6 +992,7 @@ export async function mountCharacterRobotStudio(
 
     const buildButton = query<HTMLButtonElement>("#crs-prepare-pack");
     buildButton.disabled = !nextContext.headRevisionId || !nextContext.headSpecSha256;
+    updateInspectionButton();
     if (preparedForBuildPackTarget !== buildPackDisplayTargetKey(nextContext)) {
       preparedForBuildPackTarget = null;
       query<HTMLElement>("#crs-artifacts").replaceChildren();
@@ -869,7 +1099,11 @@ export async function mountCharacterRobotStudio(
   if (context) {
     const webmcpStatus = query<HTMLElement>("#crs-webmcp");
     try {
-      const registered = await registerTools(document, buildPackResponseIdentity);
+      const registered = await registerTools(
+        document,
+        studioOperationIdentity,
+        runVisualInspection,
+      );
       webmcpStatus.className = registered ? "crs-pill ready" : "crs-pill";
       webmcpStatus.textContent = registered ? "8 site tools ready" : "Site tools unavailable";
     } catch (error) {
@@ -887,6 +1121,9 @@ export async function mountCharacterRobotStudio(
       refreshSequence += 1;
       selectionSequence += 1;
       scenarioSequence += 1;
+      inspectionSequence += 1;
+      manualInspectionSequence += 1;
+      manualInspectionPending = false;
       document.removeEventListener(STUDIO_CHANGED_EVENT, onStudioChanged);
       viewer.destroy();
       delete root.dataset.characterRobotStudio;

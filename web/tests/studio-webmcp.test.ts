@@ -169,6 +169,64 @@ describe("Character Robot Studio WebMCP", () => {
     });
   });
 
+  it("augments only inspect_design with bounded browser visual metadata", async () => {
+    const definitions = STUDIO_TOOL_NAMES.map((name) => ({
+      name,
+      description: `${name} description`,
+      inputSchema: { type: "object", additionalProperties: false },
+    }));
+    const backendResult = {
+      target: { kind: "revision", revision_id: "r001" },
+      spec_hash: "a".repeat(64),
+    };
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => definitions })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, result: backendResult }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, result: { schema_version: "character-robot/v1" } }),
+      });
+    vi.stubGlobal("fetch", fetch);
+    const registerTool = vi.fn();
+    Object.defineProperty(document, "modelContext", {
+      configurable: true,
+      value: { registerTool },
+    });
+    const inspectVisuals = vi.fn().mockResolvedValue({
+      status: "ready",
+      views: [{ view: "front", png_sha256: "b".repeat(64) }],
+      affects_manufacturing_evidence: false,
+    });
+    const identity = {
+      projectId: "project-pico",
+      projectGeneration: 7,
+      operationEpoch: 3,
+    };
+    await registerStudioWebMcpTools(document, () => identity, inspectVisuals);
+    const tools = registerTool.mock.calls.map(([tool]) => tool);
+    const inspect = tools.find((tool) => tool.name === "inspect_design");
+    const context = tools.find((tool) => tool.name === "get_studio_context");
+    const input = { target: { kind: "revision", revision_id: "r001" } };
+
+    await expect(inspect.execute(input)).resolves.toEqual({
+      ...backendResult,
+      visual_inspection: {
+        status: "ready",
+        views: [{ view: "front", png_sha256: "b".repeat(64) }],
+        affects_manufacturing_evidence: false,
+      },
+    });
+    expect(inspectVisuals).toHaveBeenCalledWith(input, backendResult, identity);
+    await context.execute({});
+    expect(inspectVisuals).toHaveBeenCalledTimes(1);
+    expect(registerTool).toHaveBeenCalledTimes(8);
+  });
+
   it("does not fetch tool definitions when the browser has no WebMCP", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);

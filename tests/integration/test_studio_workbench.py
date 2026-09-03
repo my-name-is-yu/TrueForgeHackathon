@@ -275,6 +275,25 @@ def test_studio_http_flow_uses_real_cad_and_keeps_artifacts_in_session(
         assert artifact.headers["x-content-type-options"] == "nosniff"
         assert 'filename="preview.glb"' in artifact.headers["content-disposition"]
 
+        inspected = _tool(
+            client,
+            "inspect_design",
+            {"target": {"kind": "draft", "draft_hash": draft["draft_hash"]}},
+        )
+        assert inspected["preview_artifact"] == preview
+        assert inspected["geometry_sha256"]
+        parts = {part["name"]: part for part in inspected["compiled_parts"]}
+        assert {
+            "body",
+            "wheel_left",
+            "hardware_m5stack-cores3",
+            "keepout_cores3-front-access",
+        }.issubset(parts)
+        assert parts["body"]["printable"] is True
+        assert parts["wheel_left"]["role"] == "drive_wheel"
+        assert parts["hardware_m5stack-cores3"]["role"] == "hardware_controller"
+        assert parts["keepout_cores3-front-access"]["role"] == "hardware_keepout"
+
         committed = _tool(
             client,
             "create_revision_from_draft",

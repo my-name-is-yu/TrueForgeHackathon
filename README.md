@@ -75,6 +75,10 @@ visible human actions in the Studio.
 Scenario playback rigs the compiler GLB in the browser as wheels plus pan → tilt → generated head
 subtree. Deterministic face-display content follows the head and switches from the Spec's expression
 timeline; it does not replace or redraw the compiler-provided robot geometry.
+`inspect_design` also binds the exact compiler GLB to its draft/revision, Spec, and geometry hashes,
+then asks the browser to show fixed front, three-quarter, side, and back observations. The returned
+semantic visibility samples and generic render diagnostics help Codex compare those views with the
+motif and design brief; they are visual observations, not manufacturing or safety evidence.
 
 The current experimental pack includes GLB, canonicalized STEP/STL/3MF, canonical Spec JSON,
 provisional BOM and wiring, assembly/calibration instructions, `character.json`, a normalized
@@ -215,7 +219,8 @@ provide a tool order or geometry parameters. Confirm in `/studio` that:
 1. all eight Studio site tools are available and the empty session has no revision or preset;
 2. one request creates the first compiler-provided GLB within 60 seconds;
 3. five semantic follow-ups remain on the same draft and preserve unrelated parts;
-4. a selected 3D part is visible to Codex as shared session context;
+4. `inspect_design` shows four digest-bound canonical views, and a selected 3D part is visible to
+   Codex as shared session context;
 5. `idle`, `greet`, `listen`, `think`, and `delight` visibly synchronize face, neck, and wheels;
 6. switching from CoreS3 to Pi changes the digital component layout and enclosure calculation;
 7. an over-limit change is rejected with measurements and a repair suggestion without changing

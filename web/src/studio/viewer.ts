@@ -256,11 +256,17 @@ export const hideDiagnosticGeometry = (
   semanticNodeIds: ReadonlySet<string> = new Set(),
 ): void => {
   const visit = (object: THREE.Object3D): void => {
+    const role = object.userData.compiled_role;
     const metadataId = typeof object.userData.node_id === "string"
       ? object.userData.node_id
       : null;
+    if (role === "hardware_keepout") {
+      object.visible = false;
+      return;
+    }
     if (
-      (metadataId && semanticNodeIds.has(metadataId))
+      role != null
+      || (metadataId && semanticNodeIds.has(metadataId))
       || (object.name && semanticNodeIds.has(object.name))
     ) return;
     if (object.name.toLowerCase().startsWith("keepout_")) {

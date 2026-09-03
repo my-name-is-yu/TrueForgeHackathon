@@ -36,6 +36,7 @@ export type MorphologyNodeSummary = {
   label: string;
   parentNodeId: string | null;
   parentAnchor: string | null;
+  visible?: boolean;
 };
 
 export type CharacterAppearanceView = {

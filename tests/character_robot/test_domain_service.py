@@ -146,6 +146,8 @@ class _Part:
     name: str
     role: str
     bounds: _Bounds
+    volume_mm3: float = 1.0
+    printable: bool = False
 
 
 @dataclass(frozen=True)
@@ -260,6 +262,17 @@ class _MissingDriveWheelCompiler(_Compiler):
     def compile(self, spec, profile=None):
         result = super().compile(spec, profile)
         return replace(result, parts=result.parts[:1])
+
+
+class _MissingGlbCompiler(_Compiler):
+    def compile(self, spec, profile=None):
+        result = super().compile(spec, profile)
+        return replace(
+            result,
+            artifacts=tuple(
+                artifact for artifact in result.artifacts if artifact.kind != "glb"
+            ),
+        )
 
 
 def _service() -> CharacterRobotService:
@@ -1119,6 +1132,60 @@ def test_set_and_targeted_revision_preserve_unedited_sections() -> None:
     assert revised.spec.identity == created.spec.identity
     assert revised.spec.morphology.nodes[0] == created.spec.morphology.nodes[0]
     assert revised.preview_artifact.kind == "glb"
+
+
+def test_inspect_design_returns_exact_glb_and_compiled_part_metadata() -> None:
+    service = _service()
+    created = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+
+    inspected = asyncio.run(
+        service.inspect_design(
+            InspectDesignInput(
+                target=DraftTarget(kind="draft", draft_hash=created.draft_hash)
+            )
+        )
+    )
+
+    assert inspected.preview_artifact == created.preview_artifact
+    assert inspected.preview_artifact.kind == "glb"
+    assert [part.name for part in inspected.compiled_parts] == [
+        "wheel_left",
+        "wheel_right",
+    ]
+    assert {part.role for part in inspected.compiled_parts} == {"drive_wheel"}
+    assert inspected.compiled_parts[0].bounds.minimum_mm == (-60.0, -24.0, 0.0)
+    assert inspected.compiled_parts[0].bounds.maximum_mm == (-50.0, 24.0, 48.0)
+    assert inspected.warnings == []
+
+
+def test_inspect_design_reports_missing_glb_without_hiding_compiled_metadata() -> None:
+    service = CharacterRobotService(
+        profile_registry=_Profiles(), cad_compiler=_MissingGlbCompiler()
+    )
+    created = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+
+    inspected = asyncio.run(
+        service.inspect_design(
+            InspectDesignInput(
+                target=DraftTarget(kind="draft", draft_hash=created.draft_hash)
+            )
+        )
+    )
+
+    assert inspected.preview_artifact is None
+    assert inspected.geometry_sha256 is not None
+    assert len(inspected.compiled_parts) == 2
+    assert inspected.warnings == [
+        "The compiler did not produce a GLB preview artifact."
+    ]
 
 
 def test_non_cad_semantic_edit_reuses_the_exact_compiled_artifacts() -> None:
