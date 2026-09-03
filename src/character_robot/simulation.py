@@ -11,7 +11,7 @@ from typing import Literal
 
 
 MUJOCO_VERSION = "3.5.0"
-SIMULATION_COMPILER_VERSION = "character-sim-v1"
+SIMULATION_COMPILER_VERSION = "character-sim-v2"
 
 
 class SimulationError(RuntimeError):
@@ -99,14 +99,29 @@ def _finite_positive_triplet(
     return values  # type: ignore[return-value]
 
 
+def _finite_positive(value: float, label: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise SimulationError(
+            "SIMULATION_INPUT_INVALID", f"{label} must be positive and finite."
+        )
+    return number
+
+
 def compile_mjcf(
     dimensions_mm: tuple[float, float, float],
     *,
+    wheel_track_mm: float,
+    wheel_width_mm: float,
+    wheel_radius_mm: float,
     assembly_mass_g: float | None,
 ) -> bytes:
     """Compile a bounded internal MJCF model; raw user MJCF is never accepted."""
 
     width_mm, depth_mm, height_mm = _finite_positive_triplet(dimensions_mm)
+    wheel_track_mm = _finite_positive(wheel_track_mm, "Wheel track")
+    wheel_width_mm = _finite_positive(wheel_width_mm, "Wheel width")
+    wheel_radius_mm = _finite_positive(wheel_radius_mm, "Wheel radius")
     if assembly_mass_g is not None and (
         not math.isfinite(assembly_mass_g) or assembly_mass_g <= 0
     ):
@@ -117,9 +132,9 @@ def compile_mjcf(
     width = min(max(width_mm / 1000.0, 0.06), 0.30)
     depth = min(max(depth_mm / 1000.0, 0.06), 0.30)
     height = min(max(height_mm / 1000.0, 0.08), 0.40)
-    wheel_radius = min(max(height * 0.18, 0.018), 0.04)
-    wheel_width = min(max(width * 0.08, 0.008), 0.018)
-    track = width + wheel_width
+    wheel_radius = wheel_radius_mm / 1000.0
+    wheel_width = wheel_width_mm / 1000.0
+    track = wheel_track_mm / 1000.0
     base_height = min(max(height * 0.55, 0.05), 0.10)
     head_height = max(height - base_height, 0.025)
     body_z = wheel_radius + 0.002
@@ -178,11 +193,20 @@ def compile_mjcf(
 def run_motion_checks(
     dimensions_mm: tuple[float, float, float],
     *,
+    wheel_track_mm: float,
+    wheel_width_mm: float,
+    wheel_radius_mm: float,
     assembly_mass_g: float | None,
 ) -> MotionSimulationResult:
     started = time.perf_counter()
     mujoco = _load_mujoco()
-    model_xml = compile_mjcf(dimensions_mm, assembly_mass_g=assembly_mass_g)
+    model_xml = compile_mjcf(
+        dimensions_mm,
+        wheel_track_mm=wheel_track_mm,
+        wheel_width_mm=wheel_width_mm,
+        wheel_radius_mm=wheel_radius_mm,
+        assembly_mass_g=assembly_mass_g,
+    )
     try:
         model = mujoco.MjModel.from_xml_string(model_xml.decode())
     except Exception as error:
@@ -235,11 +259,9 @@ def run_motion_checks(
             if step_id in pair and (left_id in pair or right_id in pair):
                 contacted_step = True
 
-    width_m, depth_m, height_m = (
-        value / 1000.0 for value in _finite_positive_triplet(dimensions_mm)
-    )
+    height_m = _finite_positive_triplet(dimensions_mm)[2] / 1000.0
     assumed_cog_height = height_m * 0.55
-    support_half_width = max(width_m / 2.0, 0.03)
+    support_half_width = _finite_positive(wheel_track_mm, "Wheel track") / 2000.0
     static_tip_angle = math.degrees(
         math.atan2(support_half_width, max(assumed_cog_height, 0.001))
     )

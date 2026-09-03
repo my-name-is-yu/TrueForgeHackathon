@@ -33,7 +33,11 @@ from character_robot.schemas import (
     ValidateDesignInput,
 )
 from character_robot.service import CharacterRobotService, DomainError
-from character_robot.simulation import MotionSimulationResult, SimulationCheck
+from character_robot.simulation import (
+    SIMULATION_COMPILER_VERSION,
+    MotionSimulationResult,
+    SimulationCheck,
+)
 
 from test_domain_schemas import _spec_payload
 
@@ -131,10 +135,24 @@ class _Artifact:
 
 
 @dataclass(frozen=True)
+class _Bounds:
+    minimum_mm: tuple[float, float, float]
+    maximum_mm: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class _Part:
+    name: str
+    role: str
+    bounds: _Bounds
+
+
+@dataclass(frozen=True)
 class _CompileResult:
     dimensions_mm: tuple[float, float, float]
     geometry_sha256: str
     artifacts: tuple[_Artifact, ...]
+    parts: tuple[_Part, ...]
     issues: tuple[object, ...] = ()
 
 
@@ -145,6 +163,29 @@ class _Compiler:
     def compile(self, spec, profile=None):
         self.calls += 1
         width = 130.0 if spec.hardware_profile_id.startswith("pi-") else 120.0
+        wheel_width = 10.0
+        wheel_radius = 24.0
+        wheel_track = width - wheel_width
+        wheel_center = wheel_track / 2.0
+        parts = tuple(
+            _Part(
+                name=f"wheel_{side}",
+                role="drive_wheel",
+                bounds=_Bounds(
+                    minimum_mm=(
+                        center - wheel_width / 2.0,
+                        -wheel_radius,
+                        0.0,
+                    ),
+                    maximum_mm=(
+                        center + wheel_width / 2.0,
+                        wheel_radius,
+                        wheel_radius * 2.0,
+                    ),
+                ),
+            )
+            for side, center in (("left", -wheel_center), ("right", wheel_center))
+        )
         artifacts = tuple(
             _Artifact(kind, f"robot.{kind}", media, f"{kind}:{width}".encode())
             for kind, media in (
@@ -158,6 +199,7 @@ class _Compiler:
             dimensions_mm=(width, 110.0, 98.0),
             geometry_sha256=hashlib.sha256(f"geometry:{width}".encode()).hexdigest(),
             artifacts=artifacts,
+            parts=parts,
         )
 
 
@@ -211,6 +253,12 @@ class _UnsafeFileNameCompiler(_Compiler):
                 *result.artifacts[1:],
             ),
         )
+
+
+class _MissingDriveWheelCompiler(_Compiler):
+    def compile(self, spec, profile=None):
+        result = super().compile(spec, profile)
+        return replace(result, parts=result.parts[:1])
 
 
 def _service() -> CharacterRobotService:
@@ -346,7 +394,7 @@ def test_failed_simulation_check_blocks_digital_validation(monkeypatch) -> None:
     model_xml = b'<mujoco model="failed-check"/>'
     failed = MotionSimulationResult(
         engine_version="3.5.0",
-        compiler_version="character-sim-v1",
+        compiler_version=SIMULATION_COMPILER_VERSION,
         assumption_level="planning_only",
         model_sha256=hashlib.sha256(model_xml).hexdigest(),
         model_xml=model_xml,
@@ -409,6 +457,78 @@ def test_failed_simulation_check_blocks_digital_validation(monkeypatch) -> None:
     assert [blocker.code for blocker in build_pack.blockers] == [
         "simulation_step_contact"
     ]
+
+
+def test_simulation_uses_the_compiled_drive_wheel_bounds(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    model_xml = b'<mujoco model="compiled-wheel-bounds"/>'
+
+    def simulate(dimensions, **kwargs):
+        captured.append({"dimensions": dimensions, **kwargs})
+        return MotionSimulationResult(
+            engine_version="3.5.0",
+            compiler_version=SIMULATION_COMPILER_VERSION,
+            assumption_level="planning_only",
+            model_sha256=hashlib.sha256(model_xml).hexdigest(),
+            model_xml=model_xml,
+            checks=(),
+            duration_ms=1.0,
+        )
+
+    monkeypatch.setattr("character_robot.service.run_motion_checks", simulate)
+    service = _service()
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+
+    asyncio.run(
+        service.validate_design(
+            ValidateDesignInput(
+                target=DraftTarget(kind="draft", draft_hash=draft.draft_hash)
+            )
+        )
+    )
+
+    assert captured == [
+        {
+            "dimensions": (120.0, 110.0, 98.0),
+            "wheel_track_mm": 110.0,
+            "wheel_width_mm": 10.0,
+            "wheel_radius_mm": 24.0,
+            "assembly_mass_g": None,
+        }
+    ]
+
+    compiled = next(iter(service._compile_cache.values()))
+    changed_track = replace(
+        compiled,
+        drive_wheels=replace(compiled.drive_wheels, track_mm=100.0),
+    )
+    profile = service.profile_registry.get_profile(_spec().hardware_profile_id)
+    asyncio.run(service._simulate(_spec(), changed_track, profile))
+
+    assert len(captured) == 2
+    assert captured[1]["wheel_track_mm"] == 100.0
+
+
+def test_compile_rejects_missing_drive_wheel_bounds() -> None:
+    service = CharacterRobotService(
+        profile_registry=_Profiles(), cad_compiler=_MissingDriveWheelCompiler()
+    )
+
+    with pytest.raises(DomainError) as failure:
+        asyncio.run(
+            service.set_design_draft(
+                SetDesignDraftInput(expected_revision=None, spec=_spec())
+            )
+        )
+
+    assert failure.value.code == "CAD_COMPILE_FAILED"
+    assert (
+        asyncio.run(service.get_studio_context(GetStudioContextInput())).draft is None
+    )
 
 
 def test_context_records_compile_and_validation_provenance() -> None:

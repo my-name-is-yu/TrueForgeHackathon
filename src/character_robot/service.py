@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import io
 import json
+import math
 import re
 import tempfile
 import time
@@ -87,7 +88,12 @@ from .schemas import (
     ValidationIssue,
     ValidationReport,
 )
-from .simulation import MotionSimulationResult, SimulationError, run_motion_checks
+from .simulation import (
+    SIMULATION_COMPILER_VERSION,
+    MotionSimulationResult,
+    SimulationError,
+    run_motion_checks,
+)
 
 
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
@@ -188,8 +194,16 @@ class _CompiledArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class _DriveWheelGeometry:
+    track_mm: float
+    width_mm: float
+    radius_mm: float
+
+
+@dataclass(frozen=True, slots=True)
 class _CompileView:
     dimensions_mm: PositiveVec3
+    drive_wheels: _DriveWheelGeometry
     geometry_sha256: str
     compiler_version: str | None
     cad_engine_version: str | None
@@ -1535,8 +1549,9 @@ class CharacterRobotService:
         cache_key = _hash_json(
             {
                 "dimensions_mm": compiled.dimensions_mm.model_dump(mode="json"),
+                "drive_wheels": asdict(compiled.drive_wheels),
                 "assembly_mass_g": mass,
-                "simulation_compiler": "character-sim-v1",
+                "simulation_compiler": SIMULATION_COMPILER_VERSION,
             }
         )
         started = time.perf_counter()
@@ -1560,6 +1575,9 @@ class CharacterRobotService:
                     compiled.dimensions_mm.y,
                     compiled.dimensions_mm.z,
                 ),
+                wheel_track_mm=compiled.drive_wheels.track_mm,
+                wheel_width_mm=compiled.drive_wheels.width_mm,
+                wheel_radius_mm=compiled.drive_wheels.radius_mm,
                 assembly_mass_g=mass,
             )
         except SimulationError as error:
@@ -1843,6 +1861,7 @@ class CharacterRobotService:
         else:
             x, y, z = dimensions_value
             dimensions = PositiveVec3(x=float(x), y=float(y), z=float(z))
+        drive_wheels = _drive_wheel_geometry(_value(result, "parts"))
 
         geometry_sha256 = str(_value(result, "geometry_sha256"))
         if re.fullmatch(r"[0-9a-f]{64}", geometry_sha256) is None:
@@ -1870,6 +1889,7 @@ class CharacterRobotService:
         return (
             _CompileView(
                 dimensions_mm=dimensions,
+                drive_wheels=drive_wheels,
                 geometry_sha256=geometry_sha256,
                 compiler_version=_optional_value(result, "compiler_version"),
                 cad_engine_version=_optional_value(result, "build123d_version"),
@@ -2308,6 +2328,75 @@ def _optional_value(value: object, field: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(field, default)
     return getattr(value, field, default)
+
+
+def _bounds_vector(value: object, label: str) -> tuple[float, float, float]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes, bytearray))
+        or len(value) != 3
+    ):
+        raise ValueError(f"compiled {label} must contain three coordinates")
+    coordinates = tuple(float(coordinate) for coordinate in value)
+    if not all(math.isfinite(coordinate) for coordinate in coordinates):
+        raise ValueError(f"compiled {label} must be finite")
+    return coordinates  # type: ignore[return-value]
+
+
+def _drive_wheel_geometry(parts: object) -> _DriveWheelGeometry:
+    if not isinstance(parts, Sequence) or isinstance(parts, (str, bytes, bytearray)):
+        raise ValueError("compiled CAD parts must be a sequence")
+    wheels = [part for part in parts if str(_value(part, "role")) == "drive_wheel"]
+    if len(wheels) != 2:
+        raise ValueError("compiled CAD must contain exactly two drive wheels")
+
+    wheel_bounds: list[
+        tuple[tuple[float, float, float], tuple[float, float, float]]
+    ] = []
+    for index, wheel in enumerate(wheels):
+        bounds = _value(wheel, "bounds")
+        minimum = _bounds_vector(
+            _value(bounds, "minimum_mm"), f"drive wheel {index + 1} minimum"
+        )
+        maximum = _bounds_vector(
+            _value(bounds, "maximum_mm"), f"drive wheel {index + 1} maximum"
+        )
+        if any(maximum[axis] <= minimum[axis] for axis in range(3)):
+            raise ValueError("compiled drive-wheel bounds are empty or inverted")
+        wheel_bounds.append((minimum, maximum))
+
+    (left_minimum, left_maximum), (right_minimum, right_maximum) = sorted(
+        wheel_bounds, key=lambda bounds: (bounds[0][0] + bounds[1][0]) / 2.0
+    )
+    left_center_x = (left_minimum[0] + left_maximum[0]) / 2.0
+    right_center_x = (right_minimum[0] + right_maximum[0]) / 2.0
+    track = abs(right_center_x - left_center_x)
+    widths = (
+        left_maximum[0] - left_minimum[0],
+        right_maximum[0] - right_minimum[0],
+    )
+    diameters = (
+        left_maximum[1] - left_minimum[1],
+        left_maximum[2] - left_minimum[2],
+        right_maximum[1] - right_minimum[1],
+        right_maximum[2] - right_minimum[2],
+    )
+    if not math.isclose(widths[0], widths[1], rel_tol=1e-6, abs_tol=1e-6):
+        raise ValueError("compiled drive-wheel widths do not match")
+    if not all(
+        math.isclose(diameter, diameters[0], rel_tol=1e-6, abs_tol=1e-6)
+        for diameter in diameters[1:]
+    ):
+        raise ValueError("compiled drive-wheel diameters do not match")
+    if not all(
+        math.isfinite(value) and value > 0 for value in (track, *widths, *diameters)
+    ):
+        raise ValueError("compiled drive-wheel geometry must be positive and finite")
+    return _DriveWheelGeometry(
+        track_mm=track,
+        width_mm=sum(widths) / len(widths),
+        radius_mm=sum(diameters) / (2.0 * len(diameters)),
+    )
 
 
 def _canonical_json_bytes(value: object) -> bytes:
