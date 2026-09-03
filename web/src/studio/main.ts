@@ -105,10 +105,10 @@ const designTarget = (context: StudioContext): DesignTarget | null => (
       : null
 );
 
-const designTargetKey = (target: DesignTarget | null): string | null => (
+const designTargetKey = (target: DesignTarget | null, context: StudioContext | null = null): string | null => (
   target?.kind === "draft"
     ? `draft:${target.draft_hash}`
-    : target ? `revision:${target.revision_id}` : null
+    : target ? `revision:${target.revision_id}:${context?.headSpecSha256 ?? ""}` : null
 );
 
 const buildPackTargetKey = (context: StudioContext): string | null => (
@@ -281,14 +281,14 @@ export async function mountCharacterRobotStudio(
     if (!context) return;
     const target = designTarget(context);
     if (!target) return;
-    const targetKey = designTargetKey(target);
+    const targetKey = designTargetKey(target, context);
     const sequence = ++selectionSequence;
     try {
       const persistedNodeId = await setSelection({ target, node_id: nodeId });
       if (
         destroyed
         || sequence !== selectionSequence
-        || targetKey !== designTargetKey(context ? designTarget(context) : null)
+        || targetKey !== designTargetKey(context ? designTarget(context) : null, context)
       ) {
         return;
       }
@@ -448,7 +448,7 @@ export async function mountCharacterRobotStudio(
     if (!context) return;
     const target = designTarget(context);
     if (!target) return;
-    const targetKey = designTargetKey(target);
+    const targetKey = designTargetKey(target, context);
     const sequence = ++scenarioSequence;
     root.querySelectorAll<HTMLButtonElement>(".crs-scenario-button").forEach((item) => {
       item.disabled = true;
@@ -459,7 +459,8 @@ export async function mountCharacterRobotStudio(
       if (
         destroyed
         || sequence !== scenarioSequence
-        || targetKey !== designTargetKey(context ? designTarget(context) : null)
+        || targetKey !== designTargetKey(context ? designTarget(context) : null, context)
+        || (scenario.specHash !== null && scenario.specHash !== context?.headSpecSha256)
       ) {
         return;
       }

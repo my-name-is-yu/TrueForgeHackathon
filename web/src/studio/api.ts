@@ -431,6 +431,7 @@ export function parseScenarioPreview(value: unknown): ScenarioPreview {
   });
   return {
     scenarioId: requiredString(scenario, "scenario_preview.scenario_id"),
+    specHash: preview.spec_hash === undefined ? null : sha256(preview.spec_hash, "scenario_preview.spec_hash"),
     durationS: duration,
     evidenceLevel: evidenceLevel(preview.evidence_level ?? "concept_only", "scenario_preview.evidence_level"),
     keyframes,

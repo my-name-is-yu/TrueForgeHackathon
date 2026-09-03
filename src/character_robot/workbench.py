@@ -41,6 +41,8 @@ from .service import CharacterRobotService, DomainError
 
 STUDIO_SESSION_COOKIE = "character_robot_session"
 MAX_STUDIO_SESSIONS = 8
+MAX_CONCURRENT_UPLOAD_BUFFERS = 2
+_UPLOAD_BUFFER_ADMISSION = asyncio.Semaphore(MAX_CONCURRENT_UPLOAD_BUFFERS)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 _ARTIFACT_FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
@@ -682,7 +684,8 @@ def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
                     409,
                 )
             expected_generation = int(expected_headers[0])
-            content = await _read_portable_project_body(request)
+            async with _UPLOAD_BUFFER_ADMISSION:
+                content = await _read_portable_project_body(request)
             async with manager.lease(request.cookies.get(STUDIO_SESSION_COOKIE)) as (
                 session_id,
                 session,

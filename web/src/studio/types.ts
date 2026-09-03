@@ -127,6 +127,7 @@ export type ScenarioFrame = {
 
 export type ScenarioPreview = {
   scenarioId: string;
+  specHash: string | null;
   durationS: number;
   evidenceLevel: EvidenceLevel;
   keyframes: ScenarioFrame[];
