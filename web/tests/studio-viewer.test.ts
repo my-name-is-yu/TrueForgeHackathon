@@ -5,8 +5,11 @@ import type { CharacterSpecView, ScenarioPlaybackFrame } from "../src/studio/typ
 import {
   applyStudioRigFrame,
   createFaceExpressionTexture,
+  hideDiagnosticGeometry,
+  partLocalBounds,
   prefersReducedMotion,
   rigStudioModel,
+  selectableSemanticNodeId,
 } from "../src/studio/viewer";
 
 const spec = (): CharacterSpecView => ({
@@ -126,5 +129,109 @@ describe("Character Robot Studio GLB rig", () => {
     expect(prefersReducedMotion()).toBe(true);
     first.dispose();
     second.dispose();
+  });
+
+  it("aggregates transformed compiler primitives after a degenerate first primitive", () => {
+    const head = new THREE.Group();
+    head.name = "head";
+    const degenerate = mesh("head_primitive_0", [0, 0.041, 0.034], [-0.039, 0, 0]);
+    const surface = mesh("head_primitive_1", [0.078, 0.064, 0.07], [0.004, -0.002, 0.003]);
+    surface.scale.set(0.5, 1, 1);
+    const beak = mesh("beak", [0.2, 0.02, 0.02], [0, -0.04, 0]);
+    head.add(degenerate, surface, beak);
+
+    const bounds = partLocalBounds(head, new Set(["head", "beak"]));
+
+    expect(bounds).not.toBeNull();
+    expect(bounds!.getSize(new THREE.Vector3()).x).toBeCloseTo(0.0625);
+    expect(bounds!.getSize(new THREE.Vector3()).z).toBeCloseTo(0.07);
+  });
+
+  it("uses the semantic face bezel and places content beyond its front surface", () => {
+    const bezelSpec = spec();
+    bezelSpec.morphologyNodes.push(
+      {
+        nodeId: "omitted_face_bezel",
+        role: "face_bezel",
+        label: "Omitted face bezel",
+        parentNodeId: "head",
+        parentAnchor: "face",
+      },
+      {
+        nodeId: "face_bezel",
+        role: "face_bezel",
+        label: "Face bezel",
+        parentNodeId: "head",
+        parentAnchor: "face",
+      },
+    );
+    const model = new THREE.Group();
+    const chassis = mesh("chassis", [0.096, 0.076, 0.064], [0, 0, 0.04]);
+    const head = new THREE.Group();
+    head.name = "head";
+    head.position.set(0, 0, 0.118);
+    head.add(
+      mesh("head_primitive_0", [0, 0.041, 0.034], [-0.039, 0, 0]),
+      mesh("head_primitive_1", [0.078, 0.064, 0.07], [0, 0, 0]),
+    );
+    const beak = mesh("beak", [0.025, 0.02, 0.018], [0, -0.04, 0.113]);
+    const bezel = mesh("face_bezel", [0.052, 0.004, 0.038], [0, -0.034, 0.12]);
+    model.add(chassis, head, beak, bezel);
+
+    const rig = rigStudioModel(model, bezelSpec);
+
+    expect(rig.faceDisplay?.mesh.parent).toBe(bezel);
+    expect(rig.faceDisplay?.mesh.position.y).toBeLessThan(-0.002);
+    expect(rig.faceDisplay?.mesh.geometry.parameters.width).toBeCloseTo(0.052 * 0.88);
+    rig.dispose();
+  });
+
+  it("hides compiler diagnostic keepouts without hiding semantic keepout-prefixed parts", () => {
+    const model = new THREE.Group();
+    const keepout = mesh("keepout_front_access", [1, 1, 1], [0, 0, 0]);
+    const character = mesh("head", [1, 1, 1], [0, 0, 0]);
+    const semanticKeepout = new THREE.Group();
+    semanticKeepout.name = "keepout_hat";
+    const semanticSurface = mesh("keepout_hat_primitive_0", [1, 1, 1], [0, 0, 0]);
+    semanticKeepout.add(semanticSurface);
+    model.add(keepout, character, semanticKeepout);
+
+    hideDiagnosticGeometry(model, new Set(["head", "keepout_hat"]));
+
+    expect(keepout.visible).toBe(false);
+    expect(character.visible).toBe(true);
+    expect(semanticKeepout.visible).toBe(true);
+    expect(semanticSurface.visible).toBe(true);
+  });
+
+  it("skips effectively hidden intersections when selecting a semantic part", () => {
+    const model = new THREE.Group();
+    const keepout = new THREE.Group();
+    keepout.name = "keepout_front_access";
+    const keepoutSurface = mesh("keepout_surface", [1, 1, 1], [0, 0, 1]);
+    keepout.add(keepoutSurface);
+    const head = new THREE.Group();
+    head.name = "head";
+    const headSurface = mesh("head_primitive_0", [1, 1, 1], [0, 0, 0]);
+    head.add(headSurface);
+    model.add(keepout, head);
+    hideDiagnosticGeometry(model, new Set(["head"]));
+    model.updateWorldMatrix(true, true);
+    const raycaster = new THREE.Raycaster(
+      new THREE.Vector3(0, 0, 5),
+      new THREE.Vector3(0, 0, -1),
+    );
+    const intersections = raycaster.intersectObject(model, true);
+
+    const selected = selectableSemanticNodeId(
+      intersections,
+      model,
+      new Set(["head"]),
+    );
+
+    expect(keepout.visible).toBe(false);
+    expect(keepoutSurface.visible).toBe(true);
+    expect(intersections[0].object).toBe(keepoutSurface);
+    expect(selected).toBe("head");
   });
 });

@@ -199,14 +199,78 @@ const semanticNodeId = (
   return null;
 };
 
-const objectBounds = (object: THREE.Object3D): THREE.Box3 | null => {
-  let result: THREE.Box3 | null = null;
-  object.traverse((candidate) => {
-    if (result || !(candidate instanceof THREE.Mesh)) return;
-    candidate.geometry.computeBoundingBox();
-    if (candidate.geometry.boundingBox) result = candidate.geometry.boundingBox.clone();
-  });
-  return result;
+export const selectableSemanticNodeId = (
+  intersections: readonly { object: THREE.Object3D }[],
+  model: THREE.Object3D,
+  partNames: ReadonlySet<string>,
+): string | null => {
+  for (const intersection of intersections) {
+    let candidate: THREE.Object3D | null = intersection.object;
+    let visible = false;
+    while (candidate && candidate !== model.parent) {
+      if (!candidate.visible) break;
+      if (candidate === model) {
+        visible = true;
+        break;
+      }
+      candidate = candidate.parent;
+    }
+    if (!visible) continue;
+    const nodeId = semanticNodeId(intersection.object, model, partNames);
+    if (nodeId) return nodeId;
+  }
+  return null;
+};
+
+export const partLocalBounds = (
+  object: THREE.Object3D,
+  semanticNodeIds: ReadonlySet<string> = new Set(),
+): THREE.Box3 | null => {
+  object.updateWorldMatrix(true, true);
+  const inverseRoot = object.matrixWorld.clone().invert();
+  const result = new THREE.Box3();
+  let found = false;
+
+  const visit = (candidate: THREE.Object3D, root: boolean): void => {
+    const candidateNodeId = typeof candidate.userData.node_id === "string"
+      ? candidate.userData.node_id
+      : candidate.name;
+    if (!root && candidateNodeId && semanticNodeIds.has(candidateNodeId)) return;
+    if (candidate instanceof THREE.Mesh) {
+      candidate.geometry.computeBoundingBox();
+      if (candidate.geometry.boundingBox && !candidate.geometry.boundingBox.isEmpty()) {
+        const relative = inverseRoot.clone().multiply(candidate.matrixWorld);
+        result.union(candidate.geometry.boundingBox.clone().applyMatrix4(relative));
+        found = true;
+      }
+    }
+    candidate.children.forEach((child) => visit(child, false));
+  };
+
+  visit(object, true);
+  return found ? result : null;
+};
+
+export const hideDiagnosticGeometry = (
+  model: THREE.Object3D,
+  semanticNodeIds: ReadonlySet<string> = new Set(),
+): void => {
+  const visit = (object: THREE.Object3D): void => {
+    const metadataId = typeof object.userData.node_id === "string"
+      ? object.userData.node_id
+      : null;
+    if (
+      (metadataId && semanticNodeIds.has(metadataId))
+      || (object.name && semanticNodeIds.has(object.name))
+    ) return;
+    if (object.name.toLowerCase().startsWith("keepout_")) {
+      object.visible = false;
+      return;
+    }
+    object.children.forEach(visit);
+  };
+
+  visit(model);
 };
 
 const attach = (parent: THREE.Object3D, child: THREE.Object3D): void => {
@@ -234,8 +298,8 @@ const createWheelPivot = (
 const createFaceDisplay = (
   anchor: THREE.Object3D,
   spec: CharacterSpecView,
+  bounds: THREE.Box3 | null,
 ): StudioFaceDisplay | null => {
-  const bounds = objectBounds(anchor);
   if (!bounds) return null;
   const size = bounds.getSize(new THREE.Vector3());
   if (size.x <= 0 || size.z <= 0) return null;
@@ -258,7 +322,7 @@ const createFaceDisplay = (
   mesh.userData.face_expression_current = spec.face.defaultExpression;
   mesh.position.set(
     (bounds.min.x + bounds.max.x) / 2,
-    bounds.min.y - Math.max(size.y * 0.03, 0.0004),
+    bounds.min.y - Math.max(size.y * 0.01, 0.0005),
     (bounds.min.z + bounds.max.z) / 2,
   );
   mesh.rotation.x = Math.PI / 2;
@@ -277,6 +341,21 @@ export function rigStudioModel(model: THREE.Object3D, spec: CharacterSpecView): 
     if (object.name && !byName.has(object.name)) byName.set(object.name, object);
   });
 
+  const semanticNodeIds = new Set(spec.morphologyNodes.map((node) => node.nodeId));
+  const semanticBounds = new Map<string, THREE.Box3 | null>();
+  for (const node of spec.morphologyNodes) {
+    const object = byName.get(node.nodeId);
+    if (object) semanticBounds.set(node.nodeId, partLocalBounds(object, semanticNodeIds));
+  }
+
+  const hardwareDisplay = [...byName.values()].find((object) => {
+    const name = object.name.toLowerCase();
+    return name.startsWith("hardware_") && (name.includes("display") || name.includes("lcd"));
+  });
+  const hardwareDisplayBounds = hardwareDisplay
+    ? partLocalBounds(hardwareDisplay, semanticNodeIds)
+    : null;
+
   for (const node of spec.morphologyNodes) {
     if (!node.parentNodeId) continue;
     const child = byName.get(node.nodeId);
@@ -285,19 +364,24 @@ export function rigStudioModel(model: THREE.Object3D, spec: CharacterSpecView): 
   }
 
   const headNode = spec.morphologyNodes.find((node) => node.role === "head_shell");
+  const faceBezelNode = spec.morphologyNodes.find(
+    (node) => node.role === "face_bezel" && byName.has(node.nodeId),
+  );
   const head = headNode ? byName.get(headNode.nodeId) : undefined;
+  const faceBezel = faceBezelNode ? byName.get(faceBezelNode.nodeId) : undefined;
   const pan = byName.get("neck_pan") ?? byName.get("head_pan");
   const tilt = byName.get("neck_tilt") ?? byName.get("head_tilt");
   if (pan && tilt) attach(pan, tilt);
   if (head && tilt) attach(tilt, head);
   else if (head && pan) attach(pan, head);
 
-  const hardwareDisplay = [...byName.values()].find((object) => {
-    const name = object.name.toLowerCase();
-    return name.startsWith("hardware_") && (name.includes("display") || name.includes("lcd"));
-  });
-  const faceAnchor = head ?? hardwareDisplay;
-  const faceDisplay = faceAnchor ? createFaceDisplay(faceAnchor, spec) : null;
+  const faceAnchor = faceBezel ?? head ?? hardwareDisplay;
+  const faceBounds = faceBezelNode && faceAnchor === faceBezel
+    ? semanticBounds.get(faceBezelNode.nodeId) ?? null
+    : headNode && faceAnchor === head
+      ? semanticBounds.get(headNode.nodeId) ?? null
+      : hardwareDisplayBounds;
+  const faceDisplay = faceAnchor ? createFaceDisplay(faceAnchor, spec, faceBounds) : null;
 
   const wheelLeft = createWheelPivot(
     byName.get("wheel_left") ?? byName.get("left_wheel"),
@@ -518,8 +602,11 @@ export function createStudioViewer(
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObject(model, true)[0];
-    const nodeId = hit ? semanticNodeId(hit.object, model, partNames) : null;
+    const nodeId = selectableSemanticNodeId(
+      raycaster.intersectObject(model, true),
+      model,
+      partNames,
+    );
     selectNode(nodeId);
     options.onSelectionChange?.(nodeId);
   };
@@ -545,6 +632,7 @@ export function createStudioViewer(
             clearModel();
             model = gltf.scene;
             partNames = new Set(spec.morphologyNodes.map((node) => node.nodeId));
+            hideDiagnosticGeometry(model, partNames);
             rig = rigStudioModel(model, spec);
             model.traverse((object) => {
               if (object instanceof THREE.Mesh) {
