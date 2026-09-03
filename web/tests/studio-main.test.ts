@@ -341,6 +341,7 @@ describe("mountCharacterRobotStudio", () => {
     await vi.waitFor(() => expect(loadPreview).toHaveBeenCalledOnce());
 
     current = context();
+    current.selectedNodeId = "beak";
     await studio.refresh();
 
     expect(clearPreview).toHaveBeenCalledOnce();
