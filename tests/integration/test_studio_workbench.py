@@ -6,9 +6,11 @@ import hashlib
 import time
 
 import pytest
+from starlette.requests import ClientDisconnect, Request
 from starlette.testclient import TestClient
 
 from asset_autopsy.workbench import SessionManager, create_workbench_app
+import character_robot.workbench as workbench_module
 from character_robot.schemas import (
     TOOL_NAMES,
     CreateRevisionFromDraftInput,
@@ -815,6 +817,192 @@ def test_human_project_import_regenerates_the_exact_build_pack(tmp_path) -> None
     } == {
         artifact["kind"]: artifact["sha256"]
         for artifact in original["manifest"]["artifacts"]
+    }
+
+
+@pytest.mark.parametrize(
+    "content_length",
+    [
+        str(workbench_module.MAX_PORTABLE_PROJECT_BYTES + 1),
+        "9" * 5000,
+    ],
+)
+def test_project_import_rejects_oversized_content_length_without_reading_body(
+    tmp_path, monkeypatch, content_length
+) -> None:
+    app = _app(tmp_path)
+
+    async def fail_if_read(_request):
+        pytest.fail("oversized declared body was read")
+        yield b""
+
+    monkeypatch.setattr(Request, "stream", fail_if_read)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/studio/v1/project-import",
+            content=b"{}",
+            headers={
+                "Content-Length": content_length,
+                "Content-Type": "application/json",
+                "X-Character-Project-Generation": "0",
+            },
+        )
+
+    assert response.status_code == 413
+    assert response.json() == {
+        "error": {
+            "code": "PROJECT_IMPORT_TOO_LARGE",
+            "message": "portable project size is invalid",
+        }
+    }
+
+
+def test_project_import_stops_stream_at_the_portable_project_limit(
+    tmp_path, monkeypatch
+) -> None:
+    app = _app(tmp_path)
+    read_chunks: list[bytes] = []
+    monkeypatch.setattr(workbench_module, "MAX_PORTABLE_PROJECT_BYTES", 5)
+
+    async def oversized_stream(_request):
+        for chunk in (b"12345", b"6"):
+            read_chunks.append(chunk)
+            yield chunk
+        pytest.fail("stream was read after exceeding the portable project limit")
+
+    monkeypatch.setattr(Request, "stream", oversized_stream)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/studio/v1/project-import",
+            content=(chunk for chunk in (b"123", b"456", b"789")),
+            headers={
+                "Content-Type": "application/json",
+                "X-Character-Project-Generation": "0",
+            },
+        )
+
+    assert read_chunks == [b"12345", b"6"]
+    assert response.status_code == 413
+    assert response.json() == {
+        "error": {
+            "code": "PROJECT_IMPORT_TOO_LARGE",
+            "message": "portable project size is invalid",
+        }
+    }
+
+
+def test_portable_project_stream_allows_the_exact_byte_limit(monkeypatch) -> None:
+    monkeypatch.setattr(workbench_module, "MAX_PORTABLE_PROJECT_BYTES", 5)
+    messages = iter(
+        (
+            {"type": "http.request", "body": b"123", "more_body": True},
+            {"type": "http.request", "body": b"45", "more_body": False},
+        )
+    )
+
+    async def receive():
+        return next(messages)
+
+    request = Request(
+        {"type": "http", "headers": [(b"content-length", b"0005")]}, receive
+    )
+    content = asyncio.run(workbench_module._read_portable_project_body(request))
+
+    assert content == b"12345"
+
+
+@pytest.mark.parametrize(
+    "content_length_headers",
+    [
+        [("Content-Length", "+1")],
+        [("Content-Length", "1"), ("Content-Length", "1")],
+    ],
+)
+def test_project_import_rejects_invalid_content_length_without_reading_body(
+    tmp_path, monkeypatch, content_length_headers
+) -> None:
+    app = _app(tmp_path)
+
+    async def fail_if_read(_request):
+        pytest.fail("invalid Content-Length body was read")
+        yield b""
+
+    monkeypatch.setattr(Request, "stream", fail_if_read)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/studio/v1/project-import",
+            content=b"{}",
+            headers=[
+                *content_length_headers,
+                ("Content-Type", "application/json"),
+                ("X-Character-Project-Generation", "0"),
+            ],
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": {
+            "code": "INVALID_CONTENT_LENGTH",
+            "message": "Project import requires one valid Content-Length value.",
+        }
+    }
+
+
+def test_project_import_rejects_unbounded_generation_without_reading_body(
+    tmp_path, monkeypatch
+) -> None:
+    app = _app(tmp_path)
+
+    async def fail_if_read(_request):
+        pytest.fail("invalid expected generation body was read")
+        yield b""
+
+    monkeypatch.setattr(Request, "stream", fail_if_read)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/studio/v1/project-import",
+            content=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Character-Project-Generation": "9" * 5000,
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": {
+            "code": "EXPECTED_GENERATION_REQUIRED",
+            "message": "Project import requires the current Studio generation.",
+        }
+    }
+
+
+def test_project_import_maps_client_disconnect_to_typed_response(
+    tmp_path, monkeypatch
+) -> None:
+    app = _app(tmp_path)
+
+    async def disconnected_stream(_request):
+        raise ClientDisconnect
+        yield b""
+
+    monkeypatch.setattr(Request, "stream", disconnected_stream)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/studio/v1/project-import",
+            content=(chunk for chunk in (b"partial",)),
+            headers={
+                "Content-Type": "application/json",
+                "X-Character-Project-Generation": "0",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": {
+            "code": "PROJECT_IMPORT_INTERRUPTED",
+            "message": "The portable project upload was interrupted.",
+        }
     }
 
 

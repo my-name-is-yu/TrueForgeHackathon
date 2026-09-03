@@ -39,6 +39,7 @@ from .project_store import (
     ProjectSnapshot,
     ProjectStore,
     ProjectStoreError,
+    validate_portable_project_bytes,
 )
 from .runtime import RuntimeCatalog
 from .schemas import (
@@ -948,7 +949,13 @@ class CharacterRobotService:
                             "The fixed runtime or maker package could not be generated.",
                         )
                     )[:2000],
-                    suggestion="Repair the pinned runtime/profile contract and retry the exact revision.",
+                    suggestion=str(
+                        getattr(
+                            error,
+                            "suggestion",
+                            "Repair the pinned runtime/profile contract and retry the exact revision.",
+                        )
+                    )[:2000],
                 )
                 result = PrepareBuildPackOutput(
                     schema_version=SCHEMA_VERSION,
@@ -956,7 +963,13 @@ class CharacterRobotService:
                     status="blocked",
                     manifest=None,
                     blockers=[issue],
-                    next_action="Restore the fixed runtime and measured catalog contracts before preparing this pack.",
+                    next_action=str(
+                        getattr(
+                            error,
+                            "next_action",
+                            "Restore the fixed runtime and measured catalog contracts before preparing this pack.",
+                        )
+                    )[:2000],
                 )
                 self._persist(request_id)
                 return result
@@ -2092,7 +2105,7 @@ class CharacterRobotService:
             ],
             "import_requires_human_action": True,
         }
-        return _canonical_json_bytes(payload)
+        return validate_portable_project_bytes(_canonical_json_bytes(payload))
 
     @staticmethod
     def _normalized_build_pack_bytes(

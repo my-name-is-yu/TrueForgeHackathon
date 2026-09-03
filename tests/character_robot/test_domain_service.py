@@ -9,6 +9,14 @@ from dataclasses import dataclass, replace
 
 import pytest
 
+import character_robot.project_store as project_store_module
+from character_robot.project_store import (
+    PortableProjectSizeError,
+    ProjectStore,
+    ProjectStoreError,
+    import_portable_project,
+    spec_sha256,
+)
 from character_robot.schemas import (
     CharacterRobotSpec,
     CreateRevisionFromDraftInput,
@@ -24,7 +32,6 @@ from character_robot.schemas import (
     SetIdentityEdit,
     ValidateDesignInput,
 )
-from character_robot.project_store import ProjectStore, ProjectStoreError, spec_sha256
 from character_robot.service import CharacterRobotService, DomainError
 from character_robot.simulation import MotionSimulationResult, SimulationCheck
 
@@ -1084,6 +1091,52 @@ def test_oversized_aggregate_is_omitted_without_losing_constituents() -> None:
     assert [issue.code for issue in blocked.blockers] == [
         "build_pack_artifacts_too_large"
     ]
+
+
+def test_generated_portable_project_uses_the_import_byte_limit(
+    monkeypatch,
+) -> None:
+    service = _service()
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    committed = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Portable project size symmetry.",
+            )
+        )
+    )
+    exported = service._portable_project_bytes("r000")
+    monkeypatch.setattr(
+        project_store_module,
+        "MAX_PORTABLE_PROJECT_BYTES",
+        len(exported) - 1,
+    )
+
+    with pytest.raises(PortableProjectSizeError):
+        service._portable_project_bytes("r000")
+    with pytest.raises(PortableProjectSizeError):
+        import_portable_project(exported)
+
+    blocked = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id="r000",
+                expected_spec_hash=committed.revision.spec_hash,
+            )
+        )
+    )
+    assert blocked.status == "blocked"
+    assert blocked.manifest is None
+    assert [issue.code for issue in blocked.blockers] == ["portable_project_too_large"]
+    assert blocked.blockers[0].message == (
+        "The portable project exceeds its bounded size."
+    )
 
 
 def test_artifact_count_budget_never_returns_an_unreadable_manifest() -> None:

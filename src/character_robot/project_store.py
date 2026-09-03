@@ -26,7 +26,7 @@ PROJECT_REVISION_LIMIT = 512
 _SQLITE_SCHEMA_VERSION = 1
 _MAX_MANIFESTS = 512
 _MAX_PROJECT_BYTES = 64 * 1024 * 1024
-_MAX_PORTABLE_PROJECT_BYTES = 8 * 1024 * 1024
+MAX_PORTABLE_PROJECT_BYTES = _MAX_PROJECT_BYTES
 
 
 class ProjectStoreError(RuntimeError):
@@ -63,16 +63,32 @@ class ProjectValidationError(ProjectStoreError):
     pass
 
 
+class PortableProjectSizeError(ProjectValidationError):
+    code = "PORTABLE_PROJECT_TOO_LARGE"
+    safe_message = "The portable project exceeds its bounded size."
+    suggestion = "Prepare an earlier revision or start a new Studio project."
+    next_action = (
+        "Create a smaller portable project before preparing another Build Pack."
+    )
+
+    def __init__(self) -> None:
+        super().__init__("portable project size is invalid")
+
+
+def validate_portable_project_bytes(content: bytes) -> bytes:
+    if not isinstance(content, bytes) or len(content) < 1:
+        raise ProjectValidationError("portable project size is invalid")
+    if len(content) > MAX_PORTABLE_PROJECT_BYTES:
+        raise PortableProjectSizeError
+    return content
+
+
 def import_portable_project(
     content: bytes, *, destination_project_id: str = "studio"
 ) -> ProjectSnapshot:
     """Validate a human-supplied portable revision chain for a new project."""
 
-    if (
-        not isinstance(content, bytes)
-        or not 1 <= len(content) <= _MAX_PORTABLE_PROJECT_BYTES
-    ):
-        raise ProjectValidationError("portable project size is invalid")
+    content = validate_portable_project_bytes(content)
     try:
         payload = json.loads(content)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -507,6 +523,7 @@ class ProjectStore:
 
 
 __all__ = [
+    "MAX_PORTABLE_PROJECT_BYTES",
     "PROJECT_REVISION_LIMIT",
     "PROJECT_STORE_VERSION",
     "PersistedDraft",
@@ -520,9 +537,11 @@ __all__ = [
     "ProjectStore",
     "ProjectStoreError",
     "ProjectValidationError",
+    "PortableProjectSizeError",
     "draft_sha256",
     "empty_project_snapshot",
     "import_portable_project",
     "manifest_sha256",
     "spec_sha256",
+    "validate_portable_project_bytes",
 ]

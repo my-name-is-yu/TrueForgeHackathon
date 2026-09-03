@@ -14,13 +14,15 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from .cad_jobs import CadJobLimits, IsolatedCadCompiler, IsolatedCadJobRunner
 from .profiles import ProfileRegistry
 from .project_store import (
+    MAX_PORTABLE_PROJECT_BYTES,
+    PortableProjectSizeError,
     ProjectSnapshot,
     ProjectStore,
     ProjectStoreError,
@@ -50,6 +52,37 @@ class StudioWorkbenchError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+
+
+async def _read_portable_project_body(request: Request) -> bytes:
+    content_lengths = request.headers.getlist("content-length")
+    if len(content_lengths) > 1:
+        raise StudioWorkbenchError(
+            "INVALID_CONTENT_LENGTH",
+            "Project import requires one valid Content-Length value.",
+            400,
+        )
+    if content_lengths:
+        content_length = content_lengths[0]
+        if not content_length.isascii() or not content_length.isdigit():
+            raise StudioWorkbenchError(
+                "INVALID_CONTENT_LENGTH",
+                "Project import requires one valid Content-Length value.",
+                400,
+            )
+        normalized_size = content_length.lstrip("0") or "0"
+        maximum_size = str(MAX_PORTABLE_PROJECT_BYTES)
+        if len(normalized_size) > len(maximum_size) or (
+            len(normalized_size) == len(maximum_size) and normalized_size > maximum_size
+        ):
+            raise PortableProjectSizeError
+
+    content = bytearray()
+    async for chunk in request.stream():
+        if len(chunk) > MAX_PORTABLE_PROJECT_BYTES - len(content):
+            raise PortableProjectSizeError
+        content.extend(chunk)
+    return bytes(content)
 
 
 @dataclass(slots=True)
@@ -636,14 +669,20 @@ def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
         created = False
         session_id = ""
         try:
-            content = await request.body()
-            expected_header = request.headers.get("x-character-project-generation")
-            if expected_header is None or not expected_header.isdigit():
+            expected_headers = request.headers.getlist("x-character-project-generation")
+            if (
+                len(expected_headers) != 1
+                or not expected_headers[0].isascii()
+                or not expected_headers[0].isdigit()
+                or len(expected_headers[0]) > 20
+            ):
                 raise StudioWorkbenchError(
                     "EXPECTED_GENERATION_REQUIRED",
                     "Project import requires the current Studio generation.",
                     409,
                 )
+            expected_generation = int(expected_headers[0])
+            content = await _read_portable_project_body(request)
             async with manager.lease(request.cookies.get(STUDIO_SESSION_COOKIE)) as (
                 session_id,
                 session,
@@ -653,7 +692,7 @@ def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
                     session_id,
                     session,
                     content,
-                    expected_generation=int(expected_header),
+                    expected_generation=expected_generation,
                 )
             response = JSONResponse(
                 {
@@ -662,6 +701,16 @@ def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
                     "project_generation": restored.generation,
                     "revision_count": len(restored.revisions),
                 }
+            )
+        except PortableProjectSizeError as error:
+            response = JSONResponse(
+                {
+                    "error": {
+                        "code": "PROJECT_IMPORT_TOO_LARGE",
+                        "message": str(error),
+                    }
+                },
+                status_code=413,
             )
         except ProjectValidationError as error:
             response = JSONResponse(
@@ -672,6 +721,16 @@ def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
                     }
                 },
                 status_code=422,
+            )
+        except ClientDisconnect:
+            response = JSONResponse(
+                {
+                    "error": {
+                        "code": "PROJECT_IMPORT_INTERRUPTED",
+                        "message": "The portable project upload was interrupted.",
+                    }
+                },
+                status_code=400,
             )
         except ProjectStoreError:
             response = JSONResponse(
