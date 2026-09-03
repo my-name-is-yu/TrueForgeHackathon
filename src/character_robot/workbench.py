@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import secrets
 import shutil
@@ -41,6 +42,7 @@ MAX_STUDIO_SESSIONS = 8
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 _ARTIFACT_FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
+_ACTIVE_GENERATION_FILE = "active-generation"
 
 
 class StudioWorkbenchError(RuntimeError):
@@ -132,7 +134,12 @@ class StudioSessionManager:
         if self.sessions.get(session_id) is not session or not session.lock.locked():
             raise RuntimeError("reset requires the leased current session")
         previous_root = self._validated_generation_path(session.data_root)
-        replacement = self._new_session(session_id)
+        replacement = self._new_session(session_id, publish=False)
+        try:
+            self._publish_generation(replacement.data_root)
+        except Exception:
+            self._delete_generation(replacement.data_root)
+            raise
         session.service = replacement.service
         session.data_root = replacement.data_root
         session.selection_target = None
@@ -162,9 +169,10 @@ class StudioSessionManager:
             )
         snapshot = import_portable_project(content)
         previous_root = self._validated_generation_path(session.data_root)
-        replacement = self._new_session(session_id)
+        replacement = self._new_session(session_id, publish=False)
         try:
             restored = replacement.service.restore_portable_project(snapshot)
+            self._publish_generation(replacement.data_root)
         except Exception:
             self._delete_generation(replacement.data_root)
             raise
@@ -179,16 +187,36 @@ class StudioSessionManager:
         return restored
 
     def _new_session(
-        self, session_id: str, *, data_root: Path | None = None
+        self,
+        session_id: str,
+        *,
+        data_root: Path | None = None,
+        publish: bool = True,
     ) -> StudioSession:
         if data_root is None:
             generation = secrets.token_hex(8)
             data_root = self.root / session_id / generation
             data_root.mkdir(parents=True, exist_ok=False)
-        return StudioSession(
+        session = StudioSession(
             service=self.service_factory(data_root),
             data_root=data_root,
         )
+        if publish:
+            self._publish_generation(data_root)
+        return session
+
+    def _publish_generation(self, data_root: Path) -> None:
+        if not self.persistent:
+            return
+        generation_root = self._validated_generation_path(data_root)
+        session_root = generation_root.parent
+        pointer = session_root / _ACTIVE_GENERATION_FILE
+        pending = session_root / f".{_ACTIVE_GENERATION_FILE}.{secrets.token_hex(8)}"
+        try:
+            pending.write_text(f"{generation_root.name}\n", encoding="ascii")
+            os.replace(pending, pointer)
+        finally:
+            pending.unlink(missing_ok=True)
 
     def _existing_generation(self, session_id: str | None) -> Path | None:
         if (
@@ -204,6 +232,21 @@ class StudioSessionManager:
             return None
         if len(relative.parts) != 1 or not session_root.is_dir():
             return None
+        pointer = session_root / _ACTIVE_GENERATION_FILE
+        if pointer.exists():
+            try:
+                generation = pointer.read_text(encoding="ascii").strip()
+                candidate = (session_root / generation).resolve()
+                candidate_relative = candidate.relative_to(session_root)
+            except (OSError, UnicodeError, ValueError):
+                return None
+            if (
+                len(candidate_relative.parts) != 1
+                or candidate_relative.name != generation
+                or not (candidate / "character-project.sqlite3").is_file()
+            ):
+                return None
+            return candidate
         candidates = [
             path
             for path in session_root.iterdir()

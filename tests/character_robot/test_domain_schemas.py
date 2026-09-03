@@ -164,6 +164,34 @@ def test_morphology_rejects_unknown_dependencies_cycles_and_excessive_radius() -
     with pytest.raises(ValidationError, match="cycle"):
         MorphologyGraph.model_validate(cycle)
 
+    csg_cycle = copy.deepcopy(payload)
+    csg_cycle["nodes"].extend(
+        [
+            {
+                "node_id": "csg_a",
+                "role": "ornament",
+                "label": "CSG A",
+                "kind": "csg",
+                "operation": "union",
+                "operand_node_ids": ["csg_b", "body"],
+                "attachment": None,
+                "visible": False,
+            },
+            {
+                "node_id": "csg_b",
+                "role": "ornament",
+                "label": "CSG B",
+                "kind": "csg",
+                "operation": "union",
+                "operand_node_ids": ["csg_a", "head"],
+                "attachment": None,
+                "visible": False,
+            },
+        ]
+    )
+    with pytest.raises(ValidationError, match="cycle"):
+        MorphologyGraph.model_validate(csg_cycle)
+
     radius = copy.deepcopy(payload)
     radius["nodes"][0]["corner_radius_mm"] = 40.0
     with pytest.raises(ValidationError, match="shortest side"):

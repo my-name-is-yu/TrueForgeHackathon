@@ -551,6 +551,57 @@ def test_storage_failure_rolls_back_draft_revision_and_manifest_state(tmp_path) 
     assert backing.load_project("studio").artifact_manifests == []
 
 
+def test_revision_limit_rejects_before_mutating_live_head_or_draft(monkeypatch) -> None:
+    monkeypatch.setattr("character_robot.service.PROJECT_REVISION_LIMIT", 1)
+    service = _service()
+    first_draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    first_revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=first_draft.draft_hash,
+                note="Only allowed revision.",
+            )
+        )
+    )
+    revised_identity = first_draft.spec.identity.model_copy(
+        update={"name": "Pip after the revision limit"}
+    )
+    changed_draft = asyncio.run(
+        service.revise_design_draft(
+            ReviseDesignDraftInput(
+                draft_hash=first_revision.draft_hash,
+                edits=[SetIdentityEdit(kind="set_identity", identity=revised_identity)],
+            )
+        )
+    )
+    before = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+
+    with pytest.raises(DomainError) as captured:
+        asyncio.run(
+            service.create_revision_from_draft(
+                CreateRevisionFromDraftInput(
+                    expected_revision="r000",
+                    draft_hash=changed_draft.draft_hash,
+                    note="Must not become an unsaved live head.",
+                )
+            )
+        )
+
+    assert captured.value.code == "REVISION_LIMIT_REACHED"
+    assert captured.value.http_status == 409
+    after = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+    assert after.head_revision_id == before.head_revision_id == "r000"
+    assert after.draft is not None
+    assert before.draft is not None
+    assert after.draft.draft_hash == before.draft.draft_hash == changed_draft.draft_hash
+    assert [revision.revision_id for revision in after.revision_history] == ["r000"]
+
+
 def test_failed_compile_and_validation_runs_survive_restart(tmp_path) -> None:
     database = tmp_path / "project.sqlite3"
     first = CharacterRobotService(
@@ -1032,6 +1083,59 @@ def test_oversized_aggregate_is_omitted_without_losing_constituents() -> None:
     assert blocked.manifest is None
     assert [issue.code for issue in blocked.blockers] == [
         "build_pack_artifacts_too_large"
+    ]
+
+
+def test_artifact_count_budget_never_returns_an_unreadable_manifest() -> None:
+    service = _service()
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    committed = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Bounded artifact count test.",
+            )
+        )
+    )
+    request = PrepareBuildPackInput(
+        revision_id="r000",
+        expected_spec_hash=committed.revision.spec_hash,
+    )
+    first = asyncio.run(service.prepare_build_pack(request))
+    assert first.manifest is not None
+    constituent_count = len(
+        {
+            artifact.sha256
+            for artifact in first.manifest.artifacts
+            if artifact.kind != "build_pack_zip"
+        }
+    )
+
+    service._artifacts.maximum_artifacts = constituent_count
+    without_archive = asyncio.run(service.prepare_build_pack(request))
+
+    assert without_archive.manifest is not None
+    assert "build_pack_zip" not in {
+        artifact.kind for artifact in without_archive.manifest.artifacts
+    }
+    assert "aggregate_build_pack_omitted" in {
+        issue.code for issue in without_archive.blockers
+    }
+    for artifact in without_archive.manifest.artifacts:
+        assert service.read_artifact(artifact.sha256)[0]
+
+    service._artifacts.maximum_artifacts = constituent_count - 1
+    blocked = asyncio.run(service.prepare_build_pack(request))
+
+    assert blocked.status == "blocked"
+    assert blocked.manifest is None
+    assert [issue.code for issue in blocked.blockers] == [
+        "build_pack_artifacts_too_many"
     ]
 
 

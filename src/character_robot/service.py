@@ -30,6 +30,7 @@ from .maker_pack import (
 )
 from .physical_evidence import EvidenceSignatureVerifier, PhysicalEvidenceRecord
 from .project_store import (
+    PROJECT_REVISION_LIMIT,
     ProjectAlreadyExistsError,
     PersistedDraft,
     PersistedRevision,
@@ -733,6 +734,15 @@ class CharacterRobotService:
                     409,
                     "Revise the draft before creating another revision.",
                 )
+            if len(self._revisions) >= PROJECT_REVISION_LIMIT:
+                raise self._error(
+                    request_id,
+                    "REVISION_LIMIT_REACHED",
+                    "This project has reached its immutable revision limit.",
+                    False,
+                    409,
+                    "Export this project and start a new Studio project before committing more revisions.",
+                )
 
             ordinal = len(self._revisions)
             revision_id = f"r{ordinal:03d}"
@@ -955,8 +965,12 @@ class CharacterRobotService:
             constituent_bytes = sum(
                 artifact.descriptor.byte_size for artifact in artifacts
             )
+            constituent_count = len(
+                {artifact.descriptor.sha256 for artifact in artifacts}
+            )
+            capacity_issue: ValidationIssue | None = None
             if constituent_bytes > self._artifacts.maximum_bytes:
-                issue = ValidationIssue(
+                capacity_issue = ValidationIssue(
                     code="build_pack_artifacts_too_large",
                     severity="error",
                     path="build_pack",
@@ -965,6 +979,17 @@ class CharacterRobotService:
                     limit_value=float(self._artifacts.maximum_bytes),
                     suggestion="Reduce the generated artifacts or use a future streaming artifact store.",
                 )
+            elif constituent_count > self._artifacts.maximum_artifacts:
+                capacity_issue = ValidationIssue(
+                    code="build_pack_artifacts_too_many",
+                    severity="error",
+                    path="build_pack",
+                    message="The Build Pack constituents exceed this session's artifact count budget.",
+                    measured_value=float(constituent_count),
+                    limit_value=float(self._artifacts.maximum_artifacts),
+                    suggestion="Reduce the generated artifact set or use a future streaming artifact store.",
+                )
+            if capacity_issue is not None:
                 self._record_run(
                     kind="build_pack",
                     spec=revision.spec,
@@ -974,14 +999,14 @@ class CharacterRobotService:
                     simulation_engine_version=(
                         simulation.engine_version if simulation is not None else None
                     ),
-                    error_codes=[issue.code],
+                    error_codes=[capacity_issue.code],
                 )
                 result = PrepareBuildPackOutput(
                     schema_version=SCHEMA_VERSION,
                     request_id=request_id,
                     status="blocked",
                     manifest=None,
-                    blockers=[issue],
+                    blockers=[capacity_issue],
                     next_action="Reduce the exact artifact set before preparing another Build Pack.",
                 )
                 self._persist(request_id)
@@ -1009,15 +1034,33 @@ class CharacterRobotService:
                     )
                 )
             else:
-                artifacts.append(
-                    self._bytes_artifact(
-                        "build_pack_zip",
-                        "character-robot-build-pack.zip",
-                        "application/zip",
-                        archive_content,
-                        experimental=not maker_pack.replication_ready,
-                    )
+                archive = self._bytes_artifact(
+                    "build_pack_zip",
+                    "character-robot-build-pack.zip",
+                    "application/zip",
+                    archive_content,
+                    experimental=not maker_pack.replication_ready,
                 )
+                manifest_artifact_count = len(
+                    {
+                        *(artifact.descriptor.sha256 for artifact in artifacts),
+                        archive.descriptor.sha256,
+                    }
+                )
+                if manifest_artifact_count > self._artifacts.maximum_artifacts:
+                    packaging_warnings.append(
+                        ValidationIssue(
+                            code="aggregate_build_pack_omitted",
+                            severity="warning",
+                            path="build_pack",
+                            message="The aggregate ZIP exceeds the bounded artifact count budget; every constituent remains available separately.",
+                            measured_value=float(manifest_artifact_count),
+                            limit_value=float(self._artifacts.maximum_artifacts),
+                            suggestion="Download the manifest's constituent artifacts individually.",
+                        )
+                    )
+                else:
+                    artifacts.append(archive)
             for artifact in artifacts:
                 self._store_artifact(artifact, request_id)
             manifest_payload = {

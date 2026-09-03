@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import time
 
+import pytest
 from starlette.testclient import TestClient
 
 from asset_autopsy.workbench import SessionManager, create_workbench_app
-from character_robot.schemas import TOOL_NAMES
+from character_robot.schemas import (
+    TOOL_NAMES,
+    CreateRevisionFromDraftInput,
+    GetStudioContextInput,
+    SetDesignDraftInput,
+)
+from character_robot.service import CharacterRobotService
 from character_robot.workbench import STUDIO_SESSION_COOKIE, StudioSessionManager
 
 
@@ -788,7 +796,6 @@ def test_human_project_import_regenerates_the_exact_build_pack(tmp_path) -> None
         assert context["head_revision_id"] == "r000"
         assert context["draft"] is None
         assert context["current_spec"]["identity"]["name"] == "Pip"
-
         regenerated = _tool(
             receiver,
             "prepare_build_pack",
@@ -809,3 +816,77 @@ def test_human_project_import_regenerates_the_exact_build_pack(tmp_path) -> None
         artifact["kind"]: artifact["sha256"]
         for artifact in original["manifest"]["artifacts"]
     }
+
+
+def test_interrupted_project_import_keeps_the_previous_generation_restart_visible(
+    tmp_path, monkeypatch
+) -> None:
+    session_root = tmp_path / "studio-sessions"
+    manager = StudioSessionManager(root=session_root)
+
+    class SimulatedProcessExit(BaseException):
+        pass
+
+    async def interrupt_import() -> tuple[str, object]:
+        async with manager.lease(None) as (session_id, session, _created):
+            draft = await session.service.set_design_draft(
+                SetDesignDraftInput(
+                    expected_revision=None,
+                    spec=_spec_payload(),
+                )
+            )
+            await session.service.create_revision_from_draft(
+                CreateRevisionFromDraftInput(
+                    expected_revision=None,
+                    draft_hash=draft.draft_hash,
+                    note="Durable revision before interrupted import.",
+                )
+            )
+            previous_root = session.data_root
+            exported = session.service._portable_project_bytes("r000")
+            expected_generation = session.service.project_generation
+
+            def stop_before_restore(_service, _snapshot):
+                raise SimulatedProcessExit
+
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    CharacterRobotService,
+                    "restore_portable_project",
+                    stop_before_restore,
+                )
+                with pytest.raises(SimulatedProcessExit):
+                    manager.import_project(
+                        session_id,
+                        session,
+                        exported,
+                        expected_generation=expected_generation,
+                    )
+            return session_id, previous_root
+
+    session_id, previous_root = asyncio.run(interrupt_import())
+    assert (
+        len([path for path in (session_root / session_id).iterdir() if path.is_dir()])
+        == 2
+    )
+
+    restarted = StudioSessionManager(root=session_root)
+
+    async def read_restarted_project():
+        async with restarted.lease(session_id) as (
+            restored_session_id,
+            session,
+            created,
+        ):
+            context = await session.service.get_studio_context(GetStudioContextInput())
+            return restored_session_id, session.data_root, created, context
+
+    restored_session_id, restored_root, created, context = asyncio.run(
+        read_restarted_project()
+    )
+    assert restored_session_id == session_id
+    assert restored_root == previous_root
+    assert created is False
+    assert context.head_revision_id == "r000"
+    assert context.current_spec is not None
+    assert context.current_spec.identity.name == "Pip"

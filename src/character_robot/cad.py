@@ -414,12 +414,21 @@ def _compile_morphology(
     for node_id in by_id:
         compile_node(node_id)
 
-    consumed_by_csg = {
+    consumed_by_csg: set[str] = set()
+    pending_csg_operands = [
         operand_id
         for node in nodes
         if node["visible"] and node["kind"] == "csg"
         for operand_id in node["operand_node_ids"]
-    }
+    ]
+    while pending_csg_operands:
+        operand_id = pending_csg_operands.pop()
+        if operand_id in consumed_by_csg:
+            continue
+        consumed_by_csg.add(operand_id)
+        operand = by_id[operand_id]
+        if operand["kind"] == "csg":
+            pending_csg_operands.extend(operand["operand_node_ids"])
     appearance = payload["appearance"]
     role_colors = {
         "chassis_shell": appearance["primary_color"],

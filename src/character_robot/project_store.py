@@ -22,8 +22,8 @@ from .schemas import (
 
 
 PROJECT_STORE_VERSION = "character-project-store/v1"
+PROJECT_REVISION_LIMIT = 512
 _SQLITE_SCHEMA_VERSION = 1
-_MAX_REVISIONS = 512
 _MAX_MANIFESTS = 512
 _MAX_PROJECT_BYTES = 64 * 1024 * 1024
 _MAX_PORTABLE_PROJECT_BYTES = 8 * 1024 * 1024
@@ -147,7 +147,7 @@ class ProjectSnapshot(StrictModel):
     head_revision_id: RevisionId | None = None
     draft: PersistedDraft | None = None
     revisions: list[PersistedRevision] = Field(
-        default_factory=list, max_length=_MAX_REVISIONS
+        default_factory=list, max_length=PROJECT_REVISION_LIMIT
     )
     recent_runs: list[StudioRunSummary] = Field(default_factory=list, max_length=64)
     artifact_manifests: list[ArtifactManifest] = Field(
@@ -507,6 +507,7 @@ class ProjectStore:
 
 
 __all__ = [
+    "PROJECT_REVISION_LIMIT",
     "PROJECT_STORE_VERSION",
     "PersistedDraft",
     "PersistedRevision",

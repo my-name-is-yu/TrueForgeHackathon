@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import io
 import json
 import struct
 import zipfile
@@ -199,6 +200,95 @@ def test_compiler_generates_single_source_preview_and_cad_artifacts() -> None:
         assert artifact.sha256 == hashlib.sha256(artifact.content).hexdigest()
         assert artifact.experimental is True
         assert artifact.byte_size > 0
+
+
+def test_nested_csg_operands_are_not_exported_as_duplicate_parts(tmp_path) -> None:
+    payload = _spec_payload()
+    payload["morphology"]["nodes"].extend(
+        [
+            {
+                "node_id": "nested_x",
+                "role": "ornament",
+                "label": "Nested X operand",
+                "kind": "rounded_solid",
+                "size_mm": {"x": 50.0, "y": 10.0, "z": 10.0},
+                "corner_radius_mm": 0.0,
+                "attachment": None,
+                "visible": True,
+            },
+            {
+                "node_id": "nested_y",
+                "role": "ornament",
+                "label": "Nested Y operand",
+                "kind": "rounded_solid",
+                "size_mm": {"x": 10.0, "y": 40.0, "z": 10.0},
+                "corner_radius_mm": 0.0,
+                "attachment": None,
+                "visible": True,
+            },
+            {
+                "node_id": "hidden_helper",
+                "role": "ornament",
+                "label": "Hidden helper union",
+                "kind": "csg",
+                "operation": "union",
+                "operand_node_ids": ["nested_x", "nested_y"],
+                "attachment": None,
+                "visible": False,
+            },
+            {
+                "node_id": "direct_z",
+                "role": "ornament",
+                "label": "Direct Z operand",
+                "kind": "rounded_solid",
+                "size_mm": {"x": 10.0, "y": 10.0, "z": 30.0},
+                "corner_radius_mm": 0.0,
+                "attachment": None,
+                "visible": True,
+            },
+            {
+                "node_id": "nested_csg_output",
+                "role": "ornament",
+                "label": "Nested CSG output",
+                "kind": "csg",
+                "operation": "union",
+                "operand_node_ids": ["hidden_helper", "direct_z"],
+                "attachment": None,
+                "visible": True,
+            },
+        ]
+    )
+    result = CadCompiler().compile(CharacterRobotSpec.model_validate(payload))
+    parts = {part.name: part for part in result.parts}
+    consumed_names = {"nested_x", "nested_y", "hidden_helper", "direct_z"}
+
+    assert "nested_csg_output" in parts
+    assert parts["nested_csg_output"].bounds.size_mm == pytest.approx(
+        (50.0, 40.0, 30.0)
+    )
+    assert consumed_names.isdisjoint(parts)
+
+    artifacts = {artifact.kind: artifact for artifact in result.artifacts}
+    glb_names = _glb_node_names(artifacts["glb"].content)
+    assert "nested_csg_output" in glb_names
+    assert consumed_names.isdisjoint(glb_names)
+
+    step_path = tmp_path / "nested-csg.step"
+    step_path.write_bytes(artifacts["step"].content)
+    imported = cad_module._load_build123d().import_step(step_path)
+    step_names = {part.label for part in imported.children}
+    assert "nested_csg_output" in step_names
+    assert consumed_names.isdisjoint(step_names)
+
+    with zipfile.ZipFile(io.BytesIO(artifacts["3mf"].content)) as package:
+        model = ET.fromstring(package.read("3D/3dmodel.model"))
+    namespace = {"m": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"}
+    part_numbers = {
+        item.attrib["partnumber"]
+        for item in model.findall(".//m:object[@partnumber]", namespace)
+    }
+    assert "nested_csg_output" in part_numbers
+    assert consumed_names.isdisjoint(part_numbers)
 
 
 def test_default_service_exposes_the_generated_glb_bytes() -> None:
