@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import pytest
 
 import character_robot.project_store as project_store_module
+from character_robot.profiles import M5_CORES3_GOPLUS2, MassMetadata, ProfileRegistry
 from character_robot.project_store import (
     PortableProjectSizeError,
     ProjectStore,
@@ -515,6 +516,112 @@ def test_known_profile_component_mass_above_limit_blocks_build_pack() -> None:
     assert "known_component_mass_exceeded" in {
         blocker.code for blocker in build_pack.blockers
     }
+
+
+@pytest.mark.parametrize("known_component_mass_g", [None, 38.0, 900.5])
+def test_complete_profile_mass_above_limit_blocks_build_pack(
+    known_component_mass_g,
+) -> None:
+    profile = replace(
+        M5_CORES3_GOPLUS2,
+        mass=MassMetadata(
+            known_component_mass_g=known_component_mass_g,
+            complete_assembly_mass_g=901.0,
+            evidence="complete",
+        ),
+    )
+    service = CharacterRobotService(
+        profile_registry=ProfileRegistry((profile,)), cad_compiler=_Compiler()
+    )
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Complete assembly mass must fit the design limit.",
+            )
+        )
+    )
+
+    report = asyncio.run(
+        service.validate_design(
+            ValidateDesignInput(
+                target={
+                    "kind": "revision",
+                    "revision_id": revision.revision.revision_id,
+                }
+            )
+        )
+    ).report
+
+    mass_issues = [
+        issue
+        for issue in report.issues
+        if issue.code
+        in {"complete_assembly_mass_exceeded", "known_component_mass_exceeded"}
+    ]
+    assert [issue.code for issue in mass_issues] == ["complete_assembly_mass_exceeded"]
+    assert mass_issues[0].severity == "error"
+    assert mass_issues[0].path == "constraints.maximum_mass_g"
+    assert mass_issues[0].measured_value == 901.0
+    assert mass_issues[0].limit_value == 900.0
+    assert report.passed is False
+    assert report.evidence_level == "concept_only"
+
+    build_pack = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id=revision.revision.revision_id,
+                expected_spec_hash=revision.revision.spec_hash,
+            )
+        )
+    )
+    assert build_pack.status == "blocked"
+    assert [blocker.code for blocker in build_pack.blockers] == [
+        "complete_assembly_mass_exceeded"
+    ]
+
+
+@pytest.mark.parametrize("complete_assembly_mass_g", [899.0, 900.0])
+def test_complete_profile_mass_at_or_below_limit_remains_valid(
+    complete_assembly_mass_g,
+) -> None:
+    profile = replace(
+        M5_CORES3_GOPLUS2,
+        mass=MassMetadata(
+            known_component_mass_g=38.0,
+            complete_assembly_mass_g=complete_assembly_mass_g,
+            evidence="complete",
+        ),
+    )
+    service = CharacterRobotService(
+        profile_registry=ProfileRegistry((profile,)), cad_compiler=_Compiler()
+    )
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+
+    report = asyncio.run(
+        service.validate_design(
+            ValidateDesignInput(
+                target=DraftTarget(kind="draft", draft_hash=draft.draft_hash)
+            )
+        )
+    ).report
+
+    assert report.passed is True
+    assert report.evidence_level == "digital_checks_passed"
+    assert not {
+        "complete_assembly_mass_exceeded",
+        "known_component_mass_exceeded",
+    }.intersection(issue.code for issue in report.issues)
 
 
 def test_simulation_uses_the_compiled_drive_wheel_bounds(monkeypatch) -> None:
