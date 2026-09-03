@@ -625,8 +625,9 @@ export async function mountCharacterRobotStudio(
     if (label) label.classList.add("busy");
     void (async () => {
       try {
+        const preflightSequence = ++refreshSequence;
         const freshContext = await getContext();
-        if (destroyed) return;
+        if (destroyed || preflightSequence !== refreshSequence) return;
         renderContext(freshContext);
         await importProject(file, freshContext.projectGeneration);
         preparedForBuildPackTarget = null;

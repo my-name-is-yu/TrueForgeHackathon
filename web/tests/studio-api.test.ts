@@ -121,6 +121,7 @@ describe("Character Robot Studio API boundary", () => {
         file_name: "committed.glb",
       },
       preview: {
+        glb_url: "/api/studio/v1/artifacts/legacy-preview",
         preview_artifact: {
           kind: "glb",
           sha256: "d".repeat(64),

@@ -387,6 +387,48 @@ describe("mountCharacterRobotStudio", () => {
     studio.destroy();
   });
 
+  it("ignores an older refresh that resolves after import preflight", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const initial = context();
+    const fresh = structuredClone(initial);
+    fresh.projectGeneration = 9;
+    let releaseOlderRefresh!: (value: StudioContext) => void;
+    const olderRefresh = new Promise<StudioContext>((resolve) => {
+      releaseOlderRefresh = resolve;
+    });
+    const getContext = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(olderRefresh)
+      .mockResolvedValue(fresh);
+    const importProject = vi.fn().mockResolvedValue(undefined);
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext,
+      importProject,
+      confirmImport: () => true,
+      registerTools: async () => false,
+      createViewer: () => ({
+        loadPreview: vi.fn(),
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+
+    const olderRefreshPromise = studio.refresh();
+    const input = document.querySelector<HTMLInputElement>("#crs-import-project")!;
+    const file = new File(["{}"], "shared-project.json", { type: "application/json" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await vi.waitFor(() => expect(importProject).toHaveBeenCalledWith(file, 9));
+    releaseOlderRefresh(initial);
+    await olderRefreshPromise;
+    expect(document.querySelector("#crs-revision")?.textContent).toContain("saved g9");
+    studio.destroy();
+  });
+
   it("refreshes after a stale import so the same file can be selected again", async () => {
     document.body.innerHTML = '<main id="app"></main>';
     const current = context();

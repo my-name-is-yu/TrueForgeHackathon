@@ -366,8 +366,10 @@ export function parseStudioContext(value: unknown): StudioContext {
     currentSpec: rawCurrentSpec ? parseSpec(rawCurrentSpec, "context.current_spec") : null,
     profiles: rawProfiles.map((profile, index) => parseProfile(profile, `context.profiles[${index}]`)),
     preview: {
-      glbUrl: optionalString(preview.glb_url, "context.preview.glb_url")
-        ?? (artifactSha ? `/api/studio/v1/artifacts/${artifactSha}` : null),
+      glbUrl: rawDraft
+        ? (artifactSha ? `/api/studio/v1/artifacts/${artifactSha}` : null)
+        : (optionalString(preview.glb_url, "context.preview.glb_url")
+          ?? (artifactSha ? `/api/studio/v1/artifacts/${artifactSha}` : null)),
       partNames: preview.part_names === undefined
         ? activeSpecView?.morphologyNodes.map((node) => node.nodeId) ?? []
         : stringArray(preview.part_names, "context.preview.part_names"),
