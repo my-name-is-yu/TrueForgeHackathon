@@ -132,8 +132,8 @@ class SessionArtifactStore:
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            # The descriptor is removed even if a best-effort cleanup loses a
-            # race; the session directory itself is deleted on reset/eviction.
+            # Drop the descriptor even if best-effort unlink fails so orphaned
+            # bytes cannot be served; later generation cleanup may reclaim them.
             pass
 
 
