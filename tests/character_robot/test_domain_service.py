@@ -1386,6 +1386,136 @@ def test_artifact_count_budget_never_returns_an_unreadable_manifest() -> None:
     ]
 
 
+def test_manifest_limit_rejects_513th_before_mutating_durable_session(
+    tmp_path,
+) -> None:
+    database = tmp_path / "project.sqlite3"
+    data_root = tmp_path / "artifacts"
+    service = CharacterRobotService(
+        data_root=data_root,
+        profile_registry=_Profiles(),
+        cad_compiler=_Compiler(),
+        project_store=ProjectStore(database),
+    )
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    first_revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="First manifest-boundary revision.",
+            )
+        )
+    )
+    first_pack = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id="r000",
+                expected_spec_hash=first_revision.revision.spec_hash,
+            )
+        )
+    )
+    assert first_pack.manifest is not None
+
+    revised = asyncio.run(
+        service.revise_design_draft(
+            ReviseDesignDraftInput(
+                draft_hash=first_revision.draft_hash,
+                edits=[
+                    SetIdentityEdit(
+                        kind="set_identity",
+                        identity=draft.spec.identity.model_copy(
+                            update={"name": "Manifest boundary revision"}
+                        ),
+                    )
+                ],
+            )
+        )
+    )
+    second_revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision="r000",
+                draft_hash=revised.draft_hash,
+                note="Distinct 513th manifest candidate.",
+            )
+        )
+    )
+
+    historical_manifests = [first_pack.manifest]
+    for ordinal in range(511):
+        candidate = first_pack.manifest.model_copy(
+            update={
+                "build_subject_hash": hashlib.sha256(
+                    f"historical-build-subject:{ordinal}".encode()
+                ).hexdigest(),
+                "manifest_hash": "0" * 64,
+            }
+        )
+        historical_manifests.append(
+            candidate.model_copy(
+                update={
+                    "manifest_hash": project_store_module.manifest_sha256(candidate)
+                }
+            )
+        )
+    service._artifact_manifests = historical_manifests
+    service._persist(f"req_{'0' * 32}")
+
+    at_limit = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+    assert at_limit.artifact_manifest_count == 512
+    artifact_count_at_limit = service._artifacts.artifact_count
+    blocked = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id="r001",
+                expected_spec_hash=second_revision.revision.spec_hash,
+            )
+        )
+    )
+
+    assert blocked.status == "blocked"
+    assert blocked.manifest is None
+    assert [issue.code for issue in blocked.blockers] == [
+        "artifact_manifest_limit_reached"
+    ]
+    assert blocked.blockers[0].measured_value == 513
+    assert blocked.blockers[0].limit_value == 512
+    assert len(service._artifact_manifests) == 512
+    assert service._artifacts.artifact_count == artifact_count_at_limit
+
+    restarted = CharacterRobotService(
+        data_root=data_root,
+        profile_registry=_Profiles(),
+        cad_compiler=_Compiler(),
+        project_store=ProjectStore(database),
+    )
+    after_restart = asyncio.run(restarted.get_studio_context(GetStudioContextInput()))
+    assert after_restart.artifact_manifest_count == 512
+
+    duplicate = asyncio.run(
+        restarted.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id="r000",
+                expected_spec_hash=first_revision.revision.spec_hash,
+            )
+        )
+    )
+    assert duplicate.status == "experimental_ready"
+    assert duplicate.manifest is not None
+    assert duplicate.manifest.manifest_hash == first_pack.manifest.manifest_hash
+    assert (
+        asyncio.run(
+            restarted.get_studio_context(GetStudioContextInput())
+        ).artifact_manifest_count
+        == 512
+    )
+
+
 def test_normalized_build_pack_stops_at_its_archive_byte_limit() -> None:
     service = _service()
     artifact = service._bytes_artifact(

@@ -820,6 +820,38 @@ def test_human_project_import_regenerates_the_exact_build_pack(tmp_path) -> None
     }
 
 
+def test_project_import_rejects_an_oversized_json_integer_and_keeps_session_usable(
+    tmp_path,
+) -> None:
+    app = _app(tmp_path)
+    oversized_integer = b"9" * 5000
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/studio/v1/project-import",
+            content=b'{"schema_version":' + oversized_integer + b"}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Character-Project-Generation": "0",
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json() == {
+            "error": {
+                "code": "INVALID_PROJECT_IMPORT",
+                "message": "portable project is not valid JSON",
+            }
+        }
+        draft = _tool(
+            client,
+            "set_design_draft",
+            {"expected_revision": None, "spec": _spec_payload()},
+        )
+
+    assert draft["draft_hash"]
+
+
 @pytest.mark.parametrize(
     "content_length",
     [

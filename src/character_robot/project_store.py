@@ -24,7 +24,7 @@ from .schemas import (
 PROJECT_STORE_VERSION = "character-project-store/v1"
 PROJECT_REVISION_LIMIT = 512
 _SQLITE_SCHEMA_VERSION = 1
-_MAX_MANIFESTS = 512
+PROJECT_MANIFEST_LIMIT = 512
 _MAX_PROJECT_BYTES = 64 * 1024 * 1024
 MAX_PORTABLE_PROJECT_BYTES = _MAX_PROJECT_BYTES
 
@@ -91,7 +91,7 @@ def import_portable_project(
     content = validate_portable_project_bytes(content)
     try:
         payload = json.loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, ValueError) as error:
         raise ProjectValidationError("portable project is not valid JSON") from error
     if not isinstance(payload, dict) or set(payload) != {
         "schema_version",
@@ -167,7 +167,7 @@ class ProjectSnapshot(StrictModel):
     )
     recent_runs: list[StudioRunSummary] = Field(default_factory=list, max_length=64)
     artifact_manifests: list[ArtifactManifest] = Field(
-        default_factory=list, max_length=_MAX_MANIFESTS
+        default_factory=list, max_length=PROJECT_MANIFEST_LIMIT
     )
 
     @model_validator(mode="after")
@@ -524,6 +524,7 @@ class ProjectStore:
 
 __all__ = [
     "MAX_PORTABLE_PROJECT_BYTES",
+    "PROJECT_MANIFEST_LIMIT",
     "PROJECT_REVISION_LIMIT",
     "PROJECT_STORE_VERSION",
     "PersistedDraft",
