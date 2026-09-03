@@ -377,6 +377,7 @@ class CharacterRobotService:
 
     def _persist(self, request_id: str) -> None:
         if self.project_store is None:
+            self._project_generation += 1
             return
         try:
             saved = self.project_store.save_project(

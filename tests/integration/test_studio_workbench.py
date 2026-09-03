@@ -15,7 +15,9 @@ from character_robot.schemas import (
     TOOL_NAMES,
     CreateRevisionFromDraftInput,
     GetStudioContextInput,
+    ReviseDesignDraftInput,
     SetDesignDraftInput,
+    SetIdentityEdit,
 )
 from character_robot.service import CharacterRobotService
 from character_robot.workbench import STUDIO_SESSION_COOKIE, StudioSessionManager
@@ -1078,6 +1080,62 @@ def test_project_import_rejects_unbounded_generation_without_reading_body(
             "message": "Project import requires the current Studio generation.",
         }
     }
+
+
+def test_ephemeral_project_import_rejects_a_generation_read_before_mutation() -> None:
+    manager = StudioSessionManager(
+        service_factory=lambda path: CharacterRobotService(
+            data_root=path,
+            cad_compiler=None,
+        )
+    )
+
+    async def exercise() -> tuple[workbench_module.StudioWorkbenchError, str]:
+        async with manager.lease(None) as (session_id, session, _created):
+            draft = await session.service.set_design_draft(
+                SetDesignDraftInput(expected_revision=None, spec=_spec_payload())
+            )
+            first_revision = await session.service.create_revision_from_draft(
+                CreateRevisionFromDraftInput(
+                    expected_revision=None,
+                    draft_hash=draft.draft_hash,
+                    note="Revision visible when the import dialog opened.",
+                )
+            )
+            exported = session.service._portable_project_bytes("r000")
+            preflight_generation = session.service.project_generation
+
+            await session.service.revise_design_draft(
+                ReviseDesignDraftInput(
+                    draft_hash=first_revision.draft_hash,
+                    edits=[
+                        SetIdentityEdit(
+                            kind="set_identity",
+                            identity=draft.spec.identity.model_copy(
+                                update={"name": "Pip after import preflight"}
+                            ),
+                        )
+                    ],
+                )
+            )
+            assert session.service.project_generation > preflight_generation
+
+            with pytest.raises(workbench_module.StudioWorkbenchError) as stale:
+                manager.import_project(
+                    session_id,
+                    session,
+                    exported,
+                    expected_generation=preflight_generation,
+                )
+            context = await session.service.get_studio_context(GetStudioContextInput())
+            assert context.draft is not None
+            return stale.value, context.draft.spec.identity.name
+
+    stale, draft_name = asyncio.run(exercise())
+
+    assert stale.code == "STALE_PROJECT"
+    assert stale.status_code == 409
+    assert draft_name == "Pip after import preflight"
 
 
 def test_project_import_maps_client_disconnect_to_typed_response(
