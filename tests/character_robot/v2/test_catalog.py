@@ -93,6 +93,36 @@ def _numeric_fact(
     return CatalogFact(fact_key=fact_key, claims=(claim,))  # type: ignore[arg-type]
 
 
+def _numeric_fact_with_state(
+    source: CatalogSource,
+    fact_key: str,
+    unit: str,
+    state: str,
+    values: tuple[float, ...],
+) -> CatalogFact:
+    if state == "unknown":
+        return CatalogFact(
+            fact_key=fact_key,  # type: ignore[arg-type]
+            unknown_reason="UNKNOWN_OFFICIAL_FACT",
+        )
+    claims = tuple(
+        NumericClaim(
+            original_value=value,
+            original_unit=unit,  # type: ignore[arg-type]
+            canonical_value=value,
+            canonical_unit=unit,  # type: ignore[arg-type]
+            basis=("manufacturer_stated" if state == "conflict" else state),  # type: ignore[arg-type]
+            conversion_rule="identity",
+            evidence=_evidence(source, f"{fact_key}-{index}")
+            if state == "conflict"
+            else None,
+            derived_from=(f"{fact_key}-source",) if state == "derived" else (),
+        )
+        for index, value in enumerate(values)
+    )
+    return CatalogFact(fact_key=fact_key, claims=claims)  # type: ignore[arg-type]
+
+
 def _entry(
     source: CatalogSource,
     *,
@@ -499,6 +529,60 @@ def test_generic_rating_queries_apply_bounds_to_all_known_ratings() -> None:
     assert not query_catalog(
         low_contact_catalog, CatalogQuery(min_current_a=2.0)
     ).matches
+
+
+@pytest.mark.parametrize(
+    ("known_key", "uncertain_key", "unit", "query_field", "bound", "known_value"),
+    [
+        (
+            "current_continuous_a",
+            "current_stall_a",
+            "A",
+            "max_current_a",
+            5.0,
+            2.0,
+        ),
+        (
+            "torque_continuous_nm",
+            "torque_stall_nm",
+            "N*m",
+            "max_torque_nm",
+            0.5,
+            0.2,
+        ),
+        (
+            "speed_nominal_rpm",
+            "speed_max_rpm",
+            "rpm",
+            "max_speed_rpm",
+            500.0,
+            100.0,
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "uncertain_state", ["conflict", "unknown", "derived", "assumption"]
+)
+def test_non_known_rating_facts_make_family_bounds_indeterminate(
+    known_key: str,
+    uncertain_key: str,
+    unit: str,
+    query_field: str,
+    bound: float,
+    known_value: float,
+    uncertain_state: str,
+) -> None:
+    source = _source()
+    known = _numeric_fact(source, known_key, known_value, unit=unit)
+    uncertain_values = (4.0, 8.0) if uncertain_state == "conflict" else (4.0,)
+    uncertain = _numeric_fact_with_state(
+        source, uncertain_key, unit, uncertain_state, uncertain_values
+    )
+    assert uncertain.state == uncertain_state
+    entry = _entry(source, facts=(known, uncertain))
+
+    query = CatalogQuery(**{query_field: bound})
+    assert not query_catalog(_snapshot(source, entry), query).matches
 
 
 def test_each_required_use_has_stable_reason_codes() -> None:

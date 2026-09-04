@@ -69,6 +69,40 @@ def _snapshot(
     )
 
 
+def _sqlite_logical_state(
+    database: Path,
+) -> tuple[
+    int,
+    tuple[tuple[object, ...], ...],
+    tuple[tuple[object, ...], ...],
+]:
+    with sqlite3.connect(
+        f"{database.absolute().as_uri()}?mode=ro",
+        uri=True,
+    ) as connection:
+        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        schema = tuple(
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT type, name, tbl_name, sql
+                FROM sqlite_master
+                ORDER BY type, name
+                """
+            ).fetchall()
+        )
+        projects = tuple(
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT project_id, generation, snapshot_json, snapshot_sha256
+                FROM projects ORDER BY project_id
+                """
+            ).fetchall()
+        )
+    return user_version, schema, projects
+
+
 def test_requirements_are_strict_and_deeply_immutable() -> None:
     requirements = _requirements()
     assert isinstance(requirements.required_behavior, tuple)
@@ -587,10 +621,13 @@ def test_v1_and_v2_creation_share_a_database_namespace(tmp_path: Path) -> None:
     v1 = V1ProjectStore(v1_database)
     v2 = V2ProjectStore(v1_database)
     v1_snapshot = v1.create_project("shared")
-    before = v1_database.read_bytes()
+    before = _sqlite_logical_state(v1_database)
     with pytest.raises(UnsupportedSchemaVersionError):
         v2.create_project("shared", _requirements())
-    assert v1_database.read_bytes() == before
+    # A WAL checkpoint may rewrite the main-file header without changing
+    # durable state, so raw SQLite bytes are not the immutability contract.
+    assert _sqlite_logical_state(v1_database) == before
+    assert v2.list_project_ids() == ()
     assert v1.load_project("shared") == v1_snapshot
 
     v2_database = tmp_path / "v2-first.sqlite3"
