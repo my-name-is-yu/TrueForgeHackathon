@@ -6,7 +6,8 @@ import re
 import secrets
 import shutil
 import tempfile
-from collections import OrderedDict
+import threading
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -15,9 +16,10 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 from starlette.requests import ClientDisconnect, Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from .artifacts import ArtifactDownload
 from .cad_jobs import CadJobLimits, IsolatedCadCompiler, IsolatedCadJobRunner
 from .profiles import ProfileRegistry
 from .project_store import (
@@ -42,6 +44,8 @@ from .service import CharacterRobotService, DomainError
 STUDIO_SESSION_COOKIE = "character_robot_session"
 MAX_STUDIO_SESSIONS = 8
 MAX_CONCURRENT_UPLOAD_BUFFERS = 2
+MAX_CONCURRENT_ARTIFACT_DOWNLOADS = 2
+ARTIFACT_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 _ARTIFACT_FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
@@ -53,6 +57,118 @@ class StudioWorkbenchError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+
+
+class _ArtifactStreamingResponse(StreamingResponse):
+    def __init__(
+        self,
+        download: ArtifactDownload,
+        cleanup: Callable[[], None],
+        *,
+        media_type: str,
+        headers: dict[str, str],
+    ) -> None:
+        self._download = download
+        self._cleanup_callback = cleanup
+        self._cleaned_up = False
+        super().__init__(
+            self._body_iterator(),
+            media_type=media_type,
+            headers=headers,
+        )
+
+    async def _body_iterator(self) -> AsyncIterator[bytes]:
+        try:
+            while chunk := self._download.source.read(ARTIFACT_DOWNLOAD_CHUNK_BYTES):
+                yield chunk
+        finally:
+            self._cleanup()
+
+    def _cleanup(self) -> None:
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+        self._cleanup_callback()
+
+    async def __call__(self, scope: dict[str, Any], receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._cleanup()
+
+
+@dataclass(slots=True)
+class _ArtifactAdmissionWaiter:
+    future: asyncio.Future[None]
+    granted: bool = False
+
+
+class _ArtifactDownloadAdmission:
+    """Process-wide bounded admission that is safe across event loops."""
+
+    def __init__(self, capacity: int) -> None:
+        if capacity < 1:
+            raise ValueError("artifact download capacity must be positive")
+        self.capacity = capacity
+        self._active = 0
+        self._lock = threading.Lock()
+        self._waiters: deque[_ArtifactAdmissionWaiter] = deque()
+
+    async def acquire(self) -> None:
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._active < self.capacity:
+                self._active += 1
+                return
+            waiter = _ArtifactAdmissionWaiter(loop.create_future())
+            self._waiters.append(waiter)
+        try:
+            await asyncio.shield(waiter.future)
+        except BaseException:
+            acquired = False
+            with self._lock:
+                if waiter.granted:
+                    acquired = True
+                else:
+                    try:
+                        self._waiters.remove(waiter)
+                    except ValueError:
+                        acquired = waiter.granted
+            if acquired:
+                self.release()
+            raise
+
+    def release(self) -> None:
+        with self._lock:
+            waiter = None
+            while self._waiters:
+                candidate = self._waiters.popleft()
+                if candidate.future.done():
+                    continue
+                candidate.granted = True
+                waiter = candidate
+                break
+            if waiter is None:
+                if self._active < 1:
+                    raise RuntimeError("artifact download admission was over-released")
+                self._active -= 1
+                return
+
+        def wake_waiter() -> None:
+            if waiter.future.done():
+                self.release()
+            else:
+                waiter.future.set_result(None)
+
+        try:
+            waiter.future.get_loop().call_soon_threadsafe(wake_waiter)
+        except RuntimeError:
+            self.release()
+
+
+_PROCESS_ARTIFACT_DOWNLOAD_ADMISSION = _ArtifactDownloadAdmission(
+    MAX_CONCURRENT_ARTIFACT_DOWNLOADS
+)
 
 
 async def _read_portable_project_body(request: Request) -> bytes:
@@ -103,6 +219,7 @@ class StudioSessionManager:
         root: Path | None = None,
         service_factory: Callable[[Path], CharacterRobotService] | None = None,
         max_sessions: int = MAX_STUDIO_SESSIONS,
+        artifact_download_admission: _ArtifactDownloadAdmission | None = None,
     ) -> None:
         if not 1 <= max_sessions <= 32:
             raise ValueError("max_sessions must be between 1 and 32")
@@ -133,6 +250,11 @@ class StudioSessionManager:
         self.max_sessions = max_sessions
         self.sessions: OrderedDict[str, StudioSession] = OrderedDict()
         self._lock = asyncio.Lock()
+        self.artifact_download_admission = (
+            artifact_download_admission or _PROCESS_ARTIFACT_DOWNLOAD_ADMISSION
+        )
+        self._download_generation_pins: dict[Path, int] = {}
+        self._pending_generation_deletes: set[Path] = set()
 
     @asynccontextmanager
     async def lease(
@@ -227,6 +349,27 @@ class StudioSessionManager:
             pass
         return restored
 
+    def pin_download_generation(self, data_root: Path) -> Path:
+        resolved = self._validated_generation_path(data_root)
+        self._download_generation_pins[resolved] = (
+            self._download_generation_pins.get(resolved, 0) + 1
+        )
+        return resolved
+
+    def release_download_generation(self, data_root: Path) -> None:
+        resolved = self._validated_generation_path(data_root)
+        pins = self._download_generation_pins.get(resolved, 0)
+        if pins <= 1:
+            self._download_generation_pins.pop(resolved, None)
+            if resolved in self._pending_generation_deletes:
+                self._pending_generation_deletes.remove(resolved)
+                try:
+                    self._delete_generation(resolved)
+                except OSError:
+                    pass
+            return
+        self._download_generation_pins[resolved] = pins - 1
+
     def _new_session(
         self,
         session_id: str,
@@ -302,7 +445,13 @@ class StudioSessionManager:
             (
                 key
                 for key, session in self.sessions.items()
-                if session.active_requests == 0 and not session.lock.locked()
+                if (
+                    session.active_requests == 0
+                    and not session.lock.locked()
+                    and not self._download_generation_pins.get(
+                        session.data_root.resolve()
+                    )
+                )
             ),
             None,
         )
@@ -318,6 +467,9 @@ class StudioSessionManager:
 
     def _delete_generation(self, data_root: Path) -> None:
         resolved = self._validated_generation_path(data_root)
+        if self._download_generation_pins.get(resolved):
+            self._pending_generation_deletes.add(resolved)
+            return
         if resolved.exists():
             shutil.rmtree(resolved)
         try:
@@ -609,28 +761,61 @@ def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
             )
         created = False
         session_id = ""
+        admitted = False
+        download: ArtifactDownload | None = None
+        pinned_root: Path | None = None
         try:
+            await manager.artifact_download_admission.acquire()
+            admitted = True
             async with manager.lease(request.cookies.get(STUDIO_SESSION_COOKIE)) as (
                 session_id,
                 session,
                 created,
             ):
-                content, media_type, file_name = session.service.read_artifact(digest)
-            if _ARTIFACT_FILE_NAME.fullmatch(file_name) is None:
+                download = session.service.prepare_artifact_download(digest)
+                pinned_root = manager.pin_download_generation(session.data_root)
+            descriptor = download.descriptor
+            if _ARTIFACT_FILE_NAME.fullmatch(descriptor.file_name) is None:
                 raise StudioWorkbenchError(
                     "INVALID_ARTIFACT_METADATA",
                     "The artifact has an invalid download name.",
                     500,
                 )
-            response = Response(
-                content,
-                media_type=media_type,
+
+            stream_download = download
+            stream_root = pinned_root
+
+            def cleanup_download() -> None:
+                try:
+                    try:
+                        stream_download.close()
+                    except OSError:
+                        pass
+                finally:
+                    try:
+                        assert stream_root is not None
+                        manager.release_download_generation(stream_root)
+                    except OSError:
+                        pass
+                    finally:
+                        manager.artifact_download_admission.release()
+
+            response = _ArtifactStreamingResponse(
+                stream_download,
+                cleanup_download,
+                media_type=descriptor.media_type,
                 headers={
-                    "Content-Disposition": f'inline; filename="{file_name}"',
+                    "Content-Disposition": (
+                        f'inline; filename="{descriptor.file_name}"'
+                    ),
                     "X-Content-Type-Options": "nosniff",
                     "Cache-Control": "private, max-age=31536000, immutable",
+                    "Content-Length": str(descriptor.byte_size),
                 },
             )
+            download = None
+            pinned_root = None
+            admitted = False
         except DomainError as error:
             response = JSONResponse(
                 {"error": {"code": error.code, "message": error.safe_message}},
@@ -641,6 +826,26 @@ def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
                 {"error": {"code": error.code, "message": str(error)}},
                 status_code=error.status_code,
             )
+        finally:
+            if download is not None:
+                try:
+                    try:
+                        download.close()
+                    except OSError:
+                        pass
+                finally:
+                    if pinned_root is not None:
+                        try:
+                            manager.release_download_generation(pinned_root)
+                        except OSError:
+                            pass
+            elif pinned_root is not None:
+                try:
+                    manager.release_download_generation(pinned_root)
+                except OSError:
+                    pass
+            if admitted:
+                manager.artifact_download_admission.release()
         return _with_cookie(
             response,
             created=created,
@@ -782,6 +987,8 @@ def create_studio_routes(manager: StudioSessionManager) -> list[Route]:
 
 
 __all__ = [
+    "ARTIFACT_DOWNLOAD_CHUNK_BYTES",
+    "MAX_CONCURRENT_ARTIFACT_DOWNLOADS",
     "MAX_STUDIO_SESSIONS",
     "STUDIO_SESSION_COOKIE",
     "StudioSessionManager",

@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import stat
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 from asset_autopsy.storage import ObjectIntegrityError, ObjectStore
 
@@ -41,8 +43,13 @@ class SessionArtifactStore:
         self.maximum_bytes = maximum_bytes
         self._descriptors: OrderedDict[str, ArtifactDescriptor] = OrderedDict()
         self._total_bytes = 0
+        self._download_pins: dict[str, int] = {}
+        self._pending_drops: set[str] = set()
+        self._eviction_pending = False
 
     def put(self, descriptor: ArtifactDescriptor, content: bytes) -> None:
+        if descriptor.byte_size > self.maximum_bytes:
+            raise ArtifactStoreError("artifact exceeds the session byte budget")
         if len(content) != descriptor.byte_size:
             raise ArtifactStoreError("artifact byte size does not match its descriptor")
         try:
@@ -59,12 +66,13 @@ class SessionArtifactStore:
                 "stored artifact size does not match its descriptor"
             )
 
+        self._pending_drops.discard(descriptor.sha256)
         previous = self._descriptors.pop(descriptor.sha256, None)
         if previous is not None:
             self._total_bytes -= previous.byte_size
         self._descriptors[descriptor.sha256] = descriptor
         self._total_bytes += descriptor.byte_size
-        self._evict_to_budget()
+        self._evict_to_budget(protected={descriptor.sha256})
 
     def restore(self, descriptors: list[ArtifactDescriptor]) -> None:
         """Rebuild the bounded in-memory index from durable manifest metadata.
@@ -114,6 +122,39 @@ class SessionArtifactStore:
         self._descriptors.move_to_end(digest)
         return content, descriptor
 
+    def prepare_download(self, digest: str) -> "ArtifactDownload":
+        """Verify and open one artifact without copying it into Python memory."""
+
+        descriptor = self._descriptors.get(digest)
+        if descriptor is None:
+            raise ArtifactStoreError("artifact is not indexed in this session")
+        self._download_pins[digest] = self._download_pins.get(digest, 0) + 1
+        try:
+            self.objects.verify(digest, expected_size=descriptor.byte_size)
+            source = self.objects.path_for(digest).open("rb")
+        except (ObjectIntegrityError, OSError, ValueError) as error:
+            self.release_download(digest)
+            self._drop(digest)
+            raise ArtifactStoreError(
+                "artifact is missing or failed integrity checks"
+            ) from error
+        self._descriptors.move_to_end(digest)
+        return ArtifactDownload(source, descriptor, self)
+
+    def release_download(self, digest: str) -> None:
+        """Release one in-flight download and complete any deferred eviction."""
+
+        pins = self._download_pins.get(digest, 0)
+        if pins <= 1:
+            self._download_pins.pop(digest, None)
+            if digest in self._pending_drops:
+                self._pending_drops.remove(digest)
+                self._drop(digest)
+            if self._eviction_pending:
+                self._evict_to_budget()
+            return
+        self._download_pins[digest] = pins - 1
+
     def __contains__(self, digest: object) -> bool:
         return isinstance(digest, str) and digest in self._descriptors
 
@@ -125,13 +166,28 @@ class SessionArtifactStore:
     def total_bytes(self) -> int:
         return self._total_bytes
 
-    def _evict_to_budget(self) -> None:
+    def _evict_to_budget(self, *, protected: set[str] | None = None) -> None:
+        protected = protected or set()
         while (
             len(self._descriptors) > self.maximum_artifacts
             or self._total_bytes > self.maximum_bytes
         ):
-            digest = next(iter(self._descriptors))
+            digest = next(
+                (
+                    candidate
+                    for candidate in self._descriptors
+                    if (
+                        candidate not in protected
+                        and not self._download_pins.get(candidate)
+                    )
+                ),
+                None,
+            )
+            if digest is None:
+                self._eviction_pending = True
+                return
             self._drop(digest)
+        self._eviction_pending = False
 
     def _remove_unindexed_objects(self) -> None:
         indexed = set(self._descriptors)
@@ -202,6 +258,9 @@ class SessionArtifactStore:
             os.close(object_root_fd)
 
     def _drop(self, digest: str) -> None:
+        if self._download_pins.get(digest):
+            self._pending_drops.add(digest)
+            return
         descriptor = self._descriptors.pop(digest, None)
         if descriptor is None:
             return
@@ -215,7 +274,25 @@ class SessionArtifactStore:
             pass
 
 
+@dataclass(slots=True)
+class ArtifactDownload:
+    source: BinaryIO
+    descriptor: ArtifactDescriptor
+    _store: SessionArtifactStore
+    _closed: bool = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.source.close()
+        finally:
+            self._store.release_download(self.descriptor.sha256)
+
+
 __all__ = [
+    "ArtifactDownload",
     "ArtifactStoreError",
     "MAX_SESSION_ARTIFACT_BYTES",
     "MAX_SESSION_ARTIFACTS",
