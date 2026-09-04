@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from .contract import (
     PROJECT_SCHEMA_VERSION,
@@ -19,6 +19,7 @@ from .contract import (
     V2_STORE_NAMESPACE,
     Requirements,
     RobotSystemSpec,
+    SafeIdentifier,
 )
 from .errors import (
     ImmutableRequirementsError,
@@ -38,6 +39,7 @@ _V2_INSERT_TRIGGER = "v2_prevent_legacy_project_collision"
 _V2_UPDATE_TRIGGER = "v2_prevent_legacy_project_update_collision"
 _LEGACY_INSERT_TRIGGER = "v2_prevent_v2_project_collision"
 _LEGACY_UPDATE_TRIGGER = "v2_prevent_v2_project_update_collision"
+_PROJECT_ID_ADAPTER = TypeAdapter(SafeIdentifier)
 
 
 def _storage_error(
@@ -122,9 +124,9 @@ class V2ProjectStore:
     def create_project(
         self, project_id: str, requirements: Requirements
     ) -> V2ProjectSnapshot:
-        self._reject_legacy_before_write(project_id)
         snapshot = empty_v2_project_snapshot(project_id, requirements)
         payload, digest = self._encode(snapshot)
+        self._reject_legacy_before_write(project_id)
         with self._lock, self._connection_scope() as connection:
             # Keep a rejected legacy admission read-only.  A second check is
             # required after taking the write lock to close the admission race.
@@ -309,7 +311,7 @@ class V2ProjectStore:
                     expected="a readable SQLite V2 project store",
                     message="V2 projects could not be listed",
                 ) from error
-        return tuple(str(row[0]) for row in rows)
+        return tuple(self._validate_project_id(row[0]) for row in rows)
 
     def verify(self) -> None:
         """Validate all V2 rows without changing SQLite state."""
@@ -335,12 +337,13 @@ class V2ProjectStore:
                     message="V2 projects could not be verified",
                 ) from error
         for project_id, generation, payload, digest in rows:
+            validated_project_id = self._validate_project_id(project_id)
             row = self._coerce_row_values(
                 (generation, payload, digest),
                 path="project_row",
                 expected="generation INTEGER, snapshot_json BLOB, snapshot_sha256 TEXT",
             )
-            snapshot = self._decode_row(str(project_id), row)
+            snapshot = self._decode_row(validated_project_id, row)
             if snapshot.generation != row[0]:
                 raise V2ValidationError(
                     path="generation",
@@ -640,6 +643,18 @@ class V2ProjectStore:
                 expected=expected,
                 actual=type(error).__name__,
                 message="the persisted SQLite project row has invalid column types",
+            ) from error
+
+    @staticmethod
+    def _validate_project_id(value: object) -> str:
+        try:
+            return _PROJECT_ID_ADAPTER.validate_python(value)
+        except (TypeError, ValueError, ValidationError) as error:
+            raise V2ValidationError(
+                path="project_id",
+                expected="a valid V2 project identifier",
+                actual=type(error).__name__,
+                message="the persisted SQLite project ID is invalid",
             ) from error
 
     def _reject_legacy_if_present(

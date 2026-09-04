@@ -335,6 +335,45 @@ def test_store_operations_wrap_database_boundary_failures(
         assert database.read_bytes() == before
 
 
+def test_create_validates_project_before_opening_a_broken_database(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "non-sqlite"
+    database.write_bytes(b"not a SQLite database")
+    before = database.read_bytes()
+    store = V2ProjectStore(database)
+
+    with pytest.raises(V2ValidationError) as captured:
+        store.create_project("Invalid ID", _requirements())
+
+    assert captured.value.as_dict()["path"] == "project_id"
+    assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize("project_id", [sqlite3.Binary(b"not-an-id"), "Invalid ID"])
+def test_list_rejects_invalid_persisted_project_ids_without_mutation(
+    tmp_path: Path, project_id: object
+) -> None:
+    database = tmp_path / "invalid-project-id.sqlite3"
+    store = V2ProjectStore(database)
+    store.create_project("studio", _requirements())
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE project_rows SET project_id = ? WHERE namespace = ?",
+            (project_id, V2_STORE_NAMESPACE),
+        )
+    before = database.read_bytes()
+
+    for operation in (store.list_project_ids, store.verify):
+        with pytest.raises(V2ValidationError) as captured:
+            operation()
+        error = captured.value.as_dict()
+        assert error["code"] == "INVALID_V2_PROJECT"
+        assert error["path"] == "project_id"
+        json.dumps(error, allow_nan=False)
+    assert database.read_bytes() == before
+
+
 @pytest.mark.parametrize(
     "row",
     [
