@@ -58,6 +58,7 @@ const context = (): StudioContext => ({
   }],
   preview: {
     glbUrl: null,
+    glbSha256: null,
     partNames: ["beak"],
     compiledAt: null,
     warnings: [{ code: "DIGITAL_ONLY", message: "Physical clearances are unverified.", severity: "warning" }],
@@ -985,11 +986,7 @@ describe("mountCharacterRobotStudio", () => {
       widthPx: 384,
       heightPx: 384,
       cameraDirection: [...cameraDirection] as [number, number, number],
-      pngSha256: "e".repeat(64),
-      dataUrl: "data:image/png;base64,cGl4ZWxz",
-      foregroundSamples: 100,
-      faceDisplaySamples: view === "front" ? 12 : 0,
-      visibleNodeIds: ["beak"],
+      dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAYAAAAGACAYAAAA=",
     }));
     const visualInspection: StudioVisualInspection = {
       status: "ready",
@@ -1006,8 +1003,7 @@ describe("mountCharacterRobotStudio", () => {
         role: "beak",
         expectedInPreview: true,
         rendered: true,
-        visibleViews: ["front"],
-        sampledVisiblePixels: 100,
+        structurallyVisible: true,
       }],
       diagnostics: [],
     };
@@ -1017,6 +1013,11 @@ describe("mountCharacterRobotStudio", () => {
       resolveManualInspect = resolve;
     }));
     let currentContext = context();
+    currentContext.preview = {
+      ...currentContext.preview,
+      glbUrl: `/api/studio/v1/artifacts/${"a".repeat(64)}`,
+      glbSha256: "a".repeat(64),
+    };
     const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
       getContext: async () => currentContext,
       setSelection: async ({ node_id }) => node_id,
@@ -1058,7 +1059,7 @@ describe("mountCharacterRobotStudio", () => {
     expect(document.querySelector("#crs-inspection-diagnostics")?.textContent).toContain(
       "Codex must still compare",
     );
-    expect(document.querySelector("#crs-visual-inspection")?.innerHTML).toContain("cGl4ZWxz");
+    expect(document.querySelector("#crs-visual-inspection")?.innerHTML).toContain("iVBORw0KGgo");
     await vi.waitFor(() => {
       expect(document.querySelector<HTMLButtonElement>("#crs-inspect-views")?.disabled).toBe(false);
     });
@@ -1077,7 +1078,10 @@ describe("mountCharacterRobotStudio", () => {
     resolveSecond(visualInspection);
     resolveFirst(visualInspection);
     const parallelResults = await Promise.all([firstInspection, secondInspection]);
-    expect(parallelResults).toMatchObject([{ status: "ready" }, { status: "ready" }]);
+    expect(parallelResults).toMatchObject([
+      { status: "unavailable", code: "VISUAL_TARGET_CHANGED" },
+      { status: "unavailable", code: "VISUAL_TARGET_CHANGED" },
+    ]);
     expect(captureVisualInspection).toHaveBeenCalledTimes(3);
 
     const staleResult = await webMcpInspection(
@@ -1116,12 +1120,16 @@ describe("mountCharacterRobotStudio", () => {
       preview: {
         ...currentContext.preview,
         glbUrl: `/api/studio/v1/artifacts/${"9".repeat(64)}`,
+        glbSha256: "9".repeat(64),
       },
     };
     await studio.refresh();
     expect(document.querySelector("#crs-visual-inspection")?.hasAttribute("hidden")).toBe(true);
 
-    await webMcpInspection({ target }, { target }, getWebMcpIdentity());
+    await expect(webMcpInspection({ target }, { target }, getWebMcpIdentity())).resolves.toMatchObject({
+      status: "unavailable",
+      code: "VISUAL_GLB_MISMATCH",
+    });
     expect(document.querySelector("#crs-visual-inspection")?.hasAttribute("hidden")).toBe(false);
     let resolveLate!: (value: StudioVisualInspection) => void;
     captureVisualInspection.mockImplementationOnce(
@@ -1142,6 +1150,7 @@ describe("mountCharacterRobotStudio", () => {
       preview: {
         ...currentContext.preview,
         glbUrl: `/api/studio/v1/artifacts/${"8".repeat(64)}`,
+        glbSha256: "8".repeat(64),
       },
     };
     await studio.refresh();

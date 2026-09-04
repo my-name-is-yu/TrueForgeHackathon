@@ -199,7 +199,15 @@ describe("Character Robot Studio WebMCP", () => {
     });
     const inspectVisuals = vi.fn().mockResolvedValue({
       status: "ready",
-      views: [{ view: "front", png_sha256: "b".repeat(64) }],
+      views: [{ view: "front", width_px: 384, height_px: 384 }],
+      content: [
+        { type: "text", text: "Four fixed canonical PNG views are attached." },
+        ...Array.from({ length: 4 }, () => ({
+          type: "image",
+          data: "iVBORw0KGgoAAAANSUhEUgAAAYAAAAGACAYAAAA=",
+          mimeType: "image/png",
+        })),
+      ],
       affects_manufacturing_evidence: false,
     });
     const identity = {
@@ -213,14 +221,29 @@ describe("Character Robot Studio WebMCP", () => {
     const context = tools.find((tool) => tool.name === "get_studio_context");
     const input = { target: { kind: "revision", revision_id: "r001" } };
 
-    await expect(inspect.execute(input)).resolves.toEqual({
+    const response = await inspect.execute(input) as Record<string, unknown>;
+    expect(response).toEqual({
       ...backendResult,
+      content: [
+        { type: "text", text: "Four fixed canonical PNG views are attached." },
+        ...Array.from({ length: 4 }, () => ({
+          type: "image",
+          data: "iVBORw0KGgoAAAANSUhEUgAAAYAAAAGACAYAAAA=",
+          mimeType: "image/png",
+        })),
+      ],
       visual_inspection: {
         status: "ready",
-        views: [{ view: "front", png_sha256: "b".repeat(64) }],
+        views: [{ view: "front", width_px: 384, height_px: 384 }],
         affects_manufacturing_evidence: false,
       },
     });
+    const content = response.content as Array<Record<string, unknown>>;
+    expect(content).toHaveLength(5);
+    expect(content.filter((block) => block.type === "text")).toHaveLength(1);
+    expect(content.filter((block) => block.type === "image")).toHaveLength(4);
+    expect(response.visual_inspection).not.toHaveProperty("content");
+    expect(JSON.stringify(response.visual_inspection)).not.toContain("iVBORw0KGgo");
     expect(inspectVisuals).toHaveBeenCalledWith(input, backendResult, identity);
     await context.execute({});
     expect(inspectVisuals).toHaveBeenCalledTimes(1);

@@ -344,7 +344,9 @@ export function parseStudioContext(value: unknown): StudioContext {
       : (preview.preview_artifact ?? context.current_preview_artifact),
     "context.preview_artifact",
   );
-  const artifactSha = optionalString(rawArtifact?.sha256, "context.preview_artifact.sha256");
+  const artifactSha = rawArtifact?.sha256 === undefined || rawArtifact?.sha256 === null
+    ? null
+    : sha256(rawArtifact.sha256, "context.preview_artifact.sha256");
   const previewWarnings = [
     ...parseWarnings(preview.warnings, "context.preview.warnings"),
     ...parseWarnings(rawDraft?.warnings, "context.draft.warnings"),
@@ -379,6 +381,7 @@ export function parseStudioContext(value: unknown): StudioContext {
         ? (artifactSha ? `/api/studio/v1/artifacts/${artifactSha}` : null)
         : (optionalString(preview.glb_url, "context.preview.glb_url")
           ?? (artifactSha ? `/api/studio/v1/artifacts/${artifactSha}` : null)),
+      glbSha256: artifactSha,
       partNames: preview.part_names === undefined
         ? activeSpecView?.morphologyNodes.map((node) => node.nodeId) ?? []
         : stringArray(preview.part_names, "context.preview.part_names"),

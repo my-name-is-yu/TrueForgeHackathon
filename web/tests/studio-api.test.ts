@@ -98,6 +98,7 @@ describe("Character Robot Studio API boundary", () => {
     });
 
     expect(context.preview.glbUrl).toBe(`/api/studio/v1/artifacts/${sha}`);
+    expect(context.preview.glbSha256).toBe(sha);
     expect(context.draft?.specHash).toBe("d".repeat(64));
     expect(context.preview.partNames).toEqual(["body", "beak"]);
     expect(context.draft?.spec).toMatchObject({

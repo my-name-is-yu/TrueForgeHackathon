@@ -83,6 +83,7 @@ export type ValidationSummary = {
 
 export type StudioPreview = {
   glbUrl: string | null;
+  glbSha256: string | null;
   partNames: string[];
   compiledAt: string | null;
   warnings: StudioWarning[];

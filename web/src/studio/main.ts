@@ -25,6 +25,7 @@ import { createStudioViewer, type StudioViewer } from "./viewer";
 import {
   designTargetsEqual,
   inspectDesignVisuals,
+  VisualInspectionCaptureError,
   visualInspectionToolResult,
   type StudioVisualInspection,
 } from "./visual-inspection";
@@ -130,6 +131,12 @@ const designTarget = (context: StudioContext): DesignTarget | null => (
 
 const activeSpecHash = (context: StudioContext): string | null => (
   context.draft?.specHash ?? context.headSpecSha256
+);
+
+const previewBindingKey = (context: StudioContext | null): string | null => (
+  context?.preview.glbUrl
+    ? JSON.stringify([context.preview.glbUrl, context.preview.glbSha256])
+    : null
 );
 
 const designTargetKey = (context: StudioContext | null): string | null => {
@@ -251,7 +258,6 @@ export async function mountCharacterRobotStudio(
   ));
   const setSelection = dependencies.setSelection ?? setStudioSelection;
   const registerTools = dependencies.registerTools ?? registerStudioWebMcpTools;
-  const captureVisualInspection = dependencies.captureVisualInspection ?? inspectDesignVisuals;
   const inspectDesign = dependencies.inspectDesign ?? (async (input: JsonObject) => {
     const result = await callStudioTool("inspect_design", input);
     if (typeof result !== "object" || result === null || Array.isArray(result)) {
@@ -273,6 +279,7 @@ export async function mountCharacterRobotStudio(
   let context: StudioContext | null = null;
   let selectedNodeId: string | null = null;
   let loadedGlbUrl: string | null = null;
+  let loadedPreviewKey: string | null = null;
   let refreshSequence = 0;
   let selectionSequence = 0;
   let scenarioSequence = 0;
@@ -374,7 +381,7 @@ export async function mountCharacterRobotStudio(
       const caption = create("figcaption");
       caption.append(
         create("strong", undefined, view.label),
-        create("span", undefined, `${view.visibleNodeIds.length} semantic parts visible`),
+        create("span", undefined, "Fixed camera view for visual comparison"),
       );
       figure.append(image, caption);
       views.append(figure);
@@ -407,6 +414,41 @@ export async function mountCharacterRobotStudio(
     nodes: [],
     diagnostics: [{ code, severity: "warning", message }],
   });
+
+  const captureVisualInspection = dependencies.captureVisualInspection ?? (
+    async (input: JsonObject, result: JsonObject): Promise<StudioVisualInspection> => {
+      const expectedPreviewUrl = context?.preview.glbUrl ?? null;
+      const expectedGlbSha256 = context?.preview.glbSha256 ?? null;
+      if (!expectedPreviewUrl || !expectedGlbSha256) {
+        return unavailableVisualInspection(
+          "VISUAL_PREVIEW_UNAVAILABLE",
+          "Canonical views require the exact compiler GLB currently loaded in Studio.",
+        );
+      }
+      return inspectDesignVisuals(input, result, async (source) => {
+        if (source.glbSha256 !== expectedGlbSha256) {
+          throw new VisualInspectionCaptureError(
+            "VISUAL_GLB_MISMATCH",
+            "The inspect_design GLB digest does not match the preview loaded in Studio.",
+          );
+        }
+        if (!viewer.captureCanonicalViews) {
+          throw new VisualInspectionCaptureError(
+            "VISUAL_CAPTURE_UNAVAILABLE",
+            "The shared Studio viewer does not support canonical capture.",
+          );
+        }
+        try {
+          return await viewer.captureCanonicalViews(expectedPreviewUrl);
+        } catch (error) {
+          throw new VisualInspectionCaptureError(
+            "VISUAL_PREVIEW_MISMATCH",
+            error instanceof Error ? error.message : "The loaded compiler GLB could not be captured.",
+          );
+        }
+      });
+    }
+  );
 
   const runVisualInspection: StudioVisualInspectionRunner = async (input, result, identity) => {
     const operationKey = designOperationKey();
@@ -449,11 +491,33 @@ export async function mountCharacterRobotStudio(
     }
     if (
       inspection.status === "ready"
+      && (!inspection.source || !designTargetsEqual(inspection.source.target, currentTarget))
+    ) {
+      const unavailable = unavailableVisualInspection(
+        "VISUAL_TARGET_MISMATCH",
+        "Canonical views were rendered for a different design target.",
+      );
+      if (sequence === inspectionSequence) renderVisualInspection(unavailable);
+      return visualInspectionToolResult(unavailable);
+    }
+    if (
+      inspection.status === "ready"
       && (!inspection.source || inspection.source.specHash !== expectedSpecHash)
     ) {
       const unavailable = unavailableVisualInspection(
         "VISUAL_SPEC_MISMATCH",
         "Canonical views were rendered for a different design specification.",
+      );
+      if (sequence === inspectionSequence) renderVisualInspection(unavailable);
+      return visualInspectionToolResult(unavailable);
+    }
+    if (
+      inspection.status === "ready"
+      && (!inspection.source || inspection.source.glbSha256 !== context?.preview.glbSha256)
+    ) {
+      const unavailable = unavailableVisualInspection(
+        "VISUAL_GLB_MISMATCH",
+        "Canonical views were rendered from a different compiler GLB.",
       );
       if (sequence === inspectionSequence) renderVisualInspection(unavailable);
       return visualInspectionToolResult(unavailable);
@@ -511,6 +575,7 @@ export async function mountCharacterRobotStudio(
     const currentIdentity = studioOperationIdentity();
     return currentIdentity !== null
       && identity.projectId === currentIdentity.projectId
+      && identity.projectGeneration === currentIdentity.projectGeneration
       && identity.operationEpoch === currentIdentity.operationEpoch;
   };
 
@@ -949,7 +1014,8 @@ export async function mountCharacterRobotStudio(
   const renderContext = (nextContext: StudioContext): void => {
     const nextTargetKey = designTargetKey(nextContext);
     const targetChanged = renderedTargetKey !== nextTargetKey;
-    const previewChanged = loadedGlbUrl !== nextContext.preview.glbUrl;
+    const nextPreviewKey = previewBindingKey(nextContext);
+    const previewChanged = loadedPreviewKey !== nextPreviewKey;
     if (targetChanged || previewChanged) {
       designOperationEpoch += 1;
       resetScenarioPlayback();
@@ -1014,6 +1080,7 @@ export async function mountCharacterRobotStudio(
 
     if (previewChanged || targetChanged) {
       loadedGlbUrl = nextContext.preview.glbUrl;
+      loadedPreviewKey = nextPreviewKey;
       if (!loadedGlbUrl) {
         viewer.clearPreview();
         viewState.hidden = false;
@@ -1026,10 +1093,12 @@ export async function mountCharacterRobotStudio(
         viewStatus.textContent = "Waiting for preview";
       } else {
         const requestedGlbUrl = loadedGlbUrl;
+        const requestedPreviewKey = loadedPreviewKey;
         if (spec) {
           void viewer.loadPreview(requestedGlbUrl, spec).catch((error: unknown) => {
-            if (destroyed || loadedGlbUrl !== requestedGlbUrl) return;
+            if (destroyed || loadedGlbUrl !== requestedGlbUrl || loadedPreviewKey !== requestedPreviewKey) return;
             loadedGlbUrl = null;
+            loadedPreviewKey = null;
             viewer.clearPreview();
             setViewState(
               "error",
