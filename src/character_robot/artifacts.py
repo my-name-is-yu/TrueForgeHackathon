@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -44,6 +45,8 @@ class SessionArtifactStore:
         self._descriptors: OrderedDict[str, ArtifactDescriptor] = OrderedDict()
         self._total_bytes = 0
         self._download_pins: dict[str, int] = {}
+        self._display_pins: set[str] = set()
+        self._compile_pins: set[str] = set()
         self._pending_drops: set[str] = set()
         self._eviction_pending = False
 
@@ -74,17 +77,28 @@ class SessionArtifactStore:
         self._total_bytes += descriptor.byte_size
         self._evict_to_budget(protected={descriptor.sha256})
 
-    def restore(self, descriptors: list[ArtifactDescriptor]) -> None:
+    def restore(
+        self,
+        descriptors: list[ArtifactDescriptor],
+        *,
+        display_pins: Sequence[str] = (),
+        compile_pins: Sequence[str] = (),
+    ) -> None:
         """Rebuild the bounded in-memory index from durable manifest metadata.
 
         Missing or corrupt historical objects are deliberately skipped. Their
         immutable Spec remains available and the compiler can regenerate them.
         Objects absent from durable manifests are removed so a process restart
-        cannot hide their bytes from the session budget.
+        cannot hide their bytes from the session budget.  Pin sets are supplied
+        before eviction so a rollback cannot evict its prior displayed pack.
         """
 
         self._descriptors.clear()
         self._total_bytes = 0
+        self._display_pins = set(display_pins)
+        self._compile_pins = set(compile_pins)
+        self._pending_drops.clear()
+        self._eviction_pending = False
         for descriptor in descriptors:
             try:
                 content = self.objects.read_bytes(descriptor.sha256)
@@ -97,12 +111,12 @@ class SessionArtifactStore:
                 self._total_bytes -= previous.byte_size
             self._descriptors[descriptor.sha256] = descriptor
             self._total_bytes += descriptor.byte_size
-        while (
-            len(self._descriptors) > self.maximum_artifacts
-            or self._total_bytes > self.maximum_bytes
-        ):
-            _, descriptor = self._descriptors.popitem(last=False)
-            self._total_bytes -= descriptor.byte_size
+        # Validate and sweep the object tree before eviction can unlink a
+        # descriptor. This keeps a malformed or symlinked root fail-closed.
+        self._remove_unindexed_objects()
+        self._evict_to_budget()
+        self._display_pins.intersection_update(self._descriptors)
+        self._compile_pins.intersection_update(self._descriptors)
         self._remove_unindexed_objects()
 
     def read(self, digest: str) -> tuple[bytes, ArtifactDescriptor]:
@@ -155,6 +169,54 @@ class SessionArtifactStore:
             return
         self._download_pins[digest] = pins - 1
 
+    def reserve_display_pins(self, digests: Sequence[str]) -> None:
+        """Keep one displayed Build Pack boundedly readable across refreshes.
+
+        Digests may be reserved before their bytes are written.  Build Pack
+        generation uses that property so an earlier constituent cannot be
+        evicted while later constituents are being stored under pressure.
+        """
+
+        self._display_pins.update(digests)
+
+    @property
+    def display_pins(self) -> frozenset[str]:
+        return frozenset(self._display_pins)
+
+    def replace_display_pins(self, digests: Sequence[str]) -> None:
+        """Atomically select the one Build Pack that remains displayed."""
+
+        self._display_pins = set(digests)
+        if self._eviction_pending:
+            self._evict_to_budget()
+
+    def reserve_compile_pins(self, digests: Sequence[str]) -> None:
+        """Protect every artifact in the compile batch while it is written."""
+
+        self._compile_pins.update(digests)
+
+    @property
+    def compile_pins(self) -> frozenset[str]:
+        return frozenset(self._compile_pins)
+
+    def replace_compile_pins(self, digests: Sequence[str]) -> None:
+        """Keep only the latest bounded compile batch protected."""
+
+        self._compile_pins = set(digests)
+        if self._eviction_pending:
+            self._evict_to_budget()
+
+    def release_display_pins(self) -> None:
+        """Release the displayed pack and finish any deferred eviction."""
+
+        self._display_pins.clear()
+        for digest in tuple(self._pending_drops):
+            if not self._download_pins.get(digest):
+                self._pending_drops.remove(digest)
+                self._drop(digest)
+        if self._eviction_pending:
+            self._evict_to_budget()
+
     def __contains__(self, digest: object) -> bool:
         return isinstance(digest, str) and digest in self._descriptors
 
@@ -179,6 +241,8 @@ class SessionArtifactStore:
                     if (
                         candidate not in protected
                         and not self._download_pins.get(candidate)
+                        and candidate not in self._display_pins
+                        and candidate not in self._compile_pins
                     )
                 ),
                 None,
@@ -258,7 +322,7 @@ class SessionArtifactStore:
             os.close(object_root_fd)
 
     def _drop(self, digest: str) -> None:
-        if self._download_pins.get(digest):
+        if self._download_pins.get(digest) or digest in self._display_pins:
             self._pending_drops.add(digest)
             return
         descriptor = self._descriptors.pop(digest, None)

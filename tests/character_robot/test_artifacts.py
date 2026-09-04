@@ -88,6 +88,70 @@ def test_session_artifact_download_pin_survives_budget_eviction(tmp_path) -> Non
     assert store._eviction_pending is False
 
 
+def test_session_artifact_display_pin_survives_budget_pressure_until_release(
+    tmp_path,
+) -> None:
+    store = SessionArtifactStore(tmp_path, maximum_artifacts=2, maximum_bytes=8)
+    first = _artifact(b"1111", name="first.glb")
+    second = _artifact(b"2222", name="second.glb")
+    third = _artifact(b"3333", name="third.glb")
+
+    store.put(first, b"1111")
+    store.put(second, b"2222")
+    store.reserve_display_pins([first.sha256, second.sha256])
+
+    store.put(third, b"3333")
+
+    assert first.sha256 in store
+    assert second.sha256 in store
+    assert third.sha256 in store
+    assert store._eviction_pending is True
+    assert store.read(first.sha256)[0] == b"1111"
+    assert store.read(second.sha256)[0] == b"2222"
+    assert store.read(third.sha256)[0] == b"3333"
+
+    store.release_display_pins()
+
+    assert first.sha256 not in store
+    assert second.sha256 in store
+    assert third.sha256 in store
+    assert store._eviction_pending is False
+
+
+def test_session_artifact_compile_batch_pin_is_replaced_without_leaking(
+    tmp_path,
+) -> None:
+    store = SessionArtifactStore(tmp_path, maximum_artifacts=2, maximum_bytes=8)
+    first = _artifact(b"1111", name="first.glb")
+    second = _artifact(b"2222", name="second.glb")
+    third = _artifact(b"3333", name="third.glb")
+
+    store.put(first, b"1111")
+    store.put(second, b"2222")
+    store.replace_compile_pins([first.sha256, second.sha256])
+
+    store.reserve_compile_pins([third.sha256])
+    store.put(third, b"3333")
+    assert store.compile_pins == frozenset({first.sha256, second.sha256, third.sha256})
+    assert store._eviction_pending is True
+
+    # An interrupted replacement restores the prior batch and drops its
+    # partial candidate once the old batch is the only protected set.
+    store.replace_compile_pins([first.sha256, second.sha256])
+    assert third.sha256 not in store
+    assert store.compile_pins == frozenset({first.sha256, second.sha256})
+    assert store._eviction_pending is False
+
+    store.reserve_compile_pins([third.sha256])
+    store.put(third, b"3333")
+    store.replace_compile_pins([third.sha256])
+    assert store.compile_pins == frozenset({third.sha256})
+    assert first.sha256 not in store
+    assert second.sha256 in store
+    assert third.sha256 in store
+    assert store._eviction_pending is False
+
+
 def test_session_artifact_download_defers_drop_until_close(tmp_path) -> None:
     store = SessionArtifactStore(tmp_path)
     descriptor = _artifact(b"pinned")
@@ -153,6 +217,29 @@ def test_restore_replaces_the_descriptor_index_and_deletes_unindexed_objects(
         store.read(discarded.sha256)
     assert not store.objects.path_for(discarded.sha256).exists()
     assert not interrupted_temporary.exists()
+
+
+def test_restore_protects_supplied_pins_during_budget_eviction(tmp_path) -> None:
+    store = SessionArtifactStore(tmp_path, maximum_artifacts=3, maximum_bytes=12)
+    first = _artifact(b"1111", name="first.glb")
+    second = _artifact(b"2222", name="second.glb")
+    third = _artifact(b"3333", name="third.glb")
+
+    for descriptor, content in (
+        (first, b"1111"),
+        (second, b"2222"),
+        (third, b"3333"),
+    ):
+        store.put(descriptor, content)
+    store.maximum_artifacts = 2
+
+    store.restore([first, second, third], display_pins=[first.sha256])
+
+    assert first.sha256 in store
+    assert second.sha256 not in store
+    assert third.sha256 in store
+    assert store.display_pins == frozenset({first.sha256})
+    assert store._eviction_pending is False
 
 
 def test_restore_refuses_to_sweep_through_a_symlinked_object_root(tmp_path) -> None:
