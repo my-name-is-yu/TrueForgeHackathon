@@ -169,12 +169,104 @@ export const STUDIO_CSS = `
 
 [data-character-robot-studio] .crs-stage-footer {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
   padding: 13px 16px 15px;
   border-top: 1px solid var(--crs-line);
 }
+
+[data-character-robot-studio] .crs-inspect-button {
+  padding: 8px 10px;
+  border: 1px solid rgba(117, 213, 209, .45);
+  border-radius: 9px;
+  background: rgba(21, 94, 90, .86);
+  color: #fff;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+[data-character-robot-studio] .crs-inspect-button:disabled { cursor: wait; opacity: .5; }
+
+[data-character-robot-studio] .crs-visual-inspection {
+  border-top: 1px solid var(--crs-line);
+  background: rgba(238, 244, 241, .76);
+}
+
+[data-character-robot-studio] .crs-visual-inspection[hidden] { display: none; }
+
+[data-character-robot-studio] .crs-inspection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+}
+
+[data-character-robot-studio] .crs-inspection-head strong {
+  display: block;
+  margin-top: 2px;
+  font: 650 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+[data-character-robot-studio] .crs-inspection-views {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 16px 14px;
+}
+
+[data-character-robot-studio] .crs-inspection-view {
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--crs-line);
+  border-radius: 11px;
+  background: #788180;
+}
+
+[data-character-robot-studio] .crs-inspection-view img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  object-fit: cover;
+}
+
+[data-character-robot-studio] .crs-inspection-view figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 7px;
+  padding: 7px 8px;
+  background: rgba(255, 255, 255, .94);
+  color: var(--crs-muted);
+  font-size: 9px;
+}
+
+[data-character-robot-studio] .crs-inspection-view figcaption strong { color: var(--crs-ink); }
+
+[data-character-robot-studio] .crs-inspection-diagnostics { padding: 0 16px 14px; }
+
+[data-character-robot-studio] .crs-inspection-note {
+  margin: 0;
+  padding: 9px 10px;
+  border-left: 3px solid var(--crs-teal);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .7);
+  color: var(--crs-muted);
+  font-size: 11px;
+}
+
+[data-character-robot-studio] .crs-inspection-note strong {
+  display: block;
+  color: var(--crs-ink);
+  font: 750 9px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+[data-character-robot-studio] .crs-inspection-note.warning { border-left-color: var(--crs-amber); }
+[data-character-robot-studio] .crs-inspection-note.error { border-left-color: var(--crs-coral); }
+[data-character-robot-studio] .crs-inspection-note + .crs-inspection-note { margin-top: 6px; }
 
 [data-character-robot-studio] .crs-scenario-buttons { display: flex; flex-wrap: wrap; gap: 7px; }
 
@@ -355,6 +447,7 @@ export const STUDIO_CSS = `
   [data-character-robot-studio] .crs-top-status { justify-content: flex-start; }
   [data-character-robot-studio] .crs-stage { min-height: 420px; }
   [data-character-robot-studio] .crs-stage-footer { grid-template-columns: 1fr; }
+  [data-character-robot-studio] .crs-inspection-views { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   [data-character-robot-studio] .crs-footnote { flex-direction: column; gap: 4px; }
 }
 

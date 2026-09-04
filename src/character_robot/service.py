@@ -51,6 +51,8 @@ from .schemas import (
     ArtifactDescriptor,
     ArtifactManifest,
     CharacterRobotSpec,
+    CompiledPartBounds,
+    CompiledPartMetadata,
     CreateRevisionFromDraftInput,
     CreateRevisionFromDraftOutput,
     DraftSnapshot,
@@ -209,6 +211,7 @@ class _CompileView:
     compiler_version: str | None
     cad_engine_version: str | None
     profile_id: str | None
+    parts: tuple[CompiledPartMetadata, ...]
     artifacts: tuple[ArtifactDescriptor, ...]
     issues: tuple[ValidationIssue, ...]
 
@@ -668,6 +671,11 @@ class CharacterRobotService:
         async with self._lock:
             spec = self._target_spec(value.target, request_id)
             compiled = await self._compile(spec, request_id)
+            preview_artifact = (
+                self._artifact_of_kind(compiled, "glb")
+                if compiled is not None
+                else None
+            )
             nodes = [
                 NodeSummary(
                     node_id=node.node_id,
@@ -692,10 +700,18 @@ class CharacterRobotService:
                 nodes=nodes,
                 dimensions_mm=compiled.dimensions_mm if compiled else None,
                 geometry_sha256=compiled.geometry_sha256 if compiled else None,
+                preview_artifact=preview_artifact,
+                compiled_parts=list(compiled.parts) if compiled else [],
                 warnings=(
                     []
-                    if compiled is not None
-                    else ["CAD preview is unavailable until a compiler is connected."]
+                    if preview_artifact is not None
+                    else [
+                        (
+                            "CAD preview is unavailable until a compiler is connected."
+                            if compiled is None
+                            else "The compiler did not produce a GLB preview artifact."
+                        )
+                    ]
                 ),
             )
             self._persist(request_id)
@@ -1963,7 +1979,17 @@ class CharacterRobotService:
         else:
             x, y, z = dimensions_value
             dimensions = PositiveVec3(x=float(x), y=float(y), z=float(z))
-        drive_wheels = _drive_wheel_geometry(_value(result, "parts"))
+        raw_parts = _value(result, "parts")
+        if not isinstance(raw_parts, Sequence) or isinstance(
+            raw_parts, (str, bytes, bytearray)
+        ):
+            raise ValueError("compiled CAD parts must be a sequence")
+        if not 1 <= len(raw_parts) <= 256:
+            raise ValueError("compiled CAD parts must contain between 1 and 256 parts")
+        parts = tuple(_compiled_part_metadata(part) for part in raw_parts)
+        if len({part.name for part in parts}) != len(parts):
+            raise ValueError("compiled CAD part names must be unique")
+        drive_wheels = _drive_wheel_geometry(raw_parts)
 
         geometry_sha256 = str(_value(result, "geometry_sha256"))
         if re.fullmatch(r"[0-9a-f]{64}", geometry_sha256) is None:
@@ -1996,6 +2022,7 @@ class CharacterRobotService:
                 compiler_version=_optional_value(result, "compiler_version"),
                 cad_engine_version=_optional_value(result, "build123d_version"),
                 profile_id=_optional_value(result, "profile_id"),
+                parts=parts,
                 artifacts=tuple(artifact.descriptor for artifact in artifacts),
                 issues=issues,
             ),
@@ -2443,6 +2470,24 @@ def _bounds_vector(value: object, label: str) -> tuple[float, float, float]:
     if not all(math.isfinite(coordinate) for coordinate in coordinates):
         raise ValueError(f"compiled {label} must be finite")
     return coordinates  # type: ignore[return-value]
+
+
+def _compiled_part_metadata(part: object) -> CompiledPartMetadata:
+    bounds = _value(part, "bounds")
+    return CompiledPartMetadata(
+        name=_value(part, "name"),
+        role=_value(part, "role"),
+        bounds=CompiledPartBounds(
+            minimum_mm=_bounds_vector(
+                _value(bounds, "minimum_mm"), "part minimum bounds"
+            ),
+            maximum_mm=_bounds_vector(
+                _value(bounds, "maximum_mm"), "part maximum bounds"
+            ),
+        ),
+        volume_mm3=_value(part, "volume_mm3"),
+        printable=_value(part, "printable"),
+    )
 
 
 def _drive_wheel_geometry(parts: object) -> _DriveWheelGeometry:

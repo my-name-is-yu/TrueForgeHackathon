@@ -350,7 +350,9 @@ _TOOL_DESCRIPTIONS = {
     ),
     "inspect_design": (
         "Inspect one exact draft or immutable revision, including semantic morphology "
-        "nodes and compiled geometry identity."
+        "nodes, compiled geometry identity, and the exact compiler GLB. In the Studio "
+        "browser this also captures four canonical views and generic render diagnostics "
+        "for visual comparison with the requested motif and design brief."
     ),
     "preview_scenario": (
         "Preview an idle, greeting, listening, thinking, delight, or sleep scenario "

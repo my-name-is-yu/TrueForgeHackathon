@@ -157,12 +157,16 @@ const parseMorphologyNodes = (value: unknown, path: string): MorphologyNodeSumma
     const nodeId = requiredString(node.node_id, `${path}[${index}].node_id`);
     const role = requiredString(node.role, `${path}[${index}].role`);
     const attachment = optionalRecord(node.attachment, `${path}[${index}].attachment`);
+    if (node.visible !== undefined && typeof node.visible !== "boolean") {
+      throw new StudioContractError(`${path}[${index}].visible must be a boolean`);
+    }
     return {
       nodeId,
       role,
       label: optionalString(node.label, `${path}[${index}].label`) ?? role.replaceAll("_", " "),
       parentNodeId: optionalString(attachment?.parent_node_id, `${path}[${index}].attachment.parent_node_id`),
       parentAnchor: optionalString(attachment?.parent_anchor, `${path}[${index}].attachment.parent_anchor`),
+      visible: node.visible ?? true,
     };
   });
 };
@@ -199,7 +203,7 @@ const parsePersonalityTraits = (value: unknown, path: string): string[] => {
   });
 };
 
-const parseSpec = (value: unknown, path: string): CharacterSpecView => {
+export const parseCharacterSpecView = (value: unknown, path: string): CharacterSpecView => {
   const spec = record(value, path);
   const identity = optionalRecord(spec.identity, `${path}.identity`) ?? {};
   const morphology = optionalRecord(spec.morphology, `${path}.morphology`);
@@ -331,14 +335,18 @@ export function parseStudioContext(value: unknown): StudioContext {
   const rawDraft = optionalRecord(context.draft, "context.draft");
   const rawCurrentSpec = optionalRecord(context.current_spec, "context.current_spec");
   const activeSpec = rawDraft?.spec ?? rawCurrentSpec;
-  const activeSpecView = activeSpec ? parseSpec(activeSpec, "context.active_spec") : null;
+  const activeSpecView = activeSpec
+    ? parseCharacterSpecView(activeSpec, "context.active_spec")
+    : null;
   const rawArtifact = optionalRecord(
     rawDraft
       ? rawDraft.preview_artifact
       : (preview.preview_artifact ?? context.current_preview_artifact),
     "context.preview_artifact",
   );
-  const artifactSha = optionalString(rawArtifact?.sha256, "context.preview_artifact.sha256");
+  const artifactSha = rawArtifact?.sha256 === undefined || rawArtifact?.sha256 === null
+    ? null
+    : sha256(rawArtifact.sha256, "context.preview_artifact.sha256");
   const previewWarnings = [
     ...parseWarnings(preview.warnings, "context.preview.warnings"),
     ...parseWarnings(rawDraft?.warnings, "context.draft.warnings"),
@@ -358,19 +366,22 @@ export function parseStudioContext(value: unknown): StudioContext {
     headSpecSha256: optionalString(context.head_spec_sha256, "context.head_spec_sha256"),
     draft: rawDraft
       ? {
-        spec: parseSpec(rawDraft.spec, "context.draft.spec"),
+        spec: parseCharacterSpecView(rawDraft.spec, "context.draft.spec"),
         draftHash: requiredString(rawDraft.draft_hash, "context.draft.draft_hash"),
         specHash: sha256(rawDraft.spec_hash, "context.draft.spec_hash"),
         baseRevisionId: optionalString(rawDraft.base_revision_id, "context.draft.base_revision_id"),
       }
       : null,
-    currentSpec: rawCurrentSpec ? parseSpec(rawCurrentSpec, "context.current_spec") : null,
+    currentSpec: rawCurrentSpec
+      ? parseCharacterSpecView(rawCurrentSpec, "context.current_spec")
+      : null,
     profiles: rawProfiles.map((profile, index) => parseProfile(profile, `context.profiles[${index}]`)),
     preview: {
       glbUrl: rawDraft
         ? (artifactSha ? `/api/studio/v1/artifacts/${artifactSha}` : null)
         : (optionalString(preview.glb_url, "context.preview.glb_url")
           ?? (artifactSha ? `/api/studio/v1/artifacts/${artifactSha}` : null)),
+      glbSha256: artifactSha,
       partNames: preview.part_names === undefined
         ? activeSpecView?.morphologyNodes.map((node) => node.nodeId) ?? []
         : stringArray(preview.part_names, "context.preview.part_names"),

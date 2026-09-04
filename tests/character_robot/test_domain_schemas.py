@@ -7,6 +7,8 @@ from pydantic import ValidationError
 
 from character_robot.schemas import (
     CharacterRobotSpec,
+    CompiledPartBounds,
+    CompiledPartMetadata,
     MorphologyGraph,
     TOOL_INPUT_MODELS,
     TOOL_NAMES,
@@ -173,6 +175,26 @@ def test_public_surface_has_exactly_eight_semantic_operations() -> None:
     )
     assert len(TOOL_INPUT_MODELS) == 8
     assert len(TOOL_OUTPUT_MODELS) == 8
+
+
+def test_compiled_part_metadata_is_strict_and_rejects_inverted_bounds() -> None:
+    part = CompiledPartMetadata(
+        name="wheel_left",
+        role="drive_wheel",
+        bounds=CompiledPartBounds(
+            minimum_mm=(-12.0, -20.0, 0.0),
+            maximum_mm=(-4.0, 20.0, 40.0),
+        ),
+        volume_mm3=2500.0,
+        printable=False,
+    )
+    assert part.bounds.maximum_mm[2] == 40.0
+
+    with pytest.raises(ValidationError, match="empty or inverted"):
+        CompiledPartBounds(
+            minimum_mm=(0.0, 0.0, 0.0),
+            maximum_mm=(0.0, 1.0, 1.0),
+        )
 
 
 def test_character_spec_is_strict_bounded_and_behavior_references_face_contract() -> (

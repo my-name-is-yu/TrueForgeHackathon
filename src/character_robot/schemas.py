@@ -542,6 +542,25 @@ class NodeSummary(StrictModel):
     node_hash: Sha256
 
 
+class CompiledPartBounds(StrictModel):
+    minimum_mm: tuple[FiniteFloat, FiniteFloat, FiniteFloat]
+    maximum_mm: tuple[FiniteFloat, FiniteFloat, FiniteFloat]
+
+    @model_validator(mode="after")
+    def require_nonempty_bounds(self) -> Self:
+        if any(self.maximum_mm[axis] <= self.minimum_mm[axis] for axis in range(3)):
+            raise ValueError("compiled part bounds are empty or inverted")
+        return self
+
+
+class CompiledPartMetadata(StrictModel):
+    name: ShortText
+    role: ShortText
+    bounds: CompiledPartBounds
+    volume_mm3: FiniteFloat = Field(ge=0.0)
+    printable: StrictBool
+
+
 class ValidationIssue(StrictModel):
     code: SafeIdentifier
     severity: Literal["info", "warning", "error"]
@@ -743,6 +762,10 @@ class InspectDesignOutput(ToolOutput):
     nodes: list[NodeSummary]
     dimensions_mm: PositiveVec3 | None
     geometry_sha256: Sha256 | None
+    preview_artifact: ArtifactDescriptor | None
+    compiled_parts: list[CompiledPartMetadata] = Field(
+        default_factory=list, max_length=256
+    )
     warnings: list[SafeText] = Field(default_factory=list)
 
 
@@ -840,6 +863,8 @@ __all__ = [
     "BehaviorKeyframe",
     "BehaviorScenario",
     "CharacterRobotSpec",
+    "CompiledPartBounds",
+    "CompiledPartMetadata",
     "CompilerVersions",
     "CreateRevisionFromDraftInput",
     "CreateRevisionFromDraftOutput",
