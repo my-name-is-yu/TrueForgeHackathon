@@ -139,7 +139,29 @@ Human <-> Three.js workbench + one-change shared draft
 See [the implemented design](docs/asset-autopsy-mvp-design.md) for the responsibility, evidence,
 revision, and qualification contracts.
 
-## Local design workbench
+## Local design workbenches
+
+### Character Robot Studio (standalone)
+
+Build the frontend once, then run the Studio-only application:
+
+```bash
+cd web
+npm ci
+npm run build
+cd ..
+CHARACTER_ROBOT_STUDIO_ROOT=trueforge-data/character-studio \
+  uv run uvicorn character_robot.standalone:create_studio_app \
+  --factory --host 127.0.0.1 --port 8713
+```
+
+Open `http://127.0.0.1:8713/studio` in the Codex desktop browser.  The
+standalone process serves only the Character Robot Studio page, assets, health
+check, and `/api/studio/v1/*` routes; `/autopsy` and Asset Autopsy API routes
+are intentionally unavailable.  See [the product-agent instructions](docs/character-robot-studio-agent.md)
+for the shared-browser WebMCP loop and digital/physical claim boundary.
+
+### Combined compatibility workbench
 
 ```bash
 cd web
