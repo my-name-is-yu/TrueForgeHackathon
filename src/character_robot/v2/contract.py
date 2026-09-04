@@ -28,6 +28,7 @@ from pydantic import (
 PROJECT_SCHEMA_VERSION = "character-project/v2"
 SPEC_SCHEMA_VERSION = "character-robot/v2"
 V2_STORE_NAMESPACE = "character-robot/v2"
+SAFE_TEXT_MAX_LENGTH = 4000
 
 READINESS_DOMAINS: tuple[str, ...] = (
     "requirements",
@@ -42,6 +43,8 @@ READINESS_DOMAINS: tuple[str, ...] = (
     "artifact_manifest",
 )
 READINESS_STATES: tuple[str, ...] = ("missing", "dirty", "blocked", "checked")
+_MAX_TEXT_COLLECTION_ITEMS = 128
+_MAX_READINESS_OUTPUT_ITEMS = len(READINESS_DOMAINS) * _MAX_TEXT_COLLECTION_ITEMS
 
 SafeText: TypeAlias = Annotated[
     str,
@@ -49,7 +52,7 @@ SafeText: TypeAlias = Annotated[
         strict=True,
         strip_whitespace=True,
         min_length=1,
-        max_length=4000,
+        max_length=SAFE_TEXT_MAX_LENGTH,
     ),
 ]
 ShortText: TypeAlias = Annotated[
@@ -200,9 +203,11 @@ class VoltageConstraints(V2Model):
         return self
 
 
-def _tuple_of_text(value: tuple[str, ...]) -> tuple[str, ...]:
-    if len(value) > 128:
-        raise ValueError("text collection cannot contain more than 128 values")
+def _tuple_of_text(
+    value: tuple[str, ...], *, max_items: int = _MAX_TEXT_COLLECTION_ITEMS
+) -> tuple[str, ...]:
+    if len(value) > max_items:
+        raise ValueError(f"text collection cannot contain more than {max_items} values")
     if len(set(value)) != len(value):
         raise ValueError("text collection values must be unique")
     return value
@@ -263,8 +268,8 @@ class DomainRecord(V2Model):
     domain_id: DomainName
     entity_ids: tuple[SafeIdentifier, ...] = Field(default=())
     content_digest: Sha256 | None = None
-    blockers: tuple[ShortText, ...] = Field(default=())
-    unknowns: tuple[ShortText, ...] = Field(default=())
+    blockers: tuple[SafeText, ...] = Field(default=())
+    unknowns: tuple[SafeText, ...] = Field(default=())
     evidence_ids: tuple[SafeIdentifier, ...] = Field(default=())
 
     @field_validator("entity_ids", "blockers", "unknowns", "evidence_ids")
@@ -311,8 +316,13 @@ class RobotSystemSpec(V2Model):
 class DomainReadiness(V2Model):
     domain_id: DomainName
     state: Literal["missing", "dirty", "blocked", "checked"]
-    blockers: tuple[ShortText, ...] = Field(default=())
-    unknowns: tuple[ShortText, ...] = Field(default=())
+    blockers: tuple[SafeText, ...] = Field(default=())
+    unknowns: tuple[SafeText, ...] = Field(default=())
+
+    @field_validator("blockers", "unknowns")
+    @classmethod
+    def validate_text_collections(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _tuple_of_text(value)
 
 
 class ReadinessMatrix(V2Model):
@@ -438,8 +448,14 @@ class WriteResult(V2Model):
     invalidated_domains: tuple[DomainName, ...] = Field(default=())
     invalidated_artifacts: tuple[SafeIdentifier, ...] = Field(default=())
     invalidated_evidence: tuple[SafeIdentifier, ...] = Field(default=())
-    blockers: tuple[ShortText, ...] = Field(default=())
-    next_actions: tuple[ShortText, ...] = Field(default=())
+    blockers: tuple[SafeText, ...] = Field(default=())
+    next_actions: tuple[SafeText, ...] = Field(default=())
+
+    @field_validator("blockers", "next_actions")
+    @classmethod
+    def validate_output_collections(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _tuple_of_text(value, max_items=_MAX_READINESS_OUTPUT_ITEMS)
+
     next_target_token: Sha256
 
     @model_validator(mode="after")
@@ -502,6 +518,7 @@ __all__ = [
     "Requirements",
     "ReadinessMatrix",
     "RobotSystemSpec",
+    "SAFE_TEXT_MAX_LENGTH",
     "SafeIdentifier",
     "SafeText",
     "Sha256",

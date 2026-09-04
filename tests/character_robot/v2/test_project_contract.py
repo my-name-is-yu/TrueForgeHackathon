@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
+import threading
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from character_robot.project_store import ProjectStore as V1ProjectStore
+from character_robot.project_store import (
+    ProjectAlreadyExistsError,
+    ProjectNotFoundError,
+    ProjectStore as V1ProjectStore,
+)
 from character_robot.v2 import (
     DomainRecord,
     ImmutableRequirementsError,
+    PROJECT_SCHEMA_VERSION,
     Requirements,
     READINESS_DOMAINS,
     RobotSystemSpec,
@@ -19,7 +26,9 @@ from character_robot.v2 import (
     V2ProjectService,
     V2ProjectSnapshot,
     V2ProjectStore,
+    V2ContractError,
     V2ValidationError,
+    SAFE_TEXT_MAX_LENGTH,
     calculate_active_target_token,
     derive_readiness,
 )
@@ -113,6 +122,25 @@ def test_readiness_is_complete_server_derived_and_physical_verification_pending(
     assert dirty.design_complete is False
     assert dirty.datasheet_checked is False
     assert dirty.physical_verification_pending is True
+
+
+def test_readiness_preserves_max_length_requirement_text(tmp_path: Path) -> None:
+    question = "q" * SAFE_TEXT_MAX_LENGTH
+    assumption = "a" * SAFE_TEXT_MAX_LENGTH
+    requirements = _requirements(
+        unresolved_questions=[question],
+        assumptions=[assumption],
+    )
+    spec = RobotSystemSpec(project_id="studio", requirements=requirements)
+    matrix = derive_readiness(spec)
+    requirements_readiness = matrix.for_domain("requirements")
+    assert requirements_readiness.blockers == (question,)
+    assert requirements_readiness.unknowns == (assumption,)
+
+    service = V2ProjectService(tmp_path / "projects.sqlite3")
+    created = service.create_project("studio", requirements)
+    result = service.write_project("studio", created.active_target_token)
+    assert result.blockers[0] == question
 
 
 def test_target_token_changes_for_every_bound_field() -> None:
@@ -232,6 +260,68 @@ def test_v1_row_is_rejected_before_v2_parsing_without_mutation(tmp_path: Path) -
     assert database.read_bytes() == before
 
 
+def test_v1_and_v2_creation_share_a_database_namespace(tmp_path: Path) -> None:
+    v1_database = tmp_path / "v1-first.sqlite3"
+    v1 = V1ProjectStore(v1_database)
+    v2 = V2ProjectStore(v1_database)
+    v1_snapshot = v1.create_project("shared")
+    before = v1_database.read_bytes()
+    with pytest.raises(UnsupportedSchemaVersionError):
+        v2.create_project("shared", _requirements())
+    assert v1_database.read_bytes() == before
+    assert v1.load_project("shared") == v1_snapshot
+
+    v2_database = tmp_path / "v2-first.sqlite3"
+    v2 = V2ProjectStore(v2_database)
+    v2_snapshot = v2.create_project("shared", _requirements())
+    v1 = V1ProjectStore(v2_database)
+    with pytest.raises(ProjectAlreadyExistsError):
+        v1.create_project("shared")
+    assert v2.load_project("shared") == v2_snapshot
+    with pytest.raises(ProjectNotFoundError):
+        v1.load_project("shared")
+
+
+def test_concurrent_v1_and_v2_creation_has_one_admitted_owner(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "concurrent.sqlite3"
+    v1 = V1ProjectStore(database)
+    v2 = V2ProjectStore(database)
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = [None, None]
+
+    def run(index: int, operation) -> None:
+        barrier.wait()
+        try:
+            outcomes[index] = operation()
+        except Exception as error:  # capture each admission result for assertions
+            outcomes[index] = error
+
+    threads = (
+        threading.Thread(
+            target=run,
+            args=(0, lambda: v1.create_project("shared")),
+        ),
+        threading.Thread(
+            target=run,
+            args=(1, lambda: v2.create_project("shared", _requirements())),
+        ),
+    )
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    successes = [outcome for outcome in outcomes if not isinstance(outcome, Exception)]
+    failures = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert isinstance(
+        failures[0], (ProjectAlreadyExistsError, UnsupportedSchemaVersionError)
+    )
+
+
 def test_service_owns_result_metadata_and_returns_next_token(
     tmp_path: Path,
 ) -> None:
@@ -246,7 +336,7 @@ def test_service_owns_result_metadata_and_returns_next_token(
         },
     )
     assert result.state.generation == 1
-    assert result.changed_entities == ("active_draft",)
+    assert result.changed_entities == ("active_draft", "active_draft_digest")
     assert result.invalidated_domains == ()
     assert result.invalidated_artifacts == ()
     assert result.invalidated_evidence == ()
@@ -280,9 +370,82 @@ def test_service_owns_result_metadata_and_returns_next_token(
         )
 
 
-def test_environment_constraints_require_explicit_environment_facts() -> None:
+def test_changed_entities_include_digest_only_changes(tmp_path: Path) -> None:
+    service = V2ProjectService(tmp_path / "projects.sqlite3")
+    created = service.create_project("studio", _requirements())
+    with_draft = service.write_project(
+        "studio",
+        created.active_target_token,
+        update={
+            "active_draft_id": "draft",
+            "active_draft_digest": "d" * 64,
+        },
+    )
+    digest_only = service.write_project(
+        "studio",
+        with_draft.next_target_token,
+        update={"active_draft_digest": "e" * 64},
+    )
+    assert digest_only.changed_entities == ("active_draft_digest",)
+
+    with_head = service.write_project(
+        "studio",
+        digest_only.next_target_token,
+        update={
+            "committed_head_id": "head",
+            "committed_head_digest": "a" * 64,
+        },
+    )
+    head_digest_only = service.write_project(
+        "studio",
+        with_head.next_target_token,
+        update={"committed_head_digest": "b" * 64},
+    )
+    assert head_digest_only.changed_entities == ("committed_head_digest",)
+
+
+def test_write_result_validation_precedes_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "projects.sqlite3"
+    service = V2ProjectService(database)
+    created = service.create_project("studio", _requirements())
+    before = database.read_bytes()
+    too_long = "x" * (SAFE_TEXT_MAX_LENGTH + 1)
+    monkeypatch.setattr(
+        V2ProjectService,
+        "_readiness_actions",
+        staticmethod(lambda readiness: ((), (too_long,))),
+    )
+
+    with pytest.raises(V2ValidationError) as captured:
+        service.write_project(
+            "studio",
+            created.active_target_token,
+            update={
+                "active_draft_id": "draft",
+                "active_draft_digest": "d" * 64,
+            },
+        )
+    assert captured.value.as_dict()["path"] == "write_result"
+    assert database.read_bytes() == before
+    unchanged = service.get_project_state("studio")
+    assert unchanged.generation == created.generation
+    assert unchanged.active_target_token == created.active_target_token
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"description": "indoor desktop"},
+        {"indoor_only": True},
+    ],
+)
+def test_environment_constraints_require_explicit_environment_facts(
+    environment: dict[str, object],
+) -> None:
     with pytest.raises(ValidationError):
-        _requirements(environment={"description": "indoor desktop"})
+        _requirements(environment=environment)
 
 
 def test_public_write_cannot_self_promote_a_domain_to_checked(tmp_path: Path) -> None:
@@ -320,6 +483,72 @@ def test_malformed_schema_and_non_finite_values_are_structured(tmp_path: Path) -
             content_digest="d" * 64,
             checked=True,
         )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        object(),
+        float("nan"),
+        float("inf"),
+    ],
+)
+def test_mapping_import_serialization_failures_are_structured(
+    tmp_path: Path, value: object
+) -> None:
+    store = V2ProjectStore(tmp_path / "projects.sqlite3")
+    with pytest.raises(V2ValidationError) as captured:
+        store.import_payload(
+            {
+                "schema_version": PROJECT_SCHEMA_VERSION,
+                "unserializable": value,
+            }
+        )
+    error = captured.value.as_dict()
+    assert error["code"] == "INVALID_V2_PROJECT"
+    assert error["path"] == "$"
+    json.dumps(error, allow_nan=False)
+    assert not (tmp_path / "projects.sqlite3").exists()
+
+
+def test_recursive_mapping_import_serialization_failure_is_structured(
+    tmp_path: Path,
+) -> None:
+    store = V2ProjectStore(tmp_path / "projects.sqlite3")
+    payload: dict[str, object] = {"schema_version": PROJECT_SCHEMA_VERSION}
+    payload["recursive"] = payload
+    with pytest.raises(V2ValidationError) as captured:
+        store.import_payload(payload)
+    assert captured.value.as_dict()["code"] == "INVALID_V2_PROJECT"
+    assert not (tmp_path / "projects.sqlite3").exists()
+
+
+def test_error_dict_is_bounded_and_json_safe_for_arbitrary_values() -> None:
+    error = V2ContractError(
+        code=b"c" * 10_000,
+        path=object(),
+        expected={
+            "bytes": b"b" * 10_000,
+            "non_finite": float("nan"),
+            "items": list(range(10_000)),
+        },
+        actual=object(),
+        retryable=object(),
+        current_target=b"t" * 10_000,
+        next_actions=object(),
+    )
+    payload = error.as_dict()
+    encoded = json.dumps(payload, allow_nan=False).encode("utf-8")
+    assert len(encoded) <= 16 * 1024
+    assert set(payload) == {
+        "code",
+        "path",
+        "expected",
+        "actual",
+        "retryable",
+        "current_target",
+        "next_actions",
+    }
 
 
 def test_v1_import_payload_is_rejected_without_creating_store(tmp_path: Path) -> None:

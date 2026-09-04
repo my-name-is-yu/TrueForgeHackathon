@@ -12,6 +12,7 @@ from .contract import (
     READINESS_DOMAINS,
     Requirements,
     RobotSystemSpec,
+    SAFE_TEXT_MAX_LENGTH,
     V2ProjectSnapshot,
     WriteResult,
 )
@@ -107,24 +108,40 @@ class V2ProjectService:
             raise ImmutableRequirementsError(current_target=current.active_target_token)
 
         candidate_snapshot = current.model_copy(update={"spec": candidate})
-        saved = self.store.save_project(
+        changed = self._changed_entities(current.spec, candidate)
+        invalidated = self._changed_domains(current.spec, candidate)
+        next_state = candidate_snapshot.model_copy(
+            update={"generation": current.generation + 1}
+        )
+        try:
+            derived_blockers, derived_actions = self._readiness_actions(
+                next_state.readiness
+            )
+            result = WriteResult(
+                state=next_state,
+                changed_entities=changed,
+                invalidated_domains=invalidated,
+                # Artifact and evidence stores are introduced by later V2 issues.
+                invalidated_artifacts=(),
+                invalidated_evidence=(),
+                blockers=derived_blockers,
+                next_actions=derived_actions,
+                next_target_token=next_state.active_target_token,
+            )
+        except (TypeError, ValueError, ValidationError) as error:
+            raise V2ValidationError(
+                path="write_result",
+                expected="a valid server-derived WriteResult",
+                actual=str(error),
+            ) from error
+
+        self.store.save_project(
             candidate_snapshot,
             expected_target_token=active_target_token,
         )
-        changed = self._changed_entities(current.spec, candidate)
-        invalidated = self._changed_domains(current.spec, candidate)
-        derived_blockers, derived_actions = self._readiness_actions(saved.readiness)
-        return WriteResult(
-            state=saved,
-            changed_entities=changed,
-            invalidated_domains=invalidated,
-            # Artifact and evidence stores are introduced by later V2 issues.
-            invalidated_artifacts=(),
-            invalidated_evidence=(),
-            blockers=derived_blockers,
-            next_actions=derived_actions,
-            next_target_token=saved.active_target_token,
-        )
+        # ``save_project`` applies the same one-step generation transition that
+        # was validated above and returns the equivalent persisted snapshot.
+        return result
 
     @staticmethod
     def _changed_entities(
@@ -139,8 +156,12 @@ class V2ProjectService:
         ]
         if before.committed_head_id != after.committed_head_id:
             changed.append("committed_head")
+        if before.committed_head_digest != after.committed_head_digest:
+            changed.append("committed_head_digest")
         if before.active_draft_id != after.active_draft_id:
             changed.append("active_draft")
+        if before.active_draft_digest != after.active_draft_digest:
+            changed.append("active_draft_digest")
         return tuple(changed)
 
     @staticmethod
@@ -161,8 +182,12 @@ class V2ProjectService:
         actions: list[str] = []
         for domain in readiness.domains:
             if domain.state == "blocked":
+                prefix = f"{domain.domain_id}: "
                 blockers.extend(
-                    f"{domain.domain_id}: {blocker}" for blocker in domain.blockers
+                    blocker
+                    if len(prefix) + len(blocker) > SAFE_TEXT_MAX_LENGTH
+                    else f"{prefix}{blocker}"
+                    for blocker in domain.blockers
                 )
                 if not domain.blockers:
                     blockers.append(f"{domain.domain_id}: blocked")

@@ -31,6 +31,11 @@ from .errors import (
 
 MAX_PROJECT_BYTES = 64 * 1024 * 1024
 _TABLE_NAME = "project_rows"
+_LEGACY_TABLE_NAME = "projects"
+_V2_INSERT_TRIGGER = "v2_prevent_legacy_project_collision"
+_V2_UPDATE_TRIGGER = "v2_prevent_legacy_project_update_collision"
+_LEGACY_INSERT_TRIGGER = "v2_prevent_v2_project_collision"
+_LEGACY_UPDATE_TRIGGER = "v2_prevent_v2_project_update_collision"
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -83,10 +88,16 @@ class V2ProjectStore:
         snapshot = empty_v2_project_snapshot(project_id, requirements)
         payload, digest = self._encode(snapshot)
         with self._lock, self._connection() as connection:
+            # Keep a rejected legacy admission read-only.  A second check is
+            # required after taking the write lock to close the admission race.
             self._reject_legacy_if_present(connection, project_id)
-            self._ensure_schema(connection)
             try:
                 connection.execute("BEGIN IMMEDIATE")
+                # Acquire the database write lock before inspecting the legacy
+                # table.  Schema setup and admission then share one transaction,
+                # so a V1 creator cannot pass the check between those steps.
+                self._reject_legacy_if_present(connection, project_id)
+                self._ensure_schema(connection)
                 existing = connection.execute(
                     f"""
                     SELECT 1 FROM {_TABLE_NAME}
@@ -129,10 +140,10 @@ class V2ProjectStore:
         if not self.database_path.exists():
             raise V2ProjectNotFoundError(project_id)
         with self._lock, self._connection() as connection:
+            self._reject_legacy_if_present(connection, project_id)
             row = self._read_v2_row(connection, project_id)
             if row is not None:
                 return self._decode_row(project_id, row)
-            self._reject_legacy_if_present(connection, project_id)
         raise V2ProjectNotFoundError(project_id)
 
     def save_project(
@@ -176,9 +187,10 @@ class V2ProjectStore:
         with self._lock, self._connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
+                self._reject_legacy_if_present(connection, validated.project_id)
+                self._ensure_schema(connection)
                 row = self._read_v2_row(connection, validated.project_id)
                 if row is None:
-                    self._reject_legacy_if_present(connection, validated.project_id)
                     connection.rollback()
                     raise V2ProjectNotFoundError(validated.project_id)
                 current = self._decode_row(validated.project_id, row)
@@ -300,7 +312,7 @@ class V2ProjectStore:
 
         raw = self._raw_json(content)
         self._require_v2_schema(raw)
-        return self._decode_payload(raw, payload=_canonical_json_bytes(raw))
+        return self._decode_payload(raw, payload=self._canonical_payload(raw))
 
     def raw_project_bytes(self, project_id: str) -> bytes:
         """Return the persisted payload bytes for diagnostics and tests."""
@@ -308,9 +320,9 @@ class V2ProjectStore:
         if not self.database_path.exists():
             raise V2ProjectNotFoundError(project_id)
         with self._lock, self._connection() as connection:
+            self._reject_legacy_if_present(connection, project_id)
             row = self._read_v2_row(connection, project_id)
             if row is None:
-                self._reject_legacy_if_present(connection, project_id)
                 raise V2ProjectNotFoundError(project_id)
             return bytes(row[1])
 
@@ -334,33 +346,88 @@ class V2ProjectStore:
         return row is not None
 
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {_TABLE_NAME}(
-                    namespace TEXT NOT NULL,
-                    project_id TEXT NOT NULL,
-                    generation INTEGER NOT NULL CHECK(generation >= 0),
-                    snapshot_json BLOB NOT NULL,
-                    snapshot_sha256 TEXT NOT NULL
-                        CHECK(length(snapshot_sha256) = 64),
-                    PRIMARY KEY(namespace, project_id)
-                ) WITHOUT ROWID
-                """
+        """Create V2 rows and cross-namespace admission guards in a transaction."""
+
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_LEGACY_TABLE_NAME}(
+                project_id TEXT PRIMARY KEY,
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                snapshot_json BLOB NOT NULL,
+                snapshot_sha256 TEXT NOT NULL
+                    CHECK(length(snapshot_sha256) = 64)
+            ) WITHOUT ROWID
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_TABLE_NAME}(
+                namespace TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                snapshot_json BLOB NOT NULL,
+                snapshot_sha256 TEXT NOT NULL
+                    CHECK(length(snapshot_sha256) = 64),
+                PRIMARY KEY(namespace, project_id)
+            ) WITHOUT ROWID
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS {_V2_INSERT_TRIGGER}
+            BEFORE INSERT ON {_LEGACY_TABLE_NAME}
+            WHEN EXISTS(
+                SELECT 1 FROM {_TABLE_NAME}
+                WHERE namespace = '{V2_STORE_NAMESPACE}'
+                  AND project_id = NEW.project_id
             )
-            connection.commit()
-        except sqlite3.Error as error:
-            connection.rollback()
-            raise V2ContractError(
-                code="V2_STORAGE_ERROR",
-                path="database_path",
-                expected="a writable SQLite database",
-                actual=str(error),
-                retryable=True,
-                next_actions=("Retry the project operation.",),
-                message="the V2 project store schema could not be initialized",
-            ) from error
+            BEGIN
+                SELECT RAISE(ABORT, 'project ID already exists in V2');
+            END
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS {_V2_UPDATE_TRIGGER}
+            BEFORE UPDATE OF project_id ON {_LEGACY_TABLE_NAME}
+            WHEN EXISTS(
+                SELECT 1 FROM {_TABLE_NAME}
+                WHERE namespace = '{V2_STORE_NAMESPACE}'
+                  AND project_id = NEW.project_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'project ID already exists in V2');
+            END
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS {_LEGACY_INSERT_TRIGGER}
+            BEFORE INSERT ON {_TABLE_NAME}
+            WHEN NEW.namespace = '{V2_STORE_NAMESPACE}'
+             AND EXISTS(
+                SELECT 1 FROM {_LEGACY_TABLE_NAME}
+                WHERE project_id = NEW.project_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'project ID already exists in V1');
+            END
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS {_LEGACY_UPDATE_TRIGGER}
+            BEFORE UPDATE OF namespace, project_id ON {_TABLE_NAME}
+            WHEN NEW.namespace = '{V2_STORE_NAMESPACE}'
+             AND EXISTS(
+                SELECT 1 FROM {_LEGACY_TABLE_NAME}
+                WHERE project_id = NEW.project_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'project ID already exists in V1');
+            END
+            """
+        )
 
     def _read_v2_row(
         self, connection: sqlite3.Connection, project_id: str
@@ -500,7 +567,7 @@ class V2ProjectStore:
                 expected="a valid V2 project snapshot",
                 actual=str(error),
             ) from error
-        canonical = _canonical_json_bytes(snapshot.model_dump(mode="json"))
+        canonical = self._canonical_payload(snapshot.model_dump(mode="json"))
         if canonical != payload:
             raise V2ValidationError(
                 path="$",
@@ -521,6 +588,24 @@ class V2ProjectStore:
                 actual=snapshot.generation,
             )
         return snapshot
+
+    @staticmethod
+    def _canonical_payload(value: object) -> bytes:
+        try:
+            return _canonical_json_bytes(value)
+        except (
+            TypeError,
+            ValueError,
+            UnicodeError,
+            OverflowError,
+            RecursionError,
+        ) as error:
+            raise V2ValidationError(
+                path="$",
+                expected="a finite JSON-serializable V2 mapping",
+                actual=type(error).__name__,
+                message="the V2 payload could not be serialized as canonical JSON",
+            ) from error
 
     def _raw_json(
         self, content: bytes | bytearray | memoryview | dict[str, Any]
