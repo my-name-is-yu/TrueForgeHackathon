@@ -90,6 +90,8 @@ from .reference_stack import (
     StackFactRef,
     StackSelection,
     UnresolvedGate,
+    VoltageFactKey,
+    VoltageCompatibilityGuard,
     assess_reference_stack,
     reference_stack_digest,
 )
@@ -185,6 +187,8 @@ __all__ = [
     "POLOLU_WHEEL_1087",
     "snapshot_sha256",
     "UnresolvedGate",
+    "VoltageFactKey",
+    "VoltageCompatibilityGuard",
     "TextClaim",
     "Unit",
     "assess_eligibility",

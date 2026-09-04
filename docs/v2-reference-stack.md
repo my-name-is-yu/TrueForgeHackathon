@@ -83,7 +83,7 @@ CoreS3 internal 500 mAh battery (controller branch)
   -> no actuator VDD or signal backfeed is assumed
 
 BLF-1206A PP30 (+)
-  -> TBD ampacity-qualified conductor
+  -> PP30 housing/contact -> TBD ampacity-qualified 12 AWG conductor
   -> ATOF 0287020.U + 0FHA0002ZXJA
   -> Blue Sea 6006 manual switch
   -> SR6 NO-A -> Pololu #2520 -> Pololu #4869 x2
@@ -104,6 +104,13 @@ controller-branch separation and actuator de-energization are design intent
 backed by planning-assumption IDs, not a claim that the assembly has passed a
 physical test.
 
+The 14.6 V BPC-1502DC charge output is above the XL430's documented 12.0 V
+maximum. The typed `VoltageCompatibilityGuard` binds those catalog voltage
+facts to the selected charger and head actuator with `compatible=false`; its
+digital gate cannot be removed while this direct-battery topology remains.
+The inactive #2851 is a 5 V fallback and is not silently treated as a safe
+XL430 regulator.
+
 ## Published-value calculations
 
 The snapshot stores calculations separately from source facts:
@@ -114,7 +121,7 @@ The snapshot stores calculations separately from source facts:
 | Pololu wheel-motor stall | `2 × 1.8 A = 3.6 A` | Product page labels current extrapolated |
 | Composed stall bound | `2.8 + 3.6 = 6.4 A` | Not a claim of simultaneous physical stall |
 | Bioenno continuous-current ratio | `12 / 6.4 = 1.875` | Preliminary source-current ratio only |
-| Indicative no-load wheel speed | `π × 0.032 × 35 / 60 = 0.0586 m/s` | No-load indicator, not loaded nominal speed |
+| Indicative no-load wheel speed | `π × 0.031 × 35 / 60 = 0.0568 m/s` | No-load indicator, not loaded nominal speed |
 
 Each published-value row carries a typed operation, selected-entry IDs aligned
 with each input fact, and the stored result. Snapshot validation recomputes the
@@ -191,6 +198,7 @@ eligibility blockers by the derived digital status.
 ```text
 missing-cores3-power-endpoint
 missing-xl430-continuous-duty
+head-actuator-voltage-incompatibility
 missing-xl430-horn-geometry
 missing-mkr-rating-and-endpoint
 missing-robotis-commercial-mpn-evidence

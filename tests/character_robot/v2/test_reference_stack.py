@@ -47,6 +47,7 @@ def test_reference_stack_readiness_keeps_digital_and_physical_status_separate() 
     assert {
         "missing-cores3-power-endpoint",
         "missing-xl430-continuous-duty",
+        "head-actuator-voltage-incompatibility",
         "missing-mkr-rating-and-endpoint",
         "missing-bioenno-pp30-mating-mpn",
         "missing-fuse-inrush-coordination",
@@ -78,6 +79,16 @@ def test_power_topology_is_controller_plus_two_nonparallel_estop_branches() -> N
         branches[branch_id].relay_contact for branch_id in topology.actuator_branch_ids
     ]
     assert len(set(contacts)) == 2
+    assert branches["drive-actuator-branch"].energy_path_entry_ids[1:4] == (
+        "anderson-powerpole-1327",
+        "anderson-powerpole-1331-bk",
+        "alpha-wire-461219",
+    )
+    assert branches["head-actuator-branch"].energy_path_entry_ids[1:4] == (
+        "anderson-powerpole-1327",
+        "anderson-powerpole-1331-bk",
+        "alpha-wire-461219",
+    )
 
 
 def test_every_source_has_digest_observation_and_dynamic_html_is_explicit() -> None:
@@ -141,7 +152,7 @@ def test_calculations_use_only_known_catalog_facts() -> None:
     assert values["pololu-drive-stall-current"] == pytest.approx(3.6)
     assert values["actuator-stall-current-total"] == pytest.approx(6.4)
     assert values["battery-to-stall-current-ratio"] == pytest.approx(1.875)
-    assert values["indicative-wheel-speed"] == pytest.approx(0.0586430629)
+    assert values["indicative-wheel-speed"] == pytest.approx(0.0568104672)
 
 
 def test_xl430_operating_voltage_uses_the_manual_input_bounds() -> None:
@@ -164,8 +175,23 @@ def test_tampered_published_calculation_value_is_rejected() -> None:
         ReferenceStackSnapshot.model_validate(payload)
 
     payload = REFERENCE_STACK.model_dump(mode="json")
-    payload["calculations"][0]["inputs"][0]["fact_key"] = "operating_voltage_nominal_v"
+    payload["calculations"][0]["inputs"][0]["fact_key"] = "mass_g"
     with pytest.raises(ValidationError, match="current/rating facts"):
+        ReferenceStackSnapshot.model_validate(payload)
+
+    payload = REFERENCE_STACK.model_dump(mode="json")
+    payload["calculations"][1]["inputs"][0]["fact_key"] = "mass_g"
+    with pytest.raises(ValidationError, match="current/rating facts"):
+        ReferenceStackSnapshot.model_validate(payload)
+
+
+def test_calculation_ids_must_be_unique() -> None:
+    payload = REFERENCE_STACK.model_dump(mode="json")
+    payload["calculations"][1]["calculation_id"] = payload["calculations"][0][
+        "calculation_id"
+    ]
+
+    with pytest.raises(ValidationError, match="calculation IDs must be unique"):
         ReferenceStackSnapshot.model_validate(payload)
 
 
@@ -325,6 +351,58 @@ def test_topology_binds_sources_paths_and_estop_to_selected_roles() -> None:
         ReferenceStackSnapshot.model_validate(payload)
 
 
+def test_voltage_guard_binds_overvoltage_source_and_load_gate() -> None:
+    guard = REFERENCE_STACK.topology.voltage_compatibility_guard
+
+    assert guard.source_selection_id == "charger"
+    assert guard.source_entry_id == "bioenno-bpc-1502dc"
+    assert guard.source_upper_bound_v == pytest.approx(14.6)
+    assert guard.load_selection_id == "head-actuators"
+    assert guard.load_entry_id == "robotis-xl430-w250-t"
+    assert guard.load_upper_bound_v == pytest.approx(12.0)
+    assert guard.compatible is False
+
+    payload = REFERENCE_STACK.model_dump(mode="json")
+    payload["topology"]["voltage_compatibility_guard"]["compatible"] = True
+    with pytest.raises(ValidationError, match="False"):
+        ReferenceStackSnapshot.model_validate(payload)
+
+    payload = REFERENCE_STACK.model_dump(mode="json")
+    payload["topology"]["voltage_compatibility_guard"]["source_upper_bound_v"] = 12.0
+    with pytest.raises(ValidationError, match="source over-voltage"):
+        ReferenceStackSnapshot.model_validate(payload)
+
+    payload = REFERENCE_STACK.model_dump(mode="json")
+    payload["topology"]["voltage_compatibility_guard"]["guard_id"] = (
+        "missing-xl430-continuous-duty"
+    )
+    with pytest.raises(ValidationError, match="name its source and load selections"):
+        ReferenceStackSnapshot.model_validate(payload)
+
+    payload = REFERENCE_STACK.model_dump(mode="json")
+    gate = next(
+        item
+        for item in payload["unresolved_gates"]
+        if item["gate_id"] == "head-actuator-voltage-incompatibility"
+    )
+    gate["blocking"] = False
+    with pytest.raises(ValidationError, match="block datasheet eligibility"):
+        ReferenceStackSnapshot.model_validate(payload)
+
+
+def test_wheel_speed_rejects_non_outer_diameter_dimension() -> None:
+    payload = REFERENCE_STACK.model_dump(mode="json")
+    calculation = next(
+        item
+        for item in payload["calculations"]
+        if item["calculation_id"] == "indicative-wheel-speed"
+    )
+    calculation["inputs"][0]["fact_key"] = "envelope_x_mm"
+
+    with pytest.raises(ValidationError, match="outer diameter"):
+        ReferenceStackSnapshot.model_validate(payload)
+
+
 def test_relay_contact_mapping_and_rating_purpose_are_explicit() -> None:
     topology = REFERENCE_STACK.topology
     assert {
@@ -372,5 +450,5 @@ def test_reference_catalog_digest_is_persisted_and_stable() -> None:
         "aec326815809cbe60e0ab7d95140259688364279bb3f15f75bcfee3969c5a143"
     )
     assert REFERENCE_STACK.content_digest == (
-        "8e04d095dd7d9eaecb34e54429dde1054440e663af579d013998a8e6f600cb78"
+        "13804a6b972a5094dfb7d52fab6726b9dac0e90418a70af122fe37c4dcc8f2d3"
     )

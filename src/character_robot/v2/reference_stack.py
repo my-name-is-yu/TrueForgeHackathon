@@ -88,6 +88,10 @@ CalculationOperation: TypeAlias = Literal[
     "ratio",
     "wheel_speed",
 ]
+VoltageFactKey: TypeAlias = Literal[
+    "operating_voltage_nominal_v",
+    "operating_voltage_max_v",
+]
 SelectionEvidenceBasis: TypeAlias = Literal[
     "manufacturer_stated",
     "manufacturer_stated_with_conversions",
@@ -123,6 +127,16 @@ REQUIRED_STACK_ROLES: tuple[StackRole, ...] = (
 )
 _OFF_TOPOLOGY_ROLES = frozenset({"charger", "regulator"})
 _TOPOLOGY_PATH_ROLES = frozenset(REQUIRED_STACK_ROLES) - _OFF_TOPOLOGY_ROLES
+_CURRENT_CALCULATION_FACT_KEYS = frozenset(
+    {
+        "current_continuous_a",
+        "current_peak_a",
+        "current_stall_a",
+        "current_limit_a",
+        "rail_current_limit_a",
+        "contact_rating_a",
+    }
+)
 
 
 class SourceObservation(V2Model):
@@ -177,6 +191,32 @@ class RelayRatingEvidence(V2Model):
         if source_ids != tuple(sorted(source_ids)):
             raise ValueError("relay evidence source references must be canonical")
         return value
+
+
+class VoltageCompatibilityGuard(V2Model):
+    """A typed blocker for an over-voltage source-to-load path."""
+
+    guard_id: SafeIdentifier
+    source_selection_id: SafeIdentifier
+    source_entry_id: SafeIdentifier
+    source_voltage_fact_key: VoltageFactKey
+    source_upper_bound_v: FiniteFloat = Field(gt=0.0)
+    load_selection_id: SafeIdentifier
+    load_entry_id: SafeIdentifier
+    load_voltage_fact_key: Literal["operating_voltage_max_v"]
+    load_upper_bound_v: FiniteFloat = Field(gt=0.0)
+    compatible: Literal[False] = False
+    note: SafeText
+
+    @model_validator(mode="after")
+    def validate_incompatibility_shape(self) -> Self:
+        if self.source_upper_bound_v <= self.load_upper_bound_v:
+            raise ValueError(
+                "voltage compatibility guard must represent source over-voltage"
+            )
+        if self.compatible:
+            raise ValueError("over-voltage guard cannot be marked compatible")
+        return self
 
 
 class StackSelection(V2Model):
@@ -349,6 +389,7 @@ class PowerTopology(V2Model):
     estop_selection_id: SafeIdentifier
     relay_selection_id: SafeIdentifier
     relay_rating_evidence: RelayRatingEvidence
+    voltage_compatibility_guard: VoltageCompatibilityGuard
     contacts_are_not_parallel: StrictBool
     controller_branch_independence: IndependenceBasis
     estop_control_path: SafeText
@@ -538,6 +579,8 @@ class ReferenceStackSnapshot(V2Model):
         calculation_ids = tuple(
             calculation.calculation_id for calculation in self.calculations
         )
+        if len(calculation_ids) != len(set(calculation_ids)):
+            raise ValueError("calculation IDs must be unique")
         if calculation_ids != tuple(sorted(calculation_ids)):
             raise ValueError("calculations must use canonical order")
 
@@ -638,12 +681,81 @@ class ReferenceStackSnapshot(V2Model):
                 raise ValueError("relay rating evidence source metadata does not match")
             check_usable_source(reference.source_id)
 
+        voltage_guard = self.topology.voltage_compatibility_guard
+        if voltage_guard.guard_id not in gate_ids:
+            raise ValueError("voltage compatibility guard must have a matching gate")
+        voltage_gate = next(
+            gate
+            for gate in self.unresolved_gates
+            if gate.gate_id == voltage_guard.guard_id
+        )
+        if (
+            voltage_gate.stage != "digital"
+            or voltage_gate.target != "datasheet_eligible"
+            or not voltage_gate.blocking
+        ):
+            raise ValueError(
+                "voltage compatibility gate must block datasheet eligibility"
+            )
+        charger_selection = role_to_selection["charger"]
+        head_selection = role_to_selection["head_actuator"]
+        if (
+            voltage_guard.source_selection_id != charger_selection.selection_id
+            or voltage_guard.source_entry_id != charger_selection.entry_id
+            or voltage_guard.load_selection_id != head_selection.selection_id
+            or voltage_guard.load_entry_id != head_selection.entry_id
+        ):
+            raise ValueError(
+                "voltage compatibility guard must bind selected charger and head actuator"
+            )
+        if not {
+            charger_selection.selection_id,
+            head_selection.selection_id,
+        } <= set(voltage_gate.related_selection_ids):
+            raise ValueError(
+                "voltage compatibility gate must name its source and load selections"
+            )
+        if not {
+            voltage_guard.source_voltage_fact_key,
+            voltage_guard.load_voltage_fact_key,
+        } <= set(voltage_gate.related_fact_keys):
+            raise ValueError(
+                "voltage compatibility gate must name its source and load facts"
+            )
+        source_voltage = entries[voltage_guard.source_entry_id].numeric(
+            voltage_guard.source_voltage_fact_key
+        )
+        load_voltage = entries[voltage_guard.load_entry_id].numeric(
+            voltage_guard.load_voltage_fact_key
+        )
+        if source_voltage is None or load_voltage is None:
+            raise ValueError("voltage compatibility guard needs known voltage bounds")
+        if not math.isclose(
+            voltage_guard.source_upper_bound_v,
+            source_voltage,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("voltage guard source bound does not match catalog fact")
+        if not math.isclose(
+            voltage_guard.load_upper_bound_v,
+            load_voltage,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("voltage guard load bound does not match catalog fact")
+        if source_voltage <= load_voltage:
+            raise ValueError("voltage guard source bound must exceed load maximum")
+
         expected_paths = {
             "controller": (role_to_selection["controller"].entry_id,),
             "actuator_drive": tuple(
                 role_to_selection[role].entry_id
                 for role in (
                     "battery",
+                    "battery_connector_housing",
+                    "battery_connector_contact",
+                    "wire",
                     "fuse",
                     "fuse_holder",
                     "main_switch",
@@ -656,6 +768,9 @@ class ReferenceStackSnapshot(V2Model):
                 role_to_selection[role].entry_id
                 for role in (
                     "battery",
+                    "battery_connector_housing",
+                    "battery_connector_contact",
+                    "wire",
                     "fuse",
                     "fuse_holder",
                     "main_switch",
@@ -680,6 +795,9 @@ class ReferenceStackSnapshot(V2Model):
                 if branch.kind == "controller"
                 else (
                     "battery",
+                    "battery_connector_housing",
+                    "battery_connector_contact",
+                    "wire",
                     "fuse",
                     "fuse_holder",
                     "main_switch",
@@ -718,8 +836,13 @@ class ReferenceStackSnapshot(V2Model):
             for input_ref, selection_id in zip(
                 calculation.inputs, calculation.input_selection_ids, strict=True
             ):
-                if calculation.operation in {"sum_quantity_weighted", "ratio"} and (
-                    not input_ref.fact_key.endswith("_a")
+                if (
+                    calculation.operation
+                    in {
+                        "sum_quantity_weighted",
+                        "ratio",
+                    }
+                    and input_ref.fact_key not in _CURRENT_CALCULATION_FACT_KEYS
                 ):
                     raise ValueError(
                         "current calculations must use current/rating facts"
@@ -772,12 +895,11 @@ class ReferenceStackSnapshot(V2Model):
                 expected_value = numerator / denominator
             else:
                 if (
-                    calculation.inputs[0].fact_key
-                    not in {"envelope_x_mm", "outer_diameter_mm"}
+                    calculation.inputs[0].fact_key != "outer_diameter_mm"
                     or calculation.inputs[1].fact_key != "speed_no_load_rpm"
                 ):
                     raise ValueError(
-                        "wheel_speed must use a wheel diameter and no-load rpm"
+                        "wheel_speed must use outer diameter and no-load rpm"
                     )
                 expected_value = (
                     math.pi * (input_values[0] / 1000.0) * input_values[1] / 60.0
@@ -2972,6 +3094,17 @@ _ASSUMPTIONS = (
         related_selection_ids=("head-actuators",),
     ),
     PlanningAssumption(
+        assumption_id="pa-xl430-voltage-limit",
+        statement="Do not connect the 14.6 V charger/battery charge upper bound directly to XL430; a future active regulator or source change must keep the actuator bus at or below the documented 12.0 V maximum.",
+        basis="source_gap",
+        status="open",
+        related_selection_ids=(
+            "charger",
+            "head-actuators",
+            "controller-regulator-fallback",
+        ),
+    ),
+    PlanningAssumption(
         assumption_id="pa-robotis-commercial-mpn",
         statement="The selected ROBOTIS commercial MPNs remain provisional until a usable product-specific official page or equivalent manufacturer identity record is available; the observed shop responses were generic HTML.",
         basis="source_gap",
@@ -3067,6 +3200,21 @@ _GATES = (
             "current_continuous_a",
             "torque_continuous_nm",
             "speed_max_rpm",
+        ),
+    ),
+    UnresolvedGate(
+        gate_id="head-actuator-voltage-incompatibility",
+        stage="digital",
+        target="datasheet_eligible",
+        description="The selected 14.6 V charger output can appear on the battery charge path while XL430 input is specified for a maximum of 12.0 V; no active regulator or alternate source currently limits the head actuator bus.",
+        related_selection_ids=(
+            "charger",
+            "controller-regulator-fallback",
+            "head-actuators",
+        ),
+        related_fact_keys=(
+            "operating_voltage_nominal_v",
+            "operating_voltage_max_v",
         ),
     ),
     UnresolvedGate(
@@ -3265,12 +3413,14 @@ _CALCULATIONS = (
     StackCalculation(
         calculation_id="indicative-wheel-speed",
         operation="wheel_speed",
-        expression="pi x 0.032 m wheel diameter x 35 rpm no-load / 60",
-        value=0.0586430629,
+        expression="pi x 0.031 m wheel outer diameter x 35 rpm no-load / 60",
+        value=0.0568104672,
         unit="m/s",
         basis="published_values_only",
         inputs=(
-            StackFactRef(entry_id=POLOLU_WHEEL_1087.entry_id, fact_key="envelope_x_mm"),
+            StackFactRef(
+                entry_id=POLOLU_WHEEL_1087.entry_id, fact_key="outer_diameter_mm"
+            ),
             StackFactRef(entry_id=POLOLU_4869.entry_id, fact_key="speed_no_load_rpm"),
         ),
         input_selection_ids=("wheel-hubs", "drive-motors"),
@@ -3366,6 +3516,9 @@ REFERENCE_STACK = ReferenceStackSnapshot(
                 source_description="BLF-1206A 12 V protected battery positive through fuse, switch, SR6 NO-A, and wheel driver",
                 energy_path_entry_ids=(
                     BIOENNO_BLF1206A.entry_id,
+                    ANDERSON_PP30_HOUSING_1327.entry_id,
+                    ANDERSON_PP30_CONTACT_1331.entry_id,
+                    ALPHA_461219.entry_id,
                     LITTELFUSE_ATOF_0287020.entry_id,
                     LITTELFUSE_ATO_HOLDER.entry_id,
                     BLUESEA_6006.entry_id,
@@ -3390,6 +3543,9 @@ REFERENCE_STACK = ReferenceStackSnapshot(
                 source_description="BLF-1206A 12 V protected battery positive through fuse, switch, SR6 NO-B, MKR interface, and XL430 actuators",
                 energy_path_entry_ids=(
                     BIOENNO_BLF1206A.entry_id,
+                    ANDERSON_PP30_HOUSING_1327.entry_id,
+                    ANDERSON_PP30_CONTACT_1331.entry_id,
+                    ALPHA_461219.entry_id,
                     LITTELFUSE_ATOF_0287020.entry_id,
                     LITTELFUSE_ATO_HOLDER.entry_id,
                     BLUESEA_6006.entry_id,
@@ -3405,12 +3561,25 @@ REFERENCE_STACK = ReferenceStackSnapshot(
                     "pa-fuse-inrush-coordination",
                     "pa-sr6-electronic-load",
                     "pa-estop-coil-path",
+                    "pa-xl430-voltage-limit",
                 ),
             ),
         ),
         estop_selection_id="physical-estop",
         relay_selection_id="force-guided-relay",
         relay_rating_evidence=_RELAY_RATING_EVIDENCE,
+        voltage_compatibility_guard=VoltageCompatibilityGuard(
+            guard_id="head-actuator-voltage-incompatibility",
+            source_selection_id="charger",
+            source_entry_id=BIOENNO_BPC1502DC.entry_id,
+            source_voltage_fact_key="operating_voltage_nominal_v",
+            source_upper_bound_v=14.6,
+            load_selection_id="head-actuators",
+            load_entry_id=ROBOTIS_XL430_W250_T.entry_id,
+            load_voltage_fact_key="operating_voltage_max_v",
+            load_upper_bound_v=12.0,
+            note="The 14.6 V charge upper bound is above the XL430 12.0 V specified maximum; direct head connection is prohibited until an active regulator or source change is selected and verified.",
+        ),
         contacts_are_not_parallel=True,
         controller_branch_independence="planning_assumption",
         estop_control_path="XB5AS8442 1NC opens the two SR6 12 V coil/control circuits; SR6 NO contacts remove drive/head actuator energy while CoreS3 branch remains powered.",
@@ -3418,6 +3587,7 @@ REFERENCE_STACK = ReferenceStackSnapshot(
             "pa-cores3-controller-branch",
             "pa-estop-coil-path",
             "pa-sr6-electronic-load",
+            "pa-xl430-voltage-limit",
         ),
     ),
     constraints=StackConstraints(
@@ -3475,6 +3645,8 @@ __all__ = [
     "StackConstraints",
     "TE_SR6B4012",
     "UnresolvedGate",
+    "VoltageFactKey",
+    "VoltageCompatibilityGuard",
     "assess_reference_stack",
     "reference_stack_digest",
 ]
