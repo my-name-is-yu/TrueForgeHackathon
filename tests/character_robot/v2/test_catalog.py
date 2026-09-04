@@ -295,6 +295,35 @@ def test_digest_is_independent_of_set_like_capability_and_derived_source_order()
     assert first_catalog.content_digest == second_catalog.content_digest
 
 
+def test_query_results_are_sorted_by_entry_id_independent_of_snapshot_order() -> None:
+    source = _source()
+    z_entry = _entry(
+        source,
+        entry_id="z-entry",
+        variant="rev-z",
+        capabilities=("shared-capability",),
+    )
+    a_entry = _entry(
+        source,
+        entry_id="a-entry",
+        variant="rev-a",
+        capabilities=("shared-capability",),
+    )
+    first = _snapshot(source, z_entry, a_entry)
+    second = _snapshot(source, a_entry, z_entry)
+    assert first.content_digest == second.content_digest
+
+    query = CatalogQuery(category="motor", capability="shared-capability")
+    assert [match.entry.entry_id for match in query_catalog(first, query).matches] == [
+        "a-entry",
+        "z-entry",
+    ]
+    assert [match.entry.entry_id for match in query_catalog(second, query).matches] == [
+        "a-entry",
+        "z-entry",
+    ]
+
+
 def test_seed_eligibility_keeps_core_and_goplus_gaps_ineligible() -> None:
     cores3 = OFFICIAL_CATALOG_V2.entry("m5stack-cores3-k128")
     isolated = assess_eligibility(cores3, "controller_isolated")
@@ -741,6 +770,31 @@ def test_negative_quantities_and_invalid_count_are_rejected_but_temperature_can_
         == "known"
     )
 
+    zero_temperature = NumericClaim(
+        original_value=0.0,
+        original_unit="C",
+        canonical_value=0.0,
+        canonical_unit="C",
+        basis="manufacturer_stated",
+        conversion_rule="identity",
+        evidence=_evidence(source),
+    )
+    assert (
+        CatalogFact(fact_key="thermal_limit_c", claims=(zero_temperature,)).state
+        == "known"
+    )
+
+    zero_awg = NumericClaim(
+        original_value=0.0,
+        original_unit="none",
+        canonical_value=0.0,
+        canonical_unit="none",
+        basis="manufacturer_stated",
+        conversion_rule="identity",
+        evidence=_evidence(source),
+    )
+    assert CatalogFact(fact_key="wire_gauge_awg", claims=(zero_awg,)).state == "known"
+
     with pytest.raises(ValidationError):
         CatalogFact(
             fact_key="quantity_per_pack",
@@ -786,6 +840,30 @@ def test_negative_quantities_and_invalid_count_are_rejected_but_temperature_can_
                 ),
             ),
         )
+
+
+@pytest.mark.parametrize(
+    ("fact_key", "unit"),
+    [
+        ("current_continuous_a", "A"),
+        ("current_peak_a", "A"),
+        ("current_stall_a", "A"),
+        ("current_limit_a", "A"),
+        ("rail_current_limit_a", "A"),
+        ("contact_rating_a", "A"),
+        ("torque_continuous_nm", "N*m"),
+        ("torque_stall_nm", "N*m"),
+        ("speed_nominal_rpm", "rpm"),
+        ("speed_no_load_rpm", "rpm"),
+        ("speed_max_rpm", "rpm"),
+    ],
+)
+def test_zero_required_capability_values_cannot_become_eligible(
+    fact_key: str, unit: str
+) -> None:
+    source = _source()
+    with pytest.raises(ValidationError):
+        _numeric_fact(source, fact_key, 0.0, unit=unit)
 
 
 def test_claim_basis_evidence_and_duplicate_claim_rules() -> None:

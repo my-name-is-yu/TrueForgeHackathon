@@ -13,6 +13,9 @@ conflicts are distinct. Eligibility is derived for a concrete use from the
 facts; no entry accepts a caller-supplied `eligible` flag.
 Identity claims keep `original_value == canonical_value`; non-identity numeric
 conversions are recomputed and accept only a one-ULP floating-point difference.
+Required physical capability and rating values are strictly positive; domain
+specific exceptions such as signed thermal limits and AWG 0 retain their valid
+zero or signed representations.
 Voltage queries check requested bounds against the documented operating interval,
 not a preferred nominal scalar.
 

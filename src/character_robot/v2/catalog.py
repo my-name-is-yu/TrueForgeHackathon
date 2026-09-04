@@ -244,6 +244,8 @@ _FACT_SPECS: dict[FactKey, tuple[FactKind, str | None]] = {
     "material": ("text", None),
 }
 
+# Signed thermal limits and AWG 0 intentionally remain outside this set because
+# zero (and, for temperature, negative values) has domain meaning there.
 _NUMERIC_STRICT_POSITIVE_KEYS = frozenset(
     key
     for key, (kind, _unit) in _FACT_SPECS.items()
@@ -265,8 +267,18 @@ _NUMERIC_STRICT_POSITIVE_KEYS = frozenset(
         "operating_voltage_min_v",
         "operating_voltage_nominal_v",
         "operating_voltage_max_v",
+        "current_continuous_a",
+        "current_peak_a",
+        "current_stall_a",
+        "current_limit_a",
+        "rail_current_limit_a",
         "capacity_mah",
         "contact_rating_a",
+        "torque_continuous_nm",
+        "torque_stall_nm",
+        "speed_nominal_rpm",
+        "speed_no_load_rpm",
+        "speed_max_rpm",
     }
 )
 
@@ -1279,6 +1291,7 @@ def query_catalog(catalog: CatalogSnapshot, query: CatalogQuery) -> CatalogQuery
         ):
             continue
         matches.append(CatalogMatch(entry=entry, eligibility=assessment))
+    matches.sort(key=lambda match: match.entry.entry_id)
     return CatalogQueryResult(
         catalog_digest=catalog.content_digest,
         matches=tuple(matches),
