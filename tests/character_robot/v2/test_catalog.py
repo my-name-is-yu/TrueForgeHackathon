@@ -60,6 +60,7 @@ def _mass_fact(
     *,
     basis: str = "manufacturer_stated",
     evidence: EvidenceRef | None = None,
+    scope: str = "component",
 ) -> CatalogFact:
     claim_evidence = (
         (evidence if evidence is not None else _evidence(source))
@@ -73,6 +74,7 @@ def _mass_fact(
         canonical_unit="g",
         basis=basis,
         conversion_rule="identity",
+        scope=scope,
         evidence=claim_evidence,
     )
     return CatalogFact(fact_key="mass_g", claims=(claim,))
@@ -121,6 +123,23 @@ def _numeric_fact_with_state(
         for index, value in enumerate(values)
     )
     return CatalogFact(fact_key=fact_key, claims=claims)  # type: ignore[arg-type]
+
+
+def _text_fact(
+    source: CatalogSource,
+    fact_key: str,
+    value: str,
+    *,
+    scope: str = "component",
+) -> CatalogFact:
+    claim = TextClaim(
+        original_value=value,
+        canonical_value=value,
+        basis="manufacturer_stated",
+        scope=scope,
+        evidence=_evidence(source, fact_key),
+    )
+    return CatalogFact(fact_key=fact_key, claims=(claim,))  # type: ignore[arg-type]
 
 
 def _entry(
@@ -204,6 +223,7 @@ def test_official_seed_identities_facts_locators_and_document_digests() -> None:
     wheel = OFFICIAL_CATALOG_V2.entry("pololu-wheel-1087")
     wheel_mass = wheel.fact("mass_g").claims[0]  # type: ignore[union-attr]
     assert wheel_mass.basis == "converted"
+    assert wheel_mass.scope == "per-wheel"
     assert wheel_mass.original_value == 0.11
     assert wheel_mass.original_unit == "oz"
     assert wheel_mass.conversion_rule == "oz_to_g"
@@ -222,6 +242,7 @@ def test_official_seed_identities_facts_locators_and_document_digests() -> None:
     assert ball.original_unit == "in"
     assert ball.canonical_value == pytest.approx(9.525)
     assert caster.numeric("mount_hole_spacing_mm") == 13.5
+    assert caster.fact("mass_g").claims[0].scope == "body-without-hardware"  # type: ignore[union-attr]
     assert caster.text("material") == "plastic ball"
 
 
@@ -389,6 +410,44 @@ def test_seed_eligibility_keeps_core_and_goplus_gaps_ineligible() -> None:
     assert assess_eligibility(POLOLU_WHEEL_1087, "wheel_drive").eligible is True
     assert POLOLU_CASTER_950.entry_id == "pololu-ball-caster-950"
     assert assess_eligibility(POLOLU_CASTER_950, "caster").eligible is True
+
+
+@pytest.mark.parametrize(
+    ("mass_scope", "eligible", "blocking_reasons"),
+    [
+        ("component", True, ()),
+        ("whole-set", False, ("UNKNOWN_ASSEMBLY_SCOPE",)),
+        ("per-wheel", False, ("UNKNOWN_ASSEMBLY_SCOPE",)),
+        ("body-without-hardware", False, ("UNKNOWN_ASSEMBLY_SCOPE",)),
+    ],
+)
+def test_required_fact_scope_is_use_specific_for_motor_drive(
+    mass_scope: str,
+    eligible: bool,
+    blocking_reasons: tuple[str, ...],
+) -> None:
+    source = _source()
+    motor = _entry(
+        source,
+        facts=(
+            _numeric_fact(source, "envelope_x_mm", 20.0, unit="mm"),
+            _numeric_fact(source, "envelope_y_mm", 20.0, unit="mm"),
+            _numeric_fact(source, "envelope_z_mm", 20.0, unit="mm"),
+            _mass_fact(source, scope=mass_scope),
+            _numeric_fact(source, "operating_voltage_nominal_v", 12.0),
+            _numeric_fact(source, "current_continuous_a", 2.0, unit="A"),
+            _numeric_fact(source, "current_stall_a", 4.0, unit="A"),
+            _numeric_fact(source, "torque_continuous_nm", 0.2, unit="N*m"),
+            _numeric_fact(source, "speed_nominal_rpm", 100.0, unit="rpm"),
+            _text_fact(source, "mount_pattern", "two-hole"),
+            _numeric_fact(source, "shaft_diameter_mm", 3.0, unit="mm"),
+        ),
+    )
+
+    assessment = assess_eligibility(motor, "motor_drive")
+    assert assessment.eligible is eligible
+    assert assessment.blocking_reasons == blocking_reasons
+    assert assessment.blocking_facts == (() if eligible else ("mass_g",))
 
 
 @pytest.mark.parametrize(
