@@ -22,6 +22,10 @@ not a preferred nominal scalar.
 Generic current, torque, and speed bounds are conservative: every known rating
 in the family (continuous/peak/stall, continuous/stall, or nominal/no-load/max)
 must satisfy the requested bounds; no rating is selected as a preferred scalar.
+Required facts must also use a scope compatible with the requested use. Component
+is the default scope; `wheel_drive` explicitly permits `per-wheel`, and `caster`
+explicitly permits `body-without-hardware`. A `whole-set` claim never satisfies a
+component-level requirement.
 
 Price and availability are timestamped advisory fields. They are intentionally
 excluded from the immutable engineering digest.

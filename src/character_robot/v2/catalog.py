@@ -937,6 +937,14 @@ _REQUIRED_FACTS: dict[CatalogUse, tuple[FactKey, ...]] = {
     "spacer": ("envelope_x_mm", "envelope_y_mm", "envelope_z_mm", "mass_g", "revision"),
 }
 
+# Required facts normally describe one component. These two package-specific
+# scopes are admitted only for the uses whose contract names that unit.
+_REQUIRED_FACT_SCOPES: dict[CatalogUse, frozenset[str]] = {
+    **{use: frozenset({"component"}) for use in _REQUIRED_FACTS},
+    "wheel_drive": frozenset({"component", "per-wheel"}),
+    "caster": frozenset({"component", "body-without-hardware"}),
+}
+
 
 def _reason_for_missing(fact_key: FactKey) -> EligibilityReason:
     if fact_key.startswith("envelope_"):
@@ -995,6 +1003,11 @@ def _reason_for_conflict(fact_key: FactKey) -> EligibilityReason:
     return "CONFLICTING_FACT"
 
 
+def _required_fact_scope_is_compatible(fact: CatalogFact, use: CatalogUse) -> bool:
+    allowed_scopes = _REQUIRED_FACT_SCOPES[use]
+    return all(claim.scope in allowed_scopes for claim in fact.claims)
+
+
 class EligibilityAssessment(V2Model):
     entry_id: SafeIdentifier
     use: CatalogUse
@@ -1019,12 +1032,16 @@ def assess_eligibility(entry: CatalogEntry, use: CatalogUse) -> EligibilityAsses
                 else _reason_for_missing(fact_key)
             )
             blocking_facts.append(fact_key)
-        elif fact.state == "conflict":
-            reasons.append(_reason_for_conflict(fact_key))
-            blocking_facts.append(fact_key)
-        elif fact.state in {"derived", "assumption"}:
-            reasons.append("UNTRUSTED_FACT_BASIS")
-            blocking_facts.append(fact_key)
+        else:
+            if not _required_fact_scope_is_compatible(fact, use):
+                reasons.append("UNKNOWN_ASSEMBLY_SCOPE")
+                blocking_facts.append(fact_key)
+            if fact.state == "conflict":
+                reasons.append(_reason_for_conflict(fact_key))
+                blocking_facts.append(fact_key)
+            elif fact.state in {"derived", "assumption"}:
+                reasons.append("UNTRUSTED_FACT_BASIS")
+                blocking_facts.append(fact_key)
     unique_reasons = tuple(dict.fromkeys(reasons))
     unique_facts = tuple(dict.fromkeys(blocking_facts))
     return EligibilityAssessment(
