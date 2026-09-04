@@ -46,6 +46,7 @@ class SessionArtifactStore:
         self._total_bytes = 0
         self._download_pins: dict[str, int] = {}
         self._display_pins: set[str] = set()
+        self._compile_pins: set[str] = set()
         self._pending_drops: set[str] = set()
         self._eviction_pending = False
 
@@ -88,6 +89,7 @@ class SessionArtifactStore:
         self._descriptors.clear()
         self._total_bytes = 0
         self._display_pins.clear()
+        self._compile_pins.clear()
         self._pending_drops.clear()
         self._eviction_pending = False
         for descriptor in descriptors:
@@ -181,6 +183,22 @@ class SessionArtifactStore:
         if self._eviction_pending:
             self._evict_to_budget()
 
+    def reserve_compile_pins(self, digests: Sequence[str]) -> None:
+        """Protect every artifact in the compile batch while it is written."""
+
+        self._compile_pins.update(digests)
+
+    @property
+    def compile_pins(self) -> frozenset[str]:
+        return frozenset(self._compile_pins)
+
+    def replace_compile_pins(self, digests: Sequence[str]) -> None:
+        """Keep only the latest bounded compile batch protected."""
+
+        self._compile_pins = set(digests)
+        if self._eviction_pending:
+            self._evict_to_budget()
+
     def release_display_pins(self) -> None:
         """Release the displayed pack and finish any deferred eviction."""
 
@@ -217,6 +235,7 @@ class SessionArtifactStore:
                         candidate not in protected
                         and not self._download_pins.get(candidate)
                         and candidate not in self._display_pins
+                        and candidate not in self._compile_pins
                     )
                 ),
                 None,

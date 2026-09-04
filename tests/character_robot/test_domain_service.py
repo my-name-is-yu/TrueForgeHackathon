@@ -902,6 +902,71 @@ def test_storage_failure_rolls_back_draft_revision_and_manifest_state(tmp_path) 
     assert backing.load_project("studio").artifact_manifests == []
 
 
+def test_storage_failure_restores_display_pins_before_draft_refresh(tmp_path) -> None:
+    backing = ProjectStore(tmp_path / "project.sqlite3")
+    controlled = _ControlledProjectStore(backing)
+    service = CharacterRobotService(
+        data_root=tmp_path / "artifacts",
+        profile_registry=_Profiles(),
+        cad_compiler=_Compiler(),
+        project_store=controlled,  # type: ignore[arg-type]
+    )
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Display pin rollback lifetime.",
+            )
+        )
+    )
+    alternate = _spec().model_copy(
+        update={"hardware_profile_id": "pi-zero2wh-crickit-ws2/v1"}
+    )
+    asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(
+                expected_revision="r000",
+                expected_draft_hash=revision.draft_hash,
+                spec=alternate,
+            )
+        )
+    )
+    request = PrepareBuildPackInput(
+        revision_id="r000",
+        expected_spec_hash=revision.revision.spec_hash,
+    )
+    prepared = asyncio.run(service.prepare_build_pack(request))
+    assert prepared.manifest is not None
+    displayed = tuple(prepared.manifest.artifacts)
+    displayed_pins = service._artifacts.display_pins
+
+    controlled.fail_on_save = controlled.save_calls + 2
+    with pytest.raises(DomainError) as failed:
+        asyncio.run(service.prepare_build_pack(request))
+    assert failed.value.code == "PROJECT_STORAGE_FAILED"
+    assert service._artifacts.display_pins == displayed_pins
+    controlled.fail_on_save = None
+
+    service._artifacts.maximum_bytes = sum(artifact.byte_size for artifact in displayed)
+    service._compile_cache.clear()
+    refreshed = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+
+    assert refreshed.draft is not None
+    assert refreshed.draft.spec_hash == spec_sha256(alternate)
+    assert service._artifacts.display_pins == displayed_pins
+    for artifact in displayed:
+        content, media_type, file_name = service.read_artifact(artifact.sha256)
+        assert hashlib.sha256(content).hexdigest() == artifact.sha256
+        assert media_type == artifact.media_type
+        assert file_name == artifact.file_name
+
+
 def test_revision_limit_rejects_before_mutating_live_head_or_draft(monkeypatch) -> None:
     monkeypatch.setattr("character_robot.service.PROJECT_REVISION_LIMIT", 1)
     service = _service()
@@ -1703,6 +1768,16 @@ def test_displayed_build_pack_survives_context_refresh_under_budget_pressure() -
     assert refreshed.draft is not None
     assert refreshed.draft.spec_hash == alternate.spec_hash
     assert service._artifacts._eviction_pending is True
+    assert refreshed.draft.preview_artifact is not None
+    preview_content, preview_media_type, preview_file_name = service.read_artifact(
+        refreshed.draft.preview_artifact.sha256
+    )
+    assert (
+        hashlib.sha256(preview_content).hexdigest()
+        == refreshed.draft.preview_artifact.sha256
+    )
+    assert preview_media_type == refreshed.draft.preview_artifact.media_type
+    assert preview_file_name == refreshed.draft.preview_artifact.file_name
     for artifact in displayed:
         content, media_type, file_name = service.read_artifact(artifact.sha256)
         assert hashlib.sha256(content).hexdigest() == artifact.sha256
