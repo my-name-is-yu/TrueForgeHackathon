@@ -692,6 +692,15 @@ class CatalogEntry(V2Model):
     facts: tuple[CatalogFact, ...] = ()
     advisory: AdvisoryData | None = None
 
+    @field_validator("manufacturer_sku", "variant", mode="before")
+    @classmethod
+    def require_canonical_identity_text(cls, value: object) -> object:
+        if isinstance(value, str) and value != value.strip():
+            raise ValueError(
+                "catalog identity text must not have surrounding whitespace"
+            )
+        return value
+
     @field_validator("capabilities")
     @classmethod
     def require_unique_capabilities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
@@ -835,6 +844,7 @@ _REQUIRED_FACTS: dict[CatalogUse, tuple[FactKey, ...]] = {
         "speed_nominal_rpm",
         "mount_pattern",
         "shaft_diameter_mm",
+        "connector_mpn",
     ),
     "wheel_drive": (
         "envelope_x_mm",

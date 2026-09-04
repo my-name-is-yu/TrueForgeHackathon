@@ -467,6 +467,7 @@ def test_required_fact_scope_is_use_specific_for_motor_drive(
             _numeric_fact(source, "speed_nominal_rpm", 100.0, unit="rpm"),
             _text_fact(source, "mount_pattern", "two-hole"),
             _numeric_fact(source, "shaft_diameter_mm", 3.0, unit="mm"),
+            _text_fact(source, "connector_mpn", "JST-PH-2"),
         ),
     )
 
@@ -474,6 +475,39 @@ def test_required_fact_scope_is_use_specific_for_motor_drive(
     assert assessment.eligible is eligible
     assert assessment.blocking_reasons == blocking_reasons
     assert assessment.blocking_facts == (() if eligible else ("mass_g",))
+
+
+def test_motor_drive_requires_documented_connector_interface() -> None:
+    source = _source()
+    motor = _entry(
+        source,
+        facts=(
+            _numeric_fact(source, "envelope_x_mm", 20.0, unit="mm"),
+            _numeric_fact(source, "envelope_y_mm", 20.0, unit="mm"),
+            _numeric_fact(source, "envelope_z_mm", 20.0, unit="mm"),
+            _mass_fact(source),
+            _numeric_fact(source, "operating_voltage_nominal_v", 12.0),
+            _numeric_fact(source, "current_continuous_a", 2.0, unit="A"),
+            _numeric_fact(source, "current_stall_a", 4.0, unit="A"),
+            _numeric_fact(source, "torque_continuous_nm", 0.2, unit="N*m"),
+            _numeric_fact(source, "speed_nominal_rpm", 100.0, unit="rpm"),
+            _text_fact(source, "mount_pattern", "two-hole"),
+            _numeric_fact(source, "shaft_diameter_mm", 3.0, unit="mm"),
+        ),
+    )
+
+    assessment = assess_eligibility(motor, "motor_drive")
+    assert assessment.eligible is False
+    assert assessment.blocking_reasons == ("MISSING_CONNECTOR",)
+    assert assessment.blocking_facts == ("connector_mpn",)
+
+
+def test_entry_identity_rejects_surrounding_whitespace() -> None:
+    source = _source()
+    with pytest.raises(ValidationError, match="surrounding whitespace"):
+        _entry(source, manufacturer_sku=" EX-1")
+    with pytest.raises(ValidationError, match="surrounding whitespace"):
+        _entry(source, variant="rev-a ")
 
 
 @pytest.mark.parametrize(
