@@ -309,6 +309,16 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _matches_exact_conversion(expected: float, actual: float) -> bool:
+    """Allow only a one-ULP representation difference for converted values."""
+
+    if not math.isfinite(expected) or not math.isfinite(actual):
+        return False
+    if expected == actual:
+        return True
+    return abs(expected - actual) <= max(math.ulp(expected), math.ulp(actual))
+
+
 class CatalogSource(V2Model):
     """One immutable manufacturer document observed at an evidence date."""
 
@@ -393,9 +403,12 @@ class NumericClaim(V2Model):
         if self.conversion_rule != expected_rule:
             raise ValueError("conversion_rule does not match original/canonical units")
         expected = self.original_value * factor
-        if not math.isclose(
-            expected, self.canonical_value, rel_tol=1e-10, abs_tol=1e-12
-        ):
+        if self.conversion_rule == "identity":
+            if self.original_value != self.canonical_value:
+                raise ValueError(
+                    "identity conversion requires original_value == canonical_value"
+                )
+        elif not _matches_exact_conversion(expected, self.canonical_value):
             raise ValueError("canonical_value does not match the conversion rule")
         if self.basis == "converted" and self.conversion_rule == "identity":
             raise ValueError("converted claims must apply a non-identity conversion")
@@ -425,6 +438,10 @@ class TextClaim(V2Model):
 
     @model_validator(mode="after")
     def validate_claim(self) -> Self:
+        if self.original_value != self.canonical_value:
+            raise ValueError(
+                "identity conversion requires original_value == canonical_value"
+            )
         if self.basis in {"manufacturer_stated", "converted"} and self.evidence is None:
             raise ValueError("manufacturer text claims must cite evidence")
         if self.basis == "converted":
@@ -448,6 +465,10 @@ class BooleanClaim(V2Model):
 
     @model_validator(mode="after")
     def validate_claim(self) -> Self:
+        if self.original_value != self.canonical_value:
+            raise ValueError(
+                "identity conversion requires original_value == canonical_value"
+            )
         if self.basis in {"manufacturer_stated", "converted"} and self.evidence is None:
             raise ValueError("manufacturer boolean claims must cite evidence")
         if self.basis == "converted":
@@ -479,6 +500,10 @@ class CatalogFact(V2Model):
             raise ValueError("a catalog fact needs claims or an unknown reason")
         if self.claims and self.unknown_reason is not None:
             raise ValueError("known/conflicting facts cannot also be unknown")
+        if self.claims and self.unknown_evidence:
+            raise ValueError(
+                "known/conflicting facts cannot also include unknown evidence"
+            )
         if (
             not self.claims
             and self.unknown_reason
@@ -621,6 +646,33 @@ class CatalogEntry(V2Model):
         keys = [fact.fact_key for fact in self.facts]
         if len(keys) != len(set(keys)):
             raise ValueError("catalog fact keys must be unique per entry")
+        voltage_values: dict[str, float] = {}
+        for fact_key in (
+            "operating_voltage_min_v",
+            "operating_voltage_nominal_v",
+            "operating_voltage_max_v",
+        ):
+            fact = next(
+                (
+                    candidate
+                    for candidate in self.facts
+                    if candidate.fact_key == fact_key
+                ),
+                None,
+            )
+            if fact is not None and fact.state == "known":
+                value = fact.canonical_value
+                if isinstance(value, float):
+                    voltage_values[fact_key] = value
+        minimum = voltage_values.get("operating_voltage_min_v")
+        nominal = voltage_values.get("operating_voltage_nominal_v")
+        maximum = voltage_values.get("operating_voltage_max_v")
+        if minimum is not None and maximum is not None and minimum > maximum:
+            raise ValueError("operating voltage minimum cannot exceed maximum")
+        if minimum is not None and nominal is not None and nominal < minimum:
+            raise ValueError("operating voltage nominal cannot be below minimum")
+        if nominal is not None and maximum is not None and nominal > maximum:
+            raise ValueError("operating voltage nominal cannot exceed maximum")
         return self
 
     @property
@@ -1092,6 +1144,49 @@ def _first_numeric(entry: CatalogEntry, fact_keys: tuple[FactKey, ...]) -> float
     return None
 
 
+def _operating_voltage_interval(
+    entry: CatalogEntry,
+) -> tuple[float, float] | None:
+    """Return the documented operating interval, expanding a nominal-only point."""
+
+    voltage_fact_keys = (
+        "operating_voltage_min_v",
+        "operating_voltage_nominal_v",
+        "operating_voltage_max_v",
+    )
+    if any(
+        (fact := entry.fact(fact_key)) is not None and fact.state != "known"
+        for fact_key in voltage_fact_keys
+    ):
+        return None
+    minimum = entry.numeric("operating_voltage_min_v")
+    nominal = entry.numeric("operating_voltage_nominal_v")
+    maximum = entry.numeric("operating_voltage_max_v")
+    if minimum is None and nominal is not None:
+        minimum = nominal
+    if maximum is None and nominal is not None:
+        maximum = nominal
+    if minimum is None or maximum is None:
+        return None
+    return minimum, maximum
+
+
+def _covers_interval(
+    interval: tuple[float, float] | None,
+    minimum: float | None,
+    maximum: float | None,
+) -> bool:
+    """Return whether every requested voltage bound is documented as supported."""
+
+    if interval is None:
+        return False
+    documented_minimum, documented_maximum = interval
+    return all(
+        requested is None or documented_minimum <= requested <= documented_maximum
+        for requested in (minimum, maximum)
+    )
+
+
 def query_catalog(catalog: CatalogSnapshot, query: CatalogQuery) -> CatalogQueryResult:
     matches: list[CatalogMatch] = []
     for entry in catalog.entries:
@@ -1130,15 +1225,11 @@ def query_catalog(catalog: CatalogSnapshot, query: CatalogQuery) -> CatalogQuery
         ):
             continue
         if query.min_voltage_v is not None or query.max_voltage_v is not None:
-            voltage = _first_numeric(
-                entry,
-                (
-                    "operating_voltage_nominal_v",
-                    "operating_voltage_max_v",
-                    "operating_voltage_min_v",
-                ),
-            )
-            if not _within(voltage, query.min_voltage_v, query.max_voltage_v):
+            if not _covers_interval(
+                _operating_voltage_interval(entry),
+                query.min_voltage_v,
+                query.max_voltage_v,
+            ):
                 continue
         if query.min_current_a is not None or query.max_current_a is not None:
             current = _first_numeric(
@@ -1200,8 +1291,11 @@ def catalog_digest(catalog: CatalogSnapshot) -> str:
     payload = catalog.model_dump(mode="json")
     for entry in payload["entries"]:
         entry.pop("advisory", None)
+        entry["capabilities"] = sorted(entry["capabilities"])
         entry["facts"] = sorted(entry["facts"], key=lambda fact: fact["fact_key"])
         for fact in entry["facts"]:
+            for claim in fact["claims"]:
+                claim["derived_from"] = sorted(claim["derived_from"])
             fact["claims"] = sorted(
                 fact["claims"],
                 key=lambda claim: _canonical_json_bytes(claim),
@@ -1268,6 +1362,14 @@ _SOURCES = {
         "https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/977/goplus2.pdf",
         "application/pdf",
         "b229966cc6d1fc58505df822efd6595f5e33c354b2277efd26debe5bafc3d99c",
+    ),
+    "goplus2-compatibility": _source(
+        "goplus2-compatibility",
+        "M5Stack",
+        "Stack Compatibility table for CoreS3 and GoPlus2",
+        "https://docs.m5stack.com/en/compatible_stack?host=K128&module=M025-B",
+        "text/html",
+        "d1485770966f92bc869f14f37013ca29dd670a10fd47ea89e204fd4da7ef4cb3",
     ),
     "wheel-1087-specs": _source(
         "wheel-1087-specs",
@@ -1609,7 +1711,7 @@ GOPLUS2_M025_B = _entry(
             "Specifications > Product Size > 13.0mm",
             13.2,
             "goplus2-pdf",
-            "Document title/model-size label > Module13.2",
+            "Model size drawing > thickness callout 13.2 mm",
             "mm",
         ),
         _numeric(
@@ -1643,9 +1745,9 @@ GOPLUS2_M025_B = _entry(
             "IR_IN pin 2; IR_OUT pin 22",
             "goplus2-page",
             "PinMap > M5-Bus > IR_IN/IR_OUT",
-            "IR_IN pin 20; IR_OUT pin 22",
-            "goplus2-pdf",
-            "M5-Bus pin drawing > infrared pin labels",
+            "IR_RX pin 2; IR_TX pin 20",
+            "goplus2-compatibility",
+            "Rendered table > Module13.2 GoPlus2 M1 > pin 2 IR_RX / pin 20 IR_TX",
         ),
         _unknown(
             "operating_voltage_min_v",
@@ -1763,8 +1865,8 @@ POLOLU_WHEEL_1087 = _entry(
         _text(
             "material",
             "ABS hub and silicone tire",
-            source_id="wheel-1087-specs",
-            locator="FAQ > wheel hub/tire materials",
+            source_id="wheel-1087-drawing",
+            locator="Title block > Material: ABS & silicone",
         ),
     ),
     ("d-shaft-3mm", "press-fit", "differential-drive"),
@@ -1840,7 +1942,7 @@ POLOLU_CASTER_950 = _entry(
         ),
         _text(
             "material",
-            "ABS housing and plastic ball",
+            "plastic ball",
             source_id="caster-950-specs",
             locator="General specifications > Ball material: plastic",
         ),
