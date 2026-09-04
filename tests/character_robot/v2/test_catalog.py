@@ -10,6 +10,7 @@ from character_robot.v2 import (
     BooleanClaim,
     CatalogEntry,
     CatalogFact,
+    CatalogIdentity,
     CatalogQuery,
     CatalogSnapshot,
     CatalogSource,
@@ -32,6 +33,14 @@ def _source(
     url: str = "https://manufacturer.example/data-sheet.pdf",
     document_sha256: str = "a" * 64,
     evidence_date: str = "2026-09-04",
+    covered_identities: tuple[tuple[str, str], ...] = (
+        ("EX-1", "rev-a"),
+        ("EX-1", "rev-b"),
+        ("EX-1", "rev-c"),
+        ("EX-1", "rev-d"),
+        ("EX-1", "rev-low-contact"),
+        ("EX-1", "rev-z"),
+    ),
 ) -> CatalogSource:
     return CatalogSource(
         source_id=source_id,
@@ -41,6 +50,10 @@ def _source(
         media_type="application/pdf",
         document_sha256=document_sha256,
         evidence_date=evidence_date,
+        covered_identities=tuple(
+            CatalogIdentity(manufacturer_sku=sku, variant=variant)
+            for sku, variant in covered_identities
+        ),
     )
 
 
@@ -189,6 +202,13 @@ def test_official_seed_identities_facts_locators_and_document_digests() -> None:
     assert source_by_id["goplus2-compatibility"].document_sha256 == (
         "d1485770966f92bc869f14f37013ca29dd670a10fd47ea89e204fd4da7ef4cb3"
     )
+    assert source_by_id["cores3-page"].covered_identities == (
+        CatalogIdentity(manufacturer_sku="K128", variant="CoreS3"),
+    )
+    assert source_by_id["goplus2-compatibility"].covered_identities == (
+        CatalogIdentity(manufacturer_sku="K128", variant="CoreS3"),
+        CatalogIdentity(manufacturer_sku="M025-B", variant="Module13.2 GoPlus2"),
+    )
 
     cores3 = OFFICIAL_CATALOG_V2.entry("m5stack-cores3-k128")
     assert cores3.numeric("envelope_x_mm") == 54.0
@@ -247,7 +267,7 @@ def test_official_seed_identities_facts_locators_and_document_digests() -> None:
 
 
 def test_seed_digest_is_stable_and_excludes_advisory_data() -> None:
-    expected = "7ff65dbcb220c0b387ea1d060b9b5d9fd3cbd8f5d75dd2213118340d2f15f45d"
+    expected = "1cd4457e5ed214e0228718db77977d0c588701cf28fc0c2c4590d2e17c25e803"
     assert OFFICIAL_CATALOG_V2.content_digest == expected
 
     advisory = AdvisoryData(
@@ -275,9 +295,15 @@ def test_digest_is_independent_of_source_entry_fact_and_claim_order() -> None:
         )
         for entry in reversed(OFFICIAL_CATALOG_V2.entries)
     )
+    sources = tuple(
+        source.model_copy(
+            update={"covered_identities": tuple(reversed(source.covered_identities))}
+        )
+        for source in reversed(OFFICIAL_CATALOG_V2.sources)
+    )
     reordered = CatalogSnapshot(
         catalog_version=OFFICIAL_CATALOG_V2.catalog_version,
-        sources=tuple(reversed(OFFICIAL_CATALOG_V2.sources)),
+        sources=sources,
         entries=entries,
     )
     assert reordered.content_digest == OFFICIAL_CATALOG_V2.content_digest
@@ -448,6 +474,40 @@ def test_required_fact_scope_is_use_specific_for_motor_drive(
     assert assessment.eligible is eligible
     assert assessment.blocking_reasons == blocking_reasons
     assert assessment.blocking_facts == (() if eligible else ("mass_g",))
+
+
+@pytest.mark.parametrize(
+    ("category", "eligible", "blocking_reasons"),
+    [
+        ("switch", False, ("CATEGORY_MISMATCH",)),
+        ("e_stop", True, ()),
+    ],
+)
+def test_e_stop_requires_the_dedicated_category(
+    category: str,
+    eligible: bool,
+    blocking_reasons: tuple[str, ...],
+) -> None:
+    source = _source()
+    entry = _entry(
+        source,
+        category=category,
+        facts=(
+            _numeric_fact(source, "envelope_x_mm", 20.0, unit="mm"),
+            _numeric_fact(source, "envelope_y_mm", 20.0, unit="mm"),
+            _numeric_fact(source, "envelope_z_mm", 20.0, unit="mm"),
+            _mass_fact(source),
+            _numeric_fact(source, "operating_voltage_max_v", 24.0),
+            _numeric_fact(source, "current_limit_a", 2.0, unit="A"),
+            _numeric_fact(source, "contact_rating_a", 2.0, unit="A"),
+            _text_fact(source, "mount_pattern", "panel-mount"),
+            _text_fact(source, "revision", "rev-a"),
+        ),
+    )
+
+    assessment = assess_eligibility(entry, "e_stop")
+    assert assessment.eligible is eligible
+    assert assessment.blocking_reasons == blocking_reasons
 
 
 @pytest.mark.parametrize(
@@ -1159,6 +1219,93 @@ def test_duplicate_entries_source_digest_and_evidence_references_are_rejected() 
         _snapshot(source, mismatched_manufacturer)
 
 
+def test_source_coverage_accepts_multiple_exact_identities() -> None:
+    source = _source(covered_identities=(("EX-1", "rev-a"), ("EX-2", "rev-b")))
+    first = _entry(source, entry_id="covered-first")
+    second = _entry(
+        source,
+        entry_id="covered-second",
+        manufacturer_sku="EX-2",
+        variant="rev-b",
+    )
+
+    snapshot = _snapshot(source, first, second)
+    assert len(snapshot.entries) == 2
+
+
+def test_source_coverage_rejects_mismatched_claim_and_unknown_evidence() -> None:
+    source = _source(covered_identities=(("EX-1", "rev-a"),))
+    mismatched_claim = _entry(
+        source,
+        entry_id="mismatched-claim",
+        manufacturer_sku="EX-2",
+        facts=(_mass_fact(source),),
+    )
+    with pytest.raises(ValidationError, match="exact catalog identity"):
+        _snapshot(source, mismatched_claim)
+
+    mismatched_unknown = _entry(
+        source,
+        entry_id="mismatched-unknown",
+        manufacturer_sku="EX-2",
+        facts=(
+            CatalogFact(
+                fact_key="mass_g",
+                unknown_reason="MISSING_MASS",
+                unknown_evidence=(_evidence(source, "mass not published"),),
+            ),
+        ),
+    )
+    with pytest.raises(ValidationError, match="exact catalog identity"):
+        _snapshot(source, mismatched_unknown)
+
+
+@pytest.mark.parametrize(
+    "covered_identities",
+    [
+        (),
+        (("EX-1", "rev-a"), ("EX-1", "rev-a")),
+    ],
+)
+def test_source_coverage_rejects_empty_or_duplicate_identities(
+    covered_identities: tuple[tuple[str, str], ...],
+) -> None:
+    with pytest.raises(ValidationError):
+        _source(covered_identities=covered_identities)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        ("", "rev-a"),
+        ("EX-1", ""),
+        (" ", "rev-a"),
+        ("EX-1", " "),
+        (" EX-1", "rev-a"),
+        ("EX-1", "rev-a "),
+    ],
+)
+def test_source_coverage_rejects_noncanonical_identity_text(
+    identity: tuple[str, str],
+) -> None:
+    with pytest.raises(ValidationError):
+        CatalogIdentity(manufacturer_sku=identity[0], variant=identity[1])
+
+
+def test_source_coverage_rejects_malformed_identity_shape() -> None:
+    with pytest.raises(ValidationError):
+        CatalogSource(
+            source_id="maker-doc",
+            manufacturer="Example Manufacturer",
+            title="Example data sheet",
+            url="https://manufacturer.example/data-sheet.pdf",
+            media_type="application/pdf",
+            document_sha256="a" * 64,
+            evidence_date="2026-09-04",
+            covered_identities=(("EX-1", "rev-a", "extra"),),  # type: ignore[arg-type]
+        )
+
+
 def test_query_supports_identity_geometry_capability_eligibility_and_blockers() -> None:
     wheel_query = CatalogQuery(
         category="wheel",
@@ -1229,6 +1376,9 @@ def test_date_and_url_boundaries_are_strict() -> None:
             media_type="application/pdf",
             document_sha256="not-a-digest",
             evidence_date="2026-09-04",
+            covered_identities=(
+                CatalogIdentity(manufacturer_sku="EX-1", variant="rev-a"),
+            ),
         )
 
 

@@ -17,6 +17,10 @@ Required physical capability and rating values are strictly positive; domain
 specific exceptions such as signed thermal limits and AWG 0 retain their valid
 zero or signed representations.
 Source and evidence URLs require HTTPS with a non-empty authority.
+Each source declares one or more exact covered SKU/variant identities. Every
+claim or unknown-evidence reference must cite a source that covers the entry's
+exact identity; matching only the manufacturer is insufficient. Coverage keeps
+the source's labels verbatim (no case or whitespace normalization).
 Voltage queries check requested bounds against the documented operating interval,
 not a preferred nominal scalar.
 Generic current, torque, and speed bounds are conservative: every known rating
@@ -26,23 +30,25 @@ Required facts must also use a scope compatible with the requested use. Componen
 is the default scope; `wheel_drive` explicitly permits `per-wheel`, and `caster`
 explicitly permits `body-without-hardware`. A `whole-set` claim never satisfies a
 component-level requirement.
+The `e_stop` use admits only entries categorized as `e_stop`; a generic `switch`
+does not establish emergency-stop semantics.
 
 Price and availability are timestamped advisory fields. They are intentionally
 excluded from the immutable engineering digest.
 
 ## Official sources captured on 2026-09-04
 
-| Source | URL | Document SHA-256 |
-| --- | --- | --- |
-| CoreS3 product page | <https://docs.m5stack.com/en/core/CoreS3> | `9a24d4201e8e04bb384ccea8dbc6a232613579f4efbf935f130d9323d78500b5` |
-| CoreS3 schematic v1.0 | <https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/490/Sch_M5_CoreS3_v1.0.pdf> | `58a15454eccb11d2668e1a9a3ad85943b9a58b104c5f1ed137b790192ec27c04` |
-| GoPlus2 product page | <https://docs.m5stack.com/en/module/goplus2> | `5eea0ec9899b7a18c054bda329c12e0154810d97c24beb3d757d5b424f48c600` |
-| GoPlus2 official model document | <https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/977/goplus2.pdf> | `b229966cc6d1fc58505df822efd6595f5e33c354b2277efd26debe5bafc3d99c` |
-| GoPlus2 Stack Compatibility table | <https://docs.m5stack.com/en/compatible_stack?host=K128&module=M025-B> | `d1485770966f92bc869f14f37013ca29dd670a10fd47ea89e204fd4da7ef4cb3` |
-| Pololu #1087 specifications | <https://www.pololu.com/product/1087/specs> | `c58d8a1b332f1993e1293940e4fccae526341e9e737f3af79b5365dc52c91077` |
-| Pololu wheel dimension drawing | <https://www.pololu.com/file/0J1708/pololu-wheel-dimensions.pdf> | `08eb3e501bdc41329dc299361dba27a9835f1fb9dbdd0f806ba637fcecc7f9cd` |
-| Pololu #950 specifications | <https://www.pololu.com/product/950/specs> | `d703fbd187a1813d530d98cda8bc9c396eb2b455f850854d42c398c7b8f7a363` |
-| Pololu #950 dimension drawing | <https://www.pololu.com/file/0J1636/pololu-ball-caster-with-0.375in-ball.pdf> | `8c2b8159fbc16246b6469c83d89d31eb6aa87890ee4794c3a6100273ee02a238` |
+| Source | URL | Covered exact identity (SKU / variant) | Document SHA-256 |
+| --- | --- | --- | --- |
+| CoreS3 product page | <https://docs.m5stack.com/en/core/CoreS3> | `K128 / CoreS3` | `9a24d4201e8e04bb384ccea8dbc6a232613579f4efbf935f130d9323d78500b5` |
+| CoreS3 schematic v1.0 | <https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/490/Sch_M5_CoreS3_v1.0.pdf> | `K128 / CoreS3` | `58a15454eccb11d2668e1a9a3ad85943b9a58b104c5f1ed137b790192ec27c04` |
+| GoPlus2 product page | <https://docs.m5stack.com/en/module/goplus2> | `M025-B / Module13.2 GoPlus2` | `5eea0ec9899b7a18c054bda329c12e0154810d97c24beb3d757d5b424f48c600` |
+| GoPlus2 official model document | <https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/977/goplus2.pdf> | `M025-B / Module13.2 GoPlus2` | `b229966cc6d1fc58505df822efd6595f5e33c354b2277efd26debe5bafc3d99c` |
+| GoPlus2 Stack Compatibility table | <https://docs.m5stack.com/en/compatible_stack?host=K128&module=M025-B> | `K128 / CoreS3`; `M025-B / Module13.2 GoPlus2` | `d1485770966f92bc869f14f37013ca29dd670a10fd47ea89e204fd4da7ef4cb3` |
+| Pololu #1087 specifications | <https://www.pololu.com/product/1087/specs> | `#1087 / Wheel 32x7mm Pair - Black` | `c58d8a1b332f1993e1293940e4fccae526341e9e737f3af79b5365dc52c91077` |
+| Pololu wheel dimension drawing | <https://www.pololu.com/file/0J1708/pololu-wheel-dimensions.pdf> | `#1087 / Wheel 32x7mm Pair - Black` | `08eb3e501bdc41329dc299361dba27a9835f1fb9dbdd0f806ba637fcecc7f9cd` |
+| Pololu #950 specifications | <https://www.pololu.com/product/950/specs> | `#950 / Ball Caster with 3/8in Plastic Ball, body-only install` | `d703fbd187a1813d530d98cda8bc9c396eb2b455f850854d42c398c7b8f7a363` |
+| Pololu #950 dimension drawing | <https://www.pololu.com/file/0J1636/pololu-ball-caster-with-0.375in-ball.pdf> | `#950 / Ball Caster with 3/8in Plastic Ball, body-only install` | `8c2b8159fbc16246b6469c83d89d31eb6aa87890ee4794c3a6100273ee02a238` |
 
 The digests identify the exact bytes retrieved on the evidence date. A future
 source change must create a new catalog snapshot rather than silently changing

@@ -344,6 +344,22 @@ def _matches_exact_conversion(expected: float, actual: float) -> bool:
     return abs(expected - actual) <= max(math.ulp(expected), math.ulp(actual))
 
 
+class CatalogIdentity(V2Model):
+    """Exact SKU/variant identity covered by one manufacturer source."""
+
+    manufacturer_sku: SafeText
+    variant: SafeText
+
+    @field_validator("manufacturer_sku", "variant", mode="before")
+    @classmethod
+    def require_canonical_identity_text(cls, value: object) -> object:
+        if isinstance(value, str) and value != value.strip():
+            raise ValueError(
+                "catalog identity text must not have surrounding whitespace"
+            )
+        return value
+
+
 class CatalogSource(V2Model):
     """One immutable manufacturer document observed at an evidence date."""
 
@@ -355,6 +371,19 @@ class CatalogSource(V2Model):
     document_sha256: Sha256
     evidence_date: IsoDate
     published_date: IsoDate | None = None
+    covered_identities: tuple[CatalogIdentity, ...] = Field(min_length=1)
+
+    @field_validator("covered_identities")
+    @classmethod
+    def require_unique_covered_identities(
+        cls, value: tuple[CatalogIdentity, ...]
+    ) -> tuple[CatalogIdentity, ...]:
+        identities = tuple(
+            (identity.manufacturer_sku, identity.variant) for identity in value
+        )
+        if len(identities) != len(set(identities)):
+            raise ValueError("catalog source covered identities must be unique")
+        return value
 
     @field_validator("url")
     @classmethod
@@ -752,7 +781,9 @@ _USE_CATEGORIES: dict[CatalogUse, frozenset[CatalogCategory]] = {
     "motor_driver": frozenset({"motor_driver"}),
     "protection": frozenset({"fuse", "switch", "e_stop"}),
     "main_switch": frozenset({"switch"}),
-    "e_stop": frozenset({"e_stop", "switch"}),
+    # Emergency-stop semantics are safety-critical and are not inferred from a
+    # generic switch's geometry or ratings.
+    "e_stop": frozenset({"e_stop"}),
     "connector": frozenset({"connector"}),
     "wire": frozenset({"wire"}),
     "fastener": frozenset({"fastener"}),
@@ -1106,6 +1137,14 @@ class CatalogSnapshot(V2Model):
                         raise ValueError(
                             "fact evidence manufacturer does not match catalog entry"
                         )
+                    if not any(
+                        identity.manufacturer_sku == entry.manufacturer_sku
+                        and identity.variant == entry.variant
+                        for identity in source.covered_identities
+                    ):
+                        raise ValueError(
+                            "fact evidence source does not cover exact catalog identity"
+                        )
         return self
 
     @property
@@ -1381,6 +1420,11 @@ def catalog_digest(catalog: CatalogSnapshot) -> str:
                 fact["unknown_evidence"],
                 key=lambda ref: _canonical_json_bytes(ref),
             )
+    for source in payload["sources"]:
+        source["covered_identities"] = sorted(
+            source["covered_identities"],
+            key=lambda identity: _canonical_json_bytes(identity),
+        )
     payload["entries"] = sorted(payload["entries"], key=lambda entry: entry["entry_id"])
     payload["sources"] = sorted(
         payload["sources"], key=lambda source: source["source_id"]
@@ -1395,6 +1439,7 @@ def _source(
     url: str,
     media_type: Literal["text/html", "application/pdf", "text/plain"],
     document_sha256: str,
+    covered_identities: tuple[tuple[str, str], ...],
 ) -> CatalogSource:
     return CatalogSource(
         source_id=source_id,
@@ -1404,6 +1449,10 @@ def _source(
         media_type=media_type,
         document_sha256=document_sha256,
         evidence_date="2026-09-04",
+        covered_identities=tuple(
+            CatalogIdentity(manufacturer_sku=sku, variant=variant)
+            for sku, variant in covered_identities
+        ),
     )
 
 
@@ -1415,6 +1464,7 @@ _SOURCES = {
         "https://docs.m5stack.com/en/core/CoreS3",
         "text/html",
         "9a24d4201e8e04bb384ccea8dbc6a232613579f4efbf935f130d9323d78500b5",
+        covered_identities=(("K128", "CoreS3"),),
     ),
     "cores3-schematic": _source(
         "cores3-schematic",
@@ -1423,6 +1473,7 @@ _SOURCES = {
         "https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/490/Sch_M5_CoreS3_v1.0.pdf",
         "application/pdf",
         "58a15454eccb11d2668e1a9a3ad85943b9a58b104c5f1ed137b790192ec27c04",
+        covered_identities=(("K128", "CoreS3"),),
     ),
     "goplus2-page": _source(
         "goplus2-page",
@@ -1431,6 +1482,7 @@ _SOURCES = {
         "https://docs.m5stack.com/en/module/goplus2",
         "text/html",
         "5eea0ec9899b7a18c054bda329c12e0154810d97c24beb3d757d5b424f48c600",
+        covered_identities=(("M025-B", "Module13.2 GoPlus2"),),
     ),
     "goplus2-pdf": _source(
         "goplus2-pdf",
@@ -1439,6 +1491,7 @@ _SOURCES = {
         "https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/977/goplus2.pdf",
         "application/pdf",
         "b229966cc6d1fc58505df822efd6595f5e33c354b2277efd26debe5bafc3d99c",
+        covered_identities=(("M025-B", "Module13.2 GoPlus2"),),
     ),
     "goplus2-compatibility": _source(
         "goplus2-compatibility",
@@ -1447,6 +1500,10 @@ _SOURCES = {
         "https://docs.m5stack.com/en/compatible_stack?host=K128&module=M025-B",
         "text/html",
         "d1485770966f92bc869f14f37013ca29dd670a10fd47ea89e204fd4da7ef4cb3",
+        covered_identities=(
+            ("K128", "CoreS3"),
+            ("M025-B", "Module13.2 GoPlus2"),
+        ),
     ),
     "wheel-1087-specs": _source(
         "wheel-1087-specs",
@@ -1455,6 +1512,7 @@ _SOURCES = {
         "https://www.pololu.com/product/1087/specs",
         "text/html",
         "c58d8a1b332f1993e1293940e4fccae526341e9e737f3af79b5365dc52c91077",
+        covered_identities=(("#1087", "Wheel 32x7mm Pair - Black"),),
     ),
     "wheel-1087-drawing": _source(
         "wheel-1087-drawing",
@@ -1463,6 +1521,7 @@ _SOURCES = {
         "https://www.pololu.com/file/0J1708/pololu-wheel-dimensions.pdf",
         "application/pdf",
         "08eb3e501bdc41329dc299361dba27a9835f1fb9dbdd0f806ba637fcecc7f9cd",
+        covered_identities=(("#1087", "Wheel 32x7mm Pair - Black"),),
     ),
     "caster-950-specs": _source(
         "caster-950-specs",
@@ -1471,6 +1530,9 @@ _SOURCES = {
         "https://www.pololu.com/product/950/specs",
         "text/html",
         "d703fbd187a1813d530d98cda8bc9c396eb2b455f850854d42c398c7b8f7a363",
+        covered_identities=(
+            ("#950", "Ball Caster with 3/8in Plastic Ball, body-only install"),
+        ),
     ),
     "caster-950-drawing": _source(
         "caster-950-drawing",
@@ -1479,6 +1541,9 @@ _SOURCES = {
         "https://www.pololu.com/file/0J1636/pololu-ball-caster-with-0.375in-ball.pdf",
         "application/pdf",
         "8c2b8159fbc16246b6469c83d89d31eb6aa87890ee4794c3a6100273ee02a238",
+        covered_identities=(
+            ("#950", "Ball Caster with 3/8in Plastic Ball, body-only install"),
+        ),
     ),
 }
 
@@ -2042,6 +2107,7 @@ __all__ = [
     "CatalogCategory",
     "CatalogEntry",
     "CatalogFact",
+    "CatalogIdentity",
     "CatalogMatch",
     "CatalogQuery",
     "CatalogQueryResult",
