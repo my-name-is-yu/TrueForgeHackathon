@@ -12,6 +12,7 @@ import type {
 
 export type StudioViewer = {
   loadPreview(url: string, spec: CharacterSpecView): Promise<void>;
+  captureCanonicalViews?: (expectedPreviewUrl: string) => Promise<StudioCanonicalCapture>;
   clearPreview(): void;
   selectNode(nodeId: string | null): void;
   playScenario(
@@ -21,6 +22,34 @@ export type StudioViewer = {
   ): void;
   stopScenario(): void;
   destroy(): void;
+};
+
+export const VISUAL_RENDER_SIZE_PX = 384;
+
+export const CANONICAL_VIEWS = [
+  { view: "front", label: "Front", direction: [0, 0, 1] },
+  { view: "three_quarter", label: "Three-quarter", direction: [1, 0.35, 1] },
+  { view: "side", label: "Side", direction: [1, 0, 0] },
+  { view: "back", label: "Back", direction: [0, 0, -1] },
+] as const;
+
+export type CanonicalViewName = (typeof CANONICAL_VIEWS)[number]["view"];
+
+export type StudioCanonicalView = {
+  view: CanonicalViewName;
+  label: string;
+  widthPx: number;
+  heightPx: number;
+  cameraDirection: [number, number, number];
+  dataUrl: string;
+};
+
+export type StudioCanonicalCapture = {
+  previewUrl: string;
+  views: StudioCanonicalView[];
+  renderedNodeIds: string[];
+  structurallyVisibleNodeIds: string[];
+  faceDisplayAvailable: boolean;
 };
 
 export type StudioViewerOptions = {
@@ -256,11 +285,17 @@ export const hideDiagnosticGeometry = (
   semanticNodeIds: ReadonlySet<string> = new Set(),
 ): void => {
   const visit = (object: THREE.Object3D): void => {
+    const role = object.userData.compiled_role;
     const metadataId = typeof object.userData.node_id === "string"
       ? object.userData.node_id
       : null;
+    if (role === "hardware_keepout") {
+      object.visible = false;
+      return;
+    }
     if (
-      (metadataId && semanticNodeIds.has(metadataId))
+      role != null
+      || (metadataId && semanticNodeIds.has(metadataId))
       || (object.name && semanticNodeIds.has(object.name))
     ) return;
     if (object.name.toLowerCase().startsWith("keepout_")) {
@@ -463,6 +498,96 @@ const frameCamera = (
   controls.update();
 };
 
+const visibleWorldBounds = (root: THREE.Object3D): THREE.Box3 => {
+  root.updateWorldMatrix(true, true);
+  const bounds = new THREE.Box3();
+  const visit = (object: THREE.Object3D): void => {
+    if (!object.visible) return;
+    if (object instanceof THREE.Mesh) {
+      object.geometry.computeBoundingBox();
+      if (object.geometry.boundingBox && !object.geometry.boundingBox.isEmpty()) {
+        bounds.union(object.geometry.boundingBox.clone().applyMatrix4(object.matrixWorld));
+      }
+    }
+    object.children.forEach(visit);
+  };
+  visit(root);
+  return bounds;
+};
+
+export const canonicalCameraPosition = (
+  center: THREE.Vector3,
+  radius: number,
+  direction: readonly [number, number, number],
+): THREE.Vector3 => (
+  center.clone().add(new THREE.Vector3(...direction).normalize().multiplyScalar(radius * 4))
+);
+
+const configureCanonicalCamera = (
+  camera: THREE.OrthographicCamera,
+  center: THREE.Vector3,
+  radius: number,
+  direction: readonly [number, number, number],
+): void => {
+  const extent = Math.max(radius * 1.18, 0.01);
+  camera.left = -extent;
+  camera.right = extent;
+  camera.top = extent;
+  camera.bottom = -extent;
+  camera.near = Math.max(radius * 0.01, 0.0001);
+  camera.far = Math.max(radius * 10, 1);
+  camera.position.copy(canonicalCameraPosition(center, radius, direction));
+  camera.up.set(0, 1, 0);
+  camera.lookAt(center);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld(true);
+};
+
+const isActuallyVisible = (object: THREE.Object3D, root: THREE.Object3D): boolean => {
+  let candidate: THREE.Object3D | null = object;
+  while (candidate) {
+    if (!candidate.visible) return false;
+    if (candidate === root) return true;
+    candidate = candidate.parent;
+  }
+  return false;
+};
+
+const semanticOwner = (
+  object: THREE.Object3D,
+  root: THREE.Object3D,
+  semanticIds: ReadonlySet<string>,
+): string | null => {
+  let candidate: THREE.Object3D | null = object;
+  while (candidate) {
+    const metadataId = candidate.userData.node_id;
+    if (typeof metadataId === "string" && semanticIds.has(metadataId)) return metadataId;
+    if (semanticIds.has(candidate.name)) return candidate.name;
+    if (candidate === root) break;
+    candidate = candidate.parent;
+  }
+  return null;
+};
+
+const collectStructuralNodeIds = (
+  model: THREE.Object3D,
+  spec: CharacterSpecView,
+): { renderedNodeIds: string[]; structurallyVisibleNodeIds: string[] } => {
+  const semanticIds = new Set(spec.morphologyNodes.map((node) => node.nodeId));
+  const rendered = new Set<string>();
+  const visible = new Set<string>();
+  model.traverse((object) => {
+    const nodeId = semanticOwner(object, model, semanticIds);
+    if (!nodeId) return;
+    rendered.add(nodeId);
+    if (isActuallyVisible(object, model)) visible.add(nodeId);
+  });
+  return {
+    renderedNodeIds: [...rendered].sort(),
+    structurallyVisibleNodeIds: [...visible].sort(),
+  };
+};
+
 export function createStudioViewer(
   container: HTMLElement,
   options: StudioViewerOptions = {},
@@ -474,7 +599,11 @@ export function createStudioViewer(
   const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 100);
   camera.position.set(1.4, 1, 1.8);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    alpha: false,
+    preserveDrawingBuffer: true,
+  });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -502,6 +631,7 @@ export function createStudioViewer(
   controls.dampingFactor = 0.08;
 
   const loader = new GLTFLoader();
+  const canonicalCamera = new THREE.OrthographicCamera();
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   let model: THREE.Object3D | null = null;
@@ -515,6 +645,8 @@ export function createStudioViewer(
   let loadSequence = 0;
   let destroyed = false;
   let pointerStart: { x: number; y: number } | null = null;
+  let loadedPreviewUrl: string | null = null;
+  let specForLoadedModel: CharacterSpecView | null = null;
 
   const clearSelectionHelper = (): void => {
     if (!selectionHelper) return;
@@ -564,6 +696,8 @@ export function createStudioViewer(
     }
     model = null;
     rig = EMPTY_RIG();
+    loadedPreviewUrl = null;
+    specForLoadedModel = null;
   };
 
   const resize = (): void => {
@@ -614,7 +748,89 @@ export function createStudioViewer(
   renderer.domElement.addEventListener("pointerdown", onPointerDown);
   renderer.domElement.addEventListener("pointerup", onPointerUp);
 
+  const captureCanonicalViews = async (
+    expectedPreviewUrl: string,
+  ): Promise<StudioCanonicalCapture> => {
+    if (destroyed) throw new Error("The Studio viewer has been destroyed.");
+    if (!model || !loadedPreviewUrl || !specForLoadedModel) {
+      throw new Error("The compiler GLB is not ready for canonical capture.");
+    }
+    const loadedModel = model;
+    const loadedSpec = specForLoadedModel;
+    const previewUrl = loadedPreviewUrl;
+    const resolvedExpectedUrl = safePreviewUrl(expectedPreviewUrl);
+    if (previewUrl !== resolvedExpectedUrl) {
+      throw new Error("The loaded compiler GLB does not match the requested preview.");
+    }
+
+    const bounds = visibleWorldBounds(loadedModel);
+    if (bounds.isEmpty()) throw new Error("The compiler GLB has no visible renderable geometry.");
+    const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+    const radius = Math.max(sphere.radius, 0.01);
+    const size = renderer.getSize(new THREE.Vector2());
+    const pixelRatio = renderer.getPixelRatio();
+    const cameraPosition = camera.position.clone();
+    const cameraQuaternion = camera.quaternion.clone();
+    const cameraUp = camera.up.clone();
+    const cameraAspect = camera.aspect;
+    const cameraNear = camera.near;
+    const cameraFar = camera.far;
+    const cameraZoom = camera.zoom;
+    const controlsTarget = controls.target.clone();
+    const controlsMinDistance = controls.minDistance;
+    const controlsMaxDistance = controls.maxDistance;
+    const gridVisible = grid.visible;
+    const selectionVisible = selectionHelper?.visible ?? false;
+    const views: StudioCanonicalView[] = [];
+
+    try {
+      renderer.setPixelRatio(1);
+      renderer.setSize(VISUAL_RENDER_SIZE_PX, VISUAL_RENDER_SIZE_PX, false);
+      grid.visible = false;
+      if (selectionHelper) selectionHelper.visible = false;
+      for (const definition of CANONICAL_VIEWS) {
+        configureCanonicalCamera(canonicalCamera, sphere.center, radius, definition.direction);
+        renderer.render(scene, canonicalCamera);
+        const dataUrl = renderer.domElement.toDataURL("image/png");
+        views.push({
+          view: definition.view,
+          label: definition.label,
+          widthPx: VISUAL_RENDER_SIZE_PX,
+          heightPx: VISUAL_RENDER_SIZE_PX,
+          cameraDirection: [...definition.direction],
+          dataUrl,
+        });
+      }
+      const structural = collectStructuralNodeIds(loadedModel, loadedSpec);
+      return {
+        previewUrl,
+        views,
+        ...structural,
+        faceDisplayAvailable: rig.faceDisplay !== null,
+      };
+    } finally {
+      grid.visible = gridVisible;
+      if (selectionHelper) selectionHelper.visible = selectionVisible;
+      renderer.setPixelRatio(pixelRatio);
+      renderer.setSize(size.x, size.y, false);
+      camera.position.copy(cameraPosition);
+      camera.quaternion.copy(cameraQuaternion);
+      camera.up.copy(cameraUp);
+      camera.aspect = cameraAspect;
+      camera.near = cameraNear;
+      camera.far = cameraFar;
+      camera.zoom = cameraZoom;
+      camera.updateProjectionMatrix();
+      controls.target.copy(controlsTarget);
+      controls.minDistance = controlsMinDistance;
+      controls.maxDistance = controlsMaxDistance;
+      controls.update();
+      selectionHelper?.update();
+    }
+  };
+
   return {
+    captureCanonicalViews,
     async loadPreview(url, spec) {
       const sequence = ++loadSequence;
       const resolvedUrl = safePreviewUrl(url);
@@ -631,6 +847,7 @@ export function createStudioViewer(
             }
             clearModel();
             model = gltf.scene;
+            specForLoadedModel = spec;
             partNames = new Set(spec.morphologyNodes.map((node) => node.nodeId));
             hideDiagnosticGeometry(model, partNames);
             rig = rigStudioModel(model, spec);
@@ -642,6 +859,7 @@ export function createStudioViewer(
               }
             });
             scene.add(model);
+            loadedPreviewUrl = resolvedUrl;
             frameCamera(model, camera, controls);
             selectNode(selectedNodeId);
             options.onLoadStateChange?.("ready");

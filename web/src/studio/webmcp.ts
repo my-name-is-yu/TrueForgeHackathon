@@ -39,11 +39,19 @@ export type StudioChangedDetail = {
   };
 };
 
-export type StudioBuildPackResponseIdentity = {
+export type StudioOperationIdentity = {
   projectId: string;
   projectGeneration: number;
   operationEpoch: number;
 };
+
+export type StudioBuildPackResponseIdentity = StudioOperationIdentity;
+
+export type StudioVisualInspectionRunner = (
+  input: JsonObject,
+  result: JsonObject,
+  identity: StudioOperationIdentity | null,
+) => Promise<JsonObject>;
 
 export type StudioToolDefinition = {
   name: StudioToolName;
@@ -54,6 +62,44 @@ export type StudioToolDefinition = {
 
 type RegisteredStudioTool = StudioToolDefinition & {
   execute: (input: JsonObject) => Promise<unknown>;
+};
+
+const isContentBlock = (value: unknown): value is JsonObject => (
+  typeof value === "object" && value !== null && !Array.isArray(value)
+);
+
+const splitVisualInspectionResult = (
+  value: JsonObject,
+): { content: JsonObject[]; metadata: JsonObject } => {
+  const content = value.content;
+  const isReady = value.status === "ready";
+  const hasTextBlock = (
+    block: unknown,
+  ): block is JsonObject => (
+    isContentBlock(block)
+    && block.type === "text"
+    && typeof block.text === "string"
+    && block.text.length > 0
+  );
+  if (
+    !Array.isArray(content)
+    || !hasTextBlock(content[0])
+    || (isReady && content.length !== 5)
+    || (!isReady && content.length !== 1)
+    || (isReady && content.slice(1).some((block) => (
+      !isContentBlock(block)
+      || block.type !== "image"
+      || block.mimeType !== "image/png"
+      || typeof block.data !== "string"
+      || block.data.length === 0
+    )))
+  ) {
+    throw new Error(
+      "STUDIO_VISUAL_RESULT_INVALID: inspect_design visual content must contain one text block and four PNG images",
+    );
+  }
+  const { content: _content, ...metadata } = value;
+  return { content, metadata };
 };
 
 type ModelContext = {
@@ -129,7 +175,8 @@ export async function getStudioToolDefinitions(): Promise<StudioToolDefinition[]
 
 export async function registerStudioWebMcpTools(
   document_: Document = document,
-  getBuildPackResponseIdentity: () => StudioBuildPackResponseIdentity | null = () => null,
+  getOperationIdentity: () => StudioOperationIdentity | null = () => null,
+  inspectVisuals?: StudioVisualInspectionRunner,
 ): Promise<boolean> {
   const modelContext = (document_ as ModelContextDocument).modelContext;
   if (typeof modelContext?.registerTool !== "function") return false;
@@ -140,19 +187,36 @@ export async function registerStudioWebMcpTools(
       ...definition,
       execute: async (input: JsonObject) => {
         try {
-          const buildPackResponseIdentity = definition.name === "prepare_build_pack"
-            ? getBuildPackResponseIdentity()
+          const operationIdentity = definition.name === "prepare_build_pack"
+            || definition.name === "inspect_design"
+            ? getOperationIdentity()
             : null;
           const result = await callStudioTool(definition.name, input);
+          let toolResult = result;
+          if (definition.name === "inspect_design" && inspectVisuals) {
+            if (!isRecord(result)) {
+              throw new Error("STUDIO_TOOL_RESULT_INVALID: inspect_design result was not an object");
+            }
+            const visualResult = await inspectVisuals(input, result, operationIdentity);
+            if (!isRecord(visualResult)) {
+              throw new Error("STUDIO_VISUAL_RESULT_INVALID: visual inspection result was not an object");
+            }
+            const visualContent = splitVisualInspectionResult(visualResult);
+            toolResult = {
+              ...result,
+              content: visualContent.content,
+              visual_inspection: visualContent.metadata,
+            };
+          }
           const buildPackResult = definition.name === "prepare_build_pack"
             ? parseBuildPackResult(result)
             : undefined;
           const buildPackTarget = definition.name === "prepare_build_pack"
             && typeof input.revision_id === "string"
             && typeof input.expected_spec_hash === "string"
-            && buildPackResponseIdentity
+            && operationIdentity
             ? {
-                ...buildPackResponseIdentity,
+                ...operationIdentity,
                 revisionId: input.revision_id,
                 specHash: input.expected_spec_hash,
               }
@@ -165,7 +229,7 @@ export async function registerStudioWebMcpTools(
               ...(buildPackTarget ? { buildPackTarget } : {}),
             },
           }));
-          return result;
+          return toolResult;
         } catch (error) {
           const apiError = error instanceof StudioApiError ? error : null;
           document_.dispatchEvent(new CustomEvent<StudioChangedDetail>(STUDIO_CHANGED_EVENT, {

@@ -4,8 +4,9 @@ import {
   mountCharacterRobotStudio,
   type CharacterRobotStudioDependencies,
 } from "../src/studio/main";
-import { StudioApiError } from "../src/studio/api";
+import { StudioApiError, type JsonObject } from "../src/studio/api";
 import type { BuildPackResult, ScenarioPreview, StudioContext } from "../src/studio/types";
+import type { StudioVisualInspection } from "../src/studio/visual-inspection";
 import { STUDIO_CHANGED_EVENT } from "../src/studio/webmcp";
 
 const context = (): StudioContext => ({
@@ -57,6 +58,7 @@ const context = (): StudioContext => ({
   }],
   preview: {
     glbUrl: null,
+    glbSha256: null,
     partNames: ["beak"],
     compiledAt: null,
     warnings: [{ code: "DIGITAL_ONLY", message: "Physical clearances are unverified.", severity: "warning" }],
@@ -962,6 +964,202 @@ describe("mountCharacterRobotStudio", () => {
     expect(button.disabled).toBe(false);
     expect(button.classList.contains("active")).toBe(false);
     expect(playScenario).not.toHaveBeenCalled();
+    studio.destroy();
+  });
+
+  it("renders target-bound canonical evidence supplied through inspect_design", async () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    let webMcpInspection!: NonNullable<Parameters<NonNullable<
+      CharacterRobotStudioDependencies["registerTools"]
+    >>[2]>;
+    let getWebMcpIdentity!: Parameters<NonNullable<
+      CharacterRobotStudioDependencies["registerTools"]
+    >>[1];
+    const views = ([
+      ["front", "Front", [0, 0, 1]],
+      ["three_quarter", "Three-quarter", [1, 0.35, 1]],
+      ["side", "Side", [1, 0, 0]],
+      ["back", "Back", [0, 0, -1]],
+    ] as const).map(([view, label, cameraDirection]) => ({
+      view,
+      label,
+      widthPx: 384,
+      heightPx: 384,
+      cameraDirection: [...cameraDirection] as [number, number, number],
+      dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAYAAAAGACAYAAAA=",
+    }));
+    const visualInspection: StudioVisualInspection = {
+      status: "ready",
+      renderContractVersion: "studio-render-v1",
+      source: {
+        target: { kind: "draft", draft_hash: "c".repeat(64) },
+        specHash: "d".repeat(64),
+        geometrySha256: "f".repeat(64),
+        glbSha256: "a".repeat(64),
+      },
+      views,
+      nodes: [{
+        nodeId: "beak",
+        role: "beak",
+        expectedInPreview: true,
+        rendered: true,
+        structurallyVisible: true,
+      }],
+      diagnostics: [],
+    };
+    const captureVisualInspection = vi.fn().mockResolvedValue(visualInspection);
+    let resolveManualInspect!: (value: JsonObject) => void;
+    const inspectDesign = vi.fn(() => new Promise<JsonObject>((resolve) => {
+      resolveManualInspect = resolve;
+    }));
+    let currentContext = context();
+    currentContext.preview = {
+      ...currentContext.preview,
+      glbUrl: `/api/studio/v1/artifacts/${"a".repeat(64)}`,
+      glbSha256: "a".repeat(64),
+    };
+    const studio = await mountCharacterRobotStudio(document.querySelector("#app")!, {
+      getContext: async () => currentContext,
+      setSelection: async ({ node_id }) => node_id,
+      captureVisualInspection,
+      inspectDesign,
+      registerTools: async (_document, getIdentity, inspectVisuals) => {
+        getWebMcpIdentity = getIdentity;
+        webMcpInspection = inspectVisuals!;
+        return true;
+      },
+      createViewer: () => ({
+        loadPreview: vi.fn().mockResolvedValue(undefined),
+        clearPreview: vi.fn(),
+        selectNode: vi.fn(),
+        playScenario: vi.fn(),
+        stopScenario: vi.fn(),
+        destroy: vi.fn(),
+      }),
+    });
+
+    document.querySelector<HTMLButtonElement>("#crs-inspect-views")!.click();
+    await vi.waitFor(() => expect(inspectDesign).toHaveBeenCalledOnce());
+    await studio.refresh();
+    expect(document.querySelector<HTMLButtonElement>("#crs-inspect-views")?.disabled).toBe(true);
+    resolveManualInspect({
+      target: { kind: "draft", draft_hash: "c".repeat(64) },
+    });
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll(".crs-inspection-view img")).toHaveLength(4);
+    });
+
+    expect(inspectDesign).toHaveBeenCalledWith({
+      target: { kind: "draft", draft_hash: "c".repeat(64) },
+    });
+    expect(captureVisualInspection).toHaveBeenCalledOnce();
+    expect(document.querySelector("#crs-visual-inspection")?.hasAttribute("hidden")).toBe(false);
+    expect(document.querySelector("#crs-inspection-source")?.textContent).toContain("draft cccccccccc");
+    expect(document.querySelectorAll(".crs-inspection-view img")).toHaveLength(4);
+    expect(document.querySelector("#crs-inspection-diagnostics")?.textContent).toContain(
+      "Codex must still compare",
+    );
+    expect(document.querySelector("#crs-visual-inspection")?.innerHTML).toContain("iVBORw0KGgo");
+    await vi.waitFor(() => {
+      expect(document.querySelector<HTMLButtonElement>("#crs-inspect-views")?.disabled).toBe(false);
+    });
+
+    const target = { kind: "draft", draft_hash: "c".repeat(64) };
+    const identity = getWebMcpIdentity();
+    let resolveFirst!: (value: StudioVisualInspection) => void;
+    let resolveSecond!: (value: StudioVisualInspection) => void;
+    captureVisualInspection
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+    const firstInspection = webMcpInspection({ target }, { target }, identity);
+    const secondInspection = webMcpInspection({ target }, { target }, identity);
+    currentContext = { ...currentContext, projectGeneration: 8 };
+    await studio.refresh();
+    resolveSecond(visualInspection);
+    resolveFirst(visualInspection);
+    const parallelResults = await Promise.all([firstInspection, secondInspection]);
+    expect(parallelResults).toMatchObject([
+      { status: "unavailable", code: "VISUAL_TARGET_CHANGED" },
+      { status: "unavailable", code: "VISUAL_TARGET_CHANGED" },
+    ]);
+    expect(captureVisualInspection).toHaveBeenCalledTimes(3);
+
+    const staleResult = await webMcpInspection(
+      { target: { kind: "revision", revision_id: "r002" } },
+      { target: { kind: "revision", revision_id: "r002" } },
+      getWebMcpIdentity(),
+    );
+    expect(staleResult).toMatchObject({
+      status: "unavailable",
+      code: "VISUAL_TARGET_MISMATCH",
+      affects_manufacturing_evidence: false,
+    });
+    expect(captureVisualInspection).toHaveBeenCalledTimes(3);
+    expect(document.querySelector("#crs-inspection-source")?.textContent).toContain("draft cccccccccc");
+    expect(document.querySelector("#crs-visual-inspection")?.hasAttribute("hidden")).toBe(false);
+
+    captureVisualInspection.mockResolvedValueOnce({
+      ...visualInspection,
+      source: {
+        ...visualInspection.source!,
+        specHash: "1".repeat(64),
+      },
+    });
+    await expect(webMcpInspection(
+      { target },
+      { target },
+      getWebMcpIdentity(),
+    )).resolves.toMatchObject({
+      status: "unavailable",
+      code: "VISUAL_SPEC_MISMATCH",
+    });
+    expect(document.querySelector("#crs-inspection-status")?.textContent).toBe("Unavailable");
+
+    currentContext = {
+      ...currentContext,
+      preview: {
+        ...currentContext.preview,
+        glbUrl: `/api/studio/v1/artifacts/${"9".repeat(64)}`,
+        glbSha256: "9".repeat(64),
+      },
+    };
+    await studio.refresh();
+    expect(document.querySelector("#crs-visual-inspection")?.hasAttribute("hidden")).toBe(true);
+
+    await expect(webMcpInspection({ target }, { target }, getWebMcpIdentity())).resolves.toMatchObject({
+      status: "unavailable",
+      code: "VISUAL_GLB_MISMATCH",
+    });
+    expect(document.querySelector("#crs-visual-inspection")?.hasAttribute("hidden")).toBe(false);
+    let resolveLate!: (value: StudioVisualInspection) => void;
+    captureVisualInspection.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLate = resolve; }),
+    );
+    const lateInspection = webMcpInspection(
+      { target },
+      { target },
+      getWebMcpIdentity(),
+    );
+    currentContext = {
+      ...currentContext,
+      draft: {
+        ...currentContext.draft!,
+        draftHash: "f".repeat(64),
+        specHash: "0".repeat(64),
+      },
+      preview: {
+        ...currentContext.preview,
+        glbUrl: `/api/studio/v1/artifacts/${"8".repeat(64)}`,
+        glbSha256: "8".repeat(64),
+      },
+    };
+    await studio.refresh();
+    resolveLate(visualInspection);
+    await expect(lateInspection).resolves.toMatchObject({
+      status: "unavailable",
+      code: "VISUAL_TARGET_CHANGED",
+    });
+    expect(document.querySelector("#crs-visual-inspection")?.hasAttribute("hidden")).toBe(true);
     studio.destroy();
   });
 });
