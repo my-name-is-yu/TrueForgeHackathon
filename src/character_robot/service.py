@@ -451,6 +451,11 @@ class CharacterRobotService:
                 "Regenerate the preview or build manifest and use its current digest.",
             ) from None
 
+    def release_displayed_build_pack(self) -> None:
+        """Release the currently displayed Build Pack artifact lifetime."""
+
+        self._artifacts.release_display_pins()
+
     def restore_portable_project(
         self,
         snapshot: ProjectSnapshot,
@@ -606,7 +611,10 @@ class CharacterRobotService:
             # design constraint rejects the candidate.
             self._persist(request_id)
             self._require_within_maximum_dimensions(value.spec, compiled, request_id)
-            self._draft = self._make_draft(value.spec)
+            next_draft = self._make_draft(value.spec)
+            if self._draft is None or self._draft.draft_hash != next_draft.draft_hash:
+                self.release_displayed_build_pack()
+            self._draft = next_draft
             self._latest_validation = None
             self._persist(request_id)
             return SetDesignDraftOutput(
@@ -669,7 +677,10 @@ class CharacterRobotService:
             compiled = await self._compile(candidate, request_id)
             self._persist(request_id)
             self._require_within_maximum_dimensions(candidate, compiled, request_id)
-            self._draft = self._make_draft(candidate)
+            next_draft = self._make_draft(candidate)
+            if next_draft.draft_hash != draft.draft_hash:
+                self.release_displayed_build_pack()
+            self._draft = next_draft
             self._latest_validation = None
             self._persist(request_id)
             return ReviseDesignDraftOutput(
@@ -835,6 +846,7 @@ class CharacterRobotService:
                 note=value.note,
                 created_at=datetime.now(UTC).isoformat(timespec="microseconds"),
             )
+            self.release_displayed_build_pack()
             self._revisions.append(_Revision(summary=summary, spec=draft.spec))
             self._head_revision_id = revision_id
             self._draft = self._make_draft(draft.spec)
@@ -1154,6 +1166,59 @@ class CharacterRobotService:
                     )
                 else:
                     artifacts.append(archive)
+            unique_display_descriptors = {
+                artifact.descriptor.sha256: artifact.descriptor
+                for artifact in artifacts
+            }
+            display_bytes = sum(
+                descriptor.byte_size
+                for descriptor in unique_display_descriptors.values()
+            )
+            display_count = len(unique_display_descriptors)
+            if display_bytes > self._artifacts.maximum_bytes:
+                capacity_issue = ValidationIssue(
+                    code="build_pack_artifacts_too_large",
+                    severity="error",
+                    path="build_pack",
+                    message="The unique Build Pack artifacts exceed this session's artifact budget.",
+                    measured_value=float(display_bytes),
+                    limit_value=float(self._artifacts.maximum_bytes),
+                    suggestion="Reduce the generated artifacts or use a future streaming artifact store.",
+                )
+            elif display_count > self._artifacts.maximum_artifacts:
+                capacity_issue = ValidationIssue(
+                    code="build_pack_artifacts_too_many",
+                    severity="error",
+                    path="build_pack",
+                    message="The unique Build Pack artifacts exceed this session's artifact count budget.",
+                    measured_value=float(display_count),
+                    limit_value=float(self._artifacts.maximum_artifacts),
+                    suggestion="Reduce the generated artifact set or use a future streaming artifact store.",
+                )
+            else:
+                capacity_issue = None
+            if capacity_issue is not None:
+                self._record_run(
+                    kind="build_pack",
+                    spec=revision.spec,
+                    started=pack_started,
+                    cache_hit=False,
+                    cad_engine_version=compiled.cad_engine_version,
+                    simulation_engine_version=(
+                        simulation.engine_version if simulation is not None else None
+                    ),
+                    error_codes=[capacity_issue.code],
+                )
+                result = PrepareBuildPackOutput(
+                    schema_version=SCHEMA_VERSION,
+                    request_id=request_id,
+                    status="blocked",
+                    manifest=None,
+                    blockers=[capacity_issue],
+                    next_action="Reduce the exact artifact set before preparing another Build Pack.",
+                )
+                self._persist(request_id)
+                return result
             manifest_payload = {
                 "revision_id": revision.summary.revision_id,
                 "spec_hash": revision.summary.spec_hash,
@@ -1217,8 +1282,20 @@ class CharacterRobotService:
                 )
                 self._persist(request_id)
                 return result
-            for artifact in artifacts:
-                self._store_artifact(artifact, request_id)
+            display_digests = tuple(unique_display_descriptors)
+            previous_display_pins = self._artifacts.display_pins
+            # Each display set is bounded above by the preflighted pack.  The
+            # old and candidate sets may overlap only during this transition.
+            # Keep the prior displayed pack protected until this candidate has
+            # been stored completely; failed retries must not strand its links.
+            self._artifacts.reserve_display_pins(display_digests)
+            try:
+                for artifact in artifacts:
+                    self._store_artifact(artifact, request_id)
+            except Exception:
+                self._artifacts.replace_display_pins(tuple(previous_display_pins))
+                raise
+            self._artifacts.replace_display_pins(display_digests)
             if is_new_manifest:
                 self._artifact_manifests.append(manifest)
             maker_blocker_codes = list(maker_pack.blockers)

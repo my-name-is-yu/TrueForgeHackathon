@@ -88,6 +88,36 @@ def test_session_artifact_download_pin_survives_budget_eviction(tmp_path) -> Non
     assert store._eviction_pending is False
 
 
+def test_session_artifact_display_pin_survives_budget_pressure_until_release(
+    tmp_path,
+) -> None:
+    store = SessionArtifactStore(tmp_path, maximum_artifacts=2, maximum_bytes=8)
+    first = _artifact(b"1111", name="first.glb")
+    second = _artifact(b"2222", name="second.glb")
+    third = _artifact(b"3333", name="third.glb")
+
+    store.put(first, b"1111")
+    store.put(second, b"2222")
+    store.reserve_display_pins([first.sha256, second.sha256])
+
+    store.put(third, b"3333")
+
+    assert first.sha256 in store
+    assert second.sha256 in store
+    assert third.sha256 in store
+    assert store._eviction_pending is True
+    assert store.read(first.sha256)[0] == b"1111"
+    assert store.read(second.sha256)[0] == b"2222"
+    assert store.read(third.sha256)[0] == b"3333"
+
+    store.release_display_pins()
+
+    assert first.sha256 not in store
+    assert second.sha256 in store
+    assert third.sha256 in store
+    assert store._eviction_pending is False
+
+
 def test_session_artifact_download_defers_drop_until_close(tmp_path) -> None:
     store = SessionArtifactStore(tmp_path)
     descriptor = _artifact(b"pinned")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -44,6 +45,7 @@ class SessionArtifactStore:
         self._descriptors: OrderedDict[str, ArtifactDescriptor] = OrderedDict()
         self._total_bytes = 0
         self._download_pins: dict[str, int] = {}
+        self._display_pins: set[str] = set()
         self._pending_drops: set[str] = set()
         self._eviction_pending = False
 
@@ -85,6 +87,9 @@ class SessionArtifactStore:
 
         self._descriptors.clear()
         self._total_bytes = 0
+        self._display_pins.clear()
+        self._pending_drops.clear()
+        self._eviction_pending = False
         for descriptor in descriptors:
             try:
                 content = self.objects.read_bytes(descriptor.sha256)
@@ -155,6 +160,38 @@ class SessionArtifactStore:
             return
         self._download_pins[digest] = pins - 1
 
+    def reserve_display_pins(self, digests: Sequence[str]) -> None:
+        """Keep one displayed Build Pack boundedly readable across refreshes.
+
+        Digests may be reserved before their bytes are written.  Build Pack
+        generation uses that property so an earlier constituent cannot be
+        evicted while later constituents are being stored under pressure.
+        """
+
+        self._display_pins.update(digests)
+
+    @property
+    def display_pins(self) -> frozenset[str]:
+        return frozenset(self._display_pins)
+
+    def replace_display_pins(self, digests: Sequence[str]) -> None:
+        """Atomically select the one Build Pack that remains displayed."""
+
+        self._display_pins = set(digests)
+        if self._eviction_pending:
+            self._evict_to_budget()
+
+    def release_display_pins(self) -> None:
+        """Release the displayed pack and finish any deferred eviction."""
+
+        self._display_pins.clear()
+        for digest in tuple(self._pending_drops):
+            if not self._download_pins.get(digest):
+                self._pending_drops.remove(digest)
+                self._drop(digest)
+        if self._eviction_pending:
+            self._evict_to_budget()
+
     def __contains__(self, digest: object) -> bool:
         return isinstance(digest, str) and digest in self._descriptors
 
@@ -179,6 +216,7 @@ class SessionArtifactStore:
                     if (
                         candidate not in protected
                         and not self._download_pins.get(candidate)
+                        and candidate not in self._display_pins
                     )
                 ),
                 None,
@@ -258,7 +296,7 @@ class SessionArtifactStore:
             os.close(object_root_fd)
 
     def _drop(self, digest: str) -> None:
-        if self._download_pins.get(digest):
+        if self._download_pins.get(digest) or digest in self._display_pins:
             self._pending_drops.add(digest)
             return
         descriptor = self._descriptors.pop(digest, None)

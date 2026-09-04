@@ -300,10 +300,12 @@ class StudioSessionManager:
         except Exception:
             self._delete_generation(replacement.data_root)
             raise
+        previous_service = session.service
         session.service = replacement.service
         session.data_root = replacement.data_root
         session.selection_target = None
         session.selected_node_id = None
+        previous_service.release_displayed_build_pack()
         try:
             self._delete_generation(previous_root)
         except OSError:
@@ -339,10 +341,12 @@ class StudioSessionManager:
         except Exception:
             self._delete_generation(replacement.data_root)
             raise
+        previous_service = session.service
         session.service = replacement.service
         session.data_root = replacement.data_root
         session.selection_target = None
         session.selected_node_id = None
+        previous_service.release_displayed_build_pack()
         try:
             self._delete_generation(previous_root)
         except OSError:

@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import pytest
 
 import character_robot.project_store as project_store_module
+from character_robot.artifacts import ArtifactStoreError
 from character_robot.profiles import M5_CORES3_GOPLUS2, MassMetadata, ProfileRegistry
 from character_robot.project_store import (
     PortableProjectSizeError,
@@ -1570,7 +1571,9 @@ def test_generated_portable_project_uses_the_import_byte_limit(
     )
 
 
-def test_artifact_count_budget_never_returns_an_unreadable_manifest() -> None:
+def test_artifact_count_budget_never_returns_an_unreadable_manifest(
+    monkeypatch,
+) -> None:
     service = _service()
     draft = asyncio.run(
         service.set_design_draft(
@@ -1612,6 +1615,31 @@ def test_artifact_count_budget_never_returns_an_unreadable_manifest() -> None:
     }
     for artifact in without_archive.manifest.artifacts:
         assert service.read_artifact(artifact.sha256)[0]
+    displayed_pins = service._artifacts.display_pins
+    assert displayed_pins == frozenset(
+        artifact.sha256 for artifact in without_archive.manifest.artifacts
+    )
+
+    with pytest.raises(DomainError) as stale:
+        asyncio.run(
+            service.prepare_build_pack(
+                PrepareBuildPackInput(
+                    revision_id="r000",
+                    expected_spec_hash="0" * 64,
+                )
+            )
+        )
+    assert stale.value.code == "STALE_SPEC"
+    assert service._artifacts.display_pins == displayed_pins
+
+    def fail_put(_descriptor, _content):
+        raise ArtifactStoreError("injected artifact storage failure")
+
+    monkeypatch.setattr(service._artifacts, "put", fail_put)
+    with pytest.raises(DomainError) as failed:
+        asyncio.run(service.prepare_build_pack(request))
+    assert failed.value.code == "ARTIFACT_STORAGE_FAILED"
+    assert service._artifacts.display_pins == displayed_pins
 
     service._artifacts.maximum_artifacts = constituent_count - 1
     blocked = asyncio.run(service.prepare_build_pack(request))
@@ -1621,6 +1649,98 @@ def test_artifact_count_budget_never_returns_an_unreadable_manifest() -> None:
     assert [issue.code for issue in blocked.blockers] == [
         "build_pack_artifacts_too_many"
     ]
+    assert service._artifacts.display_pins == displayed_pins
+
+
+def test_displayed_build_pack_survives_context_refresh_under_budget_pressure() -> None:
+    service = _service()
+    draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    committed = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=draft.draft_hash,
+                note="Displayed Build Pack lifetime test.",
+            )
+        )
+    )
+    alternate_spec = _spec().model_copy(
+        update={"hardware_profile_id": "pi-zero2wh-crickit-ws2/v1"}
+    )
+    alternate = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(
+                expected_revision="r000",
+                expected_draft_hash=committed.draft_hash,
+                spec=alternate_spec,
+            )
+        )
+    )
+
+    # The active draft has been compiled once, so clear its cache and all
+    # unmanifested bytes to reproduce the immediate-refresh regeneration.
+    service._compile_cache.clear()
+    service._artifacts.restore([])
+    prepared = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id="r000",
+                expected_spec_hash=committed.revision.spec_hash,
+            )
+        )
+    )
+    assert prepared.manifest is not None
+    displayed = tuple(prepared.manifest.artifacts)
+
+    service._artifacts.maximum_bytes = sum(artifact.byte_size for artifact in displayed)
+    service._compile_cache.clear()
+    refreshed = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+
+    assert refreshed.draft is not None
+    assert refreshed.draft.spec_hash == alternate.spec_hash
+    assert service._artifacts._eviction_pending is True
+    for artifact in displayed:
+        content, media_type, file_name = service.read_artifact(artifact.sha256)
+        assert hashlib.sha256(content).hexdigest() == artifact.sha256
+        assert media_type == artifact.media_type
+        assert file_name == artifact.file_name
+
+    reprepared = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id="r000",
+                expected_spec_hash=committed.revision.spec_hash,
+            )
+        )
+    )
+    assert reprepared.manifest is not None
+    for artifact in reprepared.manifest.artifacts:
+        assert service.read_artifact(artifact.sha256)[0]
+
+    assert service._artifacts.display_pins == frozenset(
+        artifact.sha256 for artifact in reprepared.manifest.artifacts
+    )
+    changed = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(
+                expected_revision="r000",
+                expected_draft_hash=refreshed.draft.draft_hash,
+                spec=alternate_spec.model_copy(
+                    update={
+                        "identity": alternate_spec.identity.model_copy(
+                            update={"name": "Displayed lifetime changed"}
+                        )
+                    }
+                ),
+            )
+        )
+    )
+    assert changed.draft_hash != refreshed.draft.draft_hash
+    assert not service._artifacts.display_pins
 
 
 def test_manifest_limit_rejects_513th_before_mutating_durable_session(
