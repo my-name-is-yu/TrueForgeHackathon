@@ -183,12 +183,10 @@ class V2ProjectService:
         for domain in readiness.domains:
             if domain.state == "blocked":
                 prefix = f"{domain.domain_id}: "
-                blockers.extend(
-                    blocker
-                    if len(prefix) + len(blocker) > SAFE_TEXT_MAX_LENGTH
-                    else f"{prefix}{blocker}"
-                    for blocker in domain.blockers
-                )
+                for blocker in domain.blockers:
+                    # Keep the domain identity even when the source text
+                    # already consumes the complete bounded output budget.
+                    blockers.append(f"{prefix}{blocker}"[:SAFE_TEXT_MAX_LENGTH])
                 if not domain.blockers:
                     blockers.append(f"{domain.domain_id}: blocked")
                 actions.append(f"Resolve blockers in {domain.domain_id}.")

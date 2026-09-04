@@ -140,7 +140,50 @@ def test_readiness_preserves_max_length_requirement_text(tmp_path: Path) -> None
     service = V2ProjectService(tmp_path / "projects.sqlite3")
     created = service.create_project("studio", requirements)
     result = service.write_project("studio", created.active_target_token)
-    assert result.blockers[0] == question
+    expected = f"requirements: {question}"[:SAFE_TEXT_MAX_LENGTH]
+    assert result.blockers[0] == expected
+
+
+def test_identical_max_length_blockers_keep_domain_identity_and_persist(
+    tmp_path: Path,
+) -> None:
+    blocker = "x" * SAFE_TEXT_MAX_LENGTH
+    service = V2ProjectService(tmp_path / "projects.sqlite3")
+    created = service.create_project("studio", _requirements())
+
+    result = service.write_project(
+        "studio",
+        created.active_target_token,
+        update={
+            "domains": [
+                {"domain_id": "visual_design", "blockers": [blocker]},
+                {"domain_id": "component_selection", "blockers": [blocker]},
+            ]
+        },
+    )
+
+    assert result.state.generation == 1
+    assert len(result.blockers) == 9
+    assert result.blockers[0].startswith("visual_design: ")
+    assert result.blockers[1].startswith("component_selection: ")
+    assert result.blockers[0] != result.blockers[1]
+    assert all(len(blocker) <= SAFE_TEXT_MAX_LENGTH for blocker in result.blockers)
+    assert service.get_project_state("studio") == result.state
+
+
+def test_database_open_failure_is_a_retryable_structured_error(tmp_path: Path) -> None:
+    database_directory = tmp_path / "database-directory"
+    database_directory.mkdir()
+    store = V2ProjectStore(database_directory)
+
+    with pytest.raises(V2ContractError) as captured:
+        store.create_project("studio", _requirements())
+
+    error = captured.value.as_dict()
+    assert error["code"] == "V2_STORAGE_ERROR"
+    assert error["path"] == "database_path"
+    assert error["retryable"] is True
+    json.dumps(error, allow_nan=False)
 
 
 def test_target_token_changes_for_every_bound_field() -> None:

@@ -327,13 +327,30 @@ class V2ProjectStore:
             return bytes(row[1])
 
     def _connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.database_path,
-            timeout=5.0,
-            isolation_level=None,
-        )
-        connection.execute("PRAGMA busy_timeout=5000")
-        return connection
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(
+                self.database_path,
+                timeout=5.0,
+                isolation_level=None,
+            )
+            connection.execute("PRAGMA busy_timeout=5000")
+            return connection
+        except (OSError, sqlite3.Error) as error:
+            if connection is not None:
+                try:
+                    connection.close()
+                except sqlite3.Error:
+                    pass
+            raise V2ContractError(
+                code="V2_STORAGE_ERROR",
+                path="database_path",
+                expected="an accessible SQLite database path",
+                actual=type(error).__name__,
+                retryable=True,
+                next_actions=("Retry the project operation.",),
+                message="the V2 SQLite database could not be opened",
+            ) from error
 
     def _table_exists(self, connection: sqlite3.Connection) -> bool:
         row = connection.execute(
