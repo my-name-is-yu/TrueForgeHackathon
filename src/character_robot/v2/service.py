@@ -58,19 +58,15 @@ class V2ProjectService:
         *,
         updated_spec: RobotSystemSpec | None = None,
         update: dict[str, Any] | None = None,
-        changed_entities: tuple[str, ...] | list[str] = (),
-        invalidated_domains: tuple[DomainName, ...] | list[DomainName] = (),
-        invalidated_artifacts: tuple[str, ...] | list[str] = (),
-        invalidated_evidence: tuple[str, ...] | list[str] = (),
-        blockers: tuple[str, ...] | list[str] = (),
-        next_actions: tuple[str, ...] | list[str] = (),
     ) -> WriteResult:
-        """Apply one shell write and return the next target plus invalidations.
+        """Apply one shell write and return server-derived result metadata.
 
         ``spec`` is the complete candidate shell.  ``update`` is a convenience
         for tests and future typed domain adapters; it is applied to the current
         shell with Pydantic's strict validation before the token-checked write.
         Requirements are compared to the stored value and can never be replaced.
+        Changed entities, invalidations, blockers, and next actions are derived
+        by this boundary; callers cannot supply result claims.
         """
 
         current = self.store.load_project(project_id)
@@ -115,27 +111,16 @@ class V2ProjectService:
             candidate_snapshot,
             expected_target_token=active_target_token,
         )
-        changed = tuple(changed_entities)
-        if not changed:
-            changed = self._changed_entities(current.spec, candidate)
-        invalidated = tuple(invalidated_domains)
-        if not invalidated:
-            invalidated = self._changed_domains(current.spec, candidate)
-        derived_blockers = tuple(blockers)
-        derived_actions = tuple(next_actions)
-        if not derived_blockers or not derived_actions:
-            readiness = saved.readiness
-            generated_blockers, generated_actions = self._readiness_actions(readiness)
-            if not derived_blockers:
-                derived_blockers = generated_blockers
-            if not derived_actions:
-                derived_actions = generated_actions
+        changed = self._changed_entities(current.spec, candidate)
+        invalidated = self._changed_domains(current.spec, candidate)
+        derived_blockers, derived_actions = self._readiness_actions(saved.readiness)
         return WriteResult(
             state=saved,
             changed_entities=changed,
             invalidated_domains=invalidated,
-            invalidated_artifacts=tuple(invalidated_artifacts),
-            invalidated_evidence=tuple(invalidated_evidence),
+            # Artifact and evidence stores are introduced by later V2 issues.
+            invalidated_artifacts=(),
+            invalidated_evidence=(),
             blockers=derived_blockers,
             next_actions=derived_actions,
             next_target_token=saved.active_target_token,

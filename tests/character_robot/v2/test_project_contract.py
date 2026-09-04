@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 from pathlib import Path
 
 import pytest
@@ -231,7 +232,7 @@ def test_v1_row_is_rejected_before_v2_parsing_without_mutation(tmp_path: Path) -
     assert database.read_bytes() == before
 
 
-def test_service_returns_changed_entities_invalidations_and_next_token(
+def test_service_owns_result_metadata_and_returns_next_token(
     tmp_path: Path,
 ) -> None:
     service = V2ProjectService(tmp_path / "projects.sqlite3")
@@ -243,18 +244,45 @@ def test_service_returns_changed_entities_invalidations_and_next_token(
             "active_draft_id": "draft",
             "active_draft_digest": "d" * 64,
         },
-        changed_entities=["active_draft"],
-        invalidated_domains=["visual_design"],
-        invalidated_artifacts=["preview"],
-        invalidated_evidence=["evidence"],
-        next_actions=["Review the draft."],
     )
     assert result.state.generation == 1
     assert result.changed_entities == ("active_draft",)
-    assert result.invalidated_domains == ("visual_design",)
-    assert result.invalidated_artifacts == ("preview",)
-    assert result.invalidated_evidence == ("evidence",)
+    assert result.invalidated_domains == ()
+    assert result.invalidated_artifacts == ()
+    assert result.invalidated_evidence == ()
+    incomplete = tuple(
+        domain
+        for domain in result.state.readiness.domains
+        if domain.state in {"missing", "dirty", "blocked"}
+    )
+    assert result.blockers == tuple(
+        f"{domain.domain_id}: {domain.state}" for domain in incomplete
+    )
+    assert result.next_actions == tuple(
+        f"Complete and check {domain.domain_id}." for domain in incomplete
+    )
     assert result.next_target_token == result.state.active_target_token
+
+    result_fields = {
+        "changed_entities",
+        "invalidated_domains",
+        "invalidated_artifacts",
+        "invalidated_evidence",
+        "blockers",
+        "next_actions",
+    }
+    assert result_fields.isdisjoint(inspect.signature(service.write_project).parameters)
+    with pytest.raises(TypeError):
+        service.write_project(
+            "studio",
+            result.next_target_token,
+            changed_entities=("forged",),
+        )
+
+
+def test_environment_constraints_require_explicit_environment_facts() -> None:
+    with pytest.raises(ValidationError):
+        _requirements(environment={"description": "indoor desktop"})
 
 
 def test_public_write_cannot_self_promote_a_domain_to_checked(tmp_path: Path) -> None:

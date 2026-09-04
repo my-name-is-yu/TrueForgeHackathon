@@ -113,8 +113,8 @@ def canonical_sha256(value: V2Model) -> str:
 
 
 class EnvironmentConstraints(V2Model):
-    description: ShortText = "unspecified"
-    indoor_only: StrictBool = True
+    description: ShortText
+    indoor_only: StrictBool
     surface: ShortText | None = None
 
 

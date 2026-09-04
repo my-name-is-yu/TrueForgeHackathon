@@ -117,7 +117,8 @@ phase when the host supports tool search; otherwise register the full compact se
    - Search eligible catalog entries by dimensions, voltage, current, torque, speed, mass,
      mounting, connector, and capability.
 4. `create_system_draft`
-   - Create the initial architecture using CoreS3/GoPlus2 and eligible catalog IDs.
+   - Create the initial architecture using CoreS3 plus the #102 eligible reference stack; use
+     GoPlus2 only when selected for an evidenced non-safety-critical use.
 5. `revise_mechanical_design`
    - Apply typed changes to outer morphology, component layout, mechanisms, mounts, cavities,
      fasteners, openings, and cable routes.
@@ -277,7 +278,7 @@ Create the issue before beginning each new row.
 | 15 | Issue #100 (`yu/robot-design-readiness`) | Enforce requirement and cross-artifact consistency across CAD, BOM, electrical, runtime, manufacturing, and verification. | #91–#99 |
 | 16 | Existing #81 (`yu/robot-build-pack-v2`) | Generate the strict Design-Complete Build Pack and satisfy the deep instruction checks. | #100 |
 | 17 | Issue #101 (`yu/astra-whole-robot-eval-runner`) | Add the configurable GPT-6 Astra (`gpt-6-astra`) Responses evaluation runner, image bridge, and append-only trial ledger. | #98–#100 and #81 |
-| 18 | Follow-on evidence gate | Run frozen-head GPT-6 Astra goal-only trials and publish evidence only after all gates pass. | #101, #80, #82 |
+| 18 | Existing Issue #79 (whole-robot evidence gate) | Run frozen-head GPT-6 Astra goal-only trials and publish evidence only after all gates pass. | #101, #80, #82 |
 
 Mechanical, electrical, and runtime lanes may run in parallel after the catalog and architecture
 merge. Pack-delivery reliability and the GPT-6 Astra runner may run in parallel after the Pack contract
@@ -352,8 +353,9 @@ retain prior runs as diagnostics, freeze a new SHA, and restart the counted tria
 
 ## Final acceptance
 
-The plan is complete when the numbered #88–#101 DAG and the supporting Build Pack/reliability work
-are merged and the frozen V2 head satisfies all deterministic, artifact, browser, and GPT-6 Astra
-gates. The final report must list every merged PR and SHA, exact test results, 10/10 reference-goal
+The plan is complete when the numbered #88–#101 DAG, its #102 reference-stack prerequisite, and the
+supporting Build Pack/reliability work are merged and the frozen V2 head satisfies all deterministic,
+artifact, browser, and GPT-6 Astra gates. The final report must list every merged PR and SHA, exact test
+results, 10/10 reference-goal
 results, held-out results, Build Pack manifest digest, known physical unknowns, and the explicit
 statement that no assembled robot or physical safety claim was produced.
