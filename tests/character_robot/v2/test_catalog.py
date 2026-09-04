@@ -78,19 +78,38 @@ def _mass_fact(
     return CatalogFact(fact_key="mass_g", claims=(claim,))
 
 
+def _numeric_fact(
+    source: CatalogSource, fact_key: str, value: float, *, unit: str = "V"
+) -> CatalogFact:
+    claim = NumericClaim(
+        original_value=value,
+        original_unit=unit,  # type: ignore[arg-type]
+        canonical_value=value,
+        canonical_unit=unit,  # type: ignore[arg-type]
+        basis="manufacturer_stated",
+        conversion_rule="identity",
+        evidence=_evidence(source, fact_key),
+    )
+    return CatalogFact(fact_key=fact_key, claims=(claim,))  # type: ignore[arg-type]
+
+
 def _entry(
     source: CatalogSource,
     *,
     entry_id: str = "example-part",
     category: str = "motor",
     facts: tuple[CatalogFact, ...] = (),
+    manufacturer_sku: str = "EX-1",
+    variant: str = "rev-a",
+    capabilities: tuple[str, ...] = (),
 ) -> CatalogEntry:
     return CatalogEntry(
         entry_id=entry_id,
         manufacturer="Example Manufacturer",
-        manufacturer_sku="EX-1",
-        variant="rev-a",
+        manufacturer_sku=manufacturer_sku,
+        variant=variant,
         category=category,
+        capabilities=capabilities,
         facts=facts,
     )
 
@@ -113,10 +132,13 @@ def test_official_seed_identities_facts_locators_and_document_digests() -> None:
         ("Pololu", "#1087", "Wheel 32x7mm Pair - Black"),
         ("Pololu", "#950", "Ball Caster with 3/8in Plastic Ball, body-only install"),
     ]
-    assert len(OFFICIAL_CATALOG_V2.sources) == 8
+    assert len(OFFICIAL_CATALOG_V2.sources) == 9
     source_by_id = {source.source_id: source for source in OFFICIAL_CATALOG_V2.sources}
     assert source_by_id["cores3-page"].document_sha256 == (
         "9a24d4201e8e04bb384ccea8dbc6a232613579f4efbf935f130d9323d78500b5"
+    )
+    assert source_by_id["goplus2-compatibility"].document_sha256 == (
+        "d1485770966f92bc869f14f37013ca29dd670a10fd47ea89e204fd4da7ef4cb3"
     )
 
     cores3 = OFFICIAL_CATALOG_V2.entry("m5stack-cores3-k128")
@@ -137,6 +159,17 @@ def test_official_seed_identities_facts_locators_and_document_digests() -> None:
     assert goplus2.numeric("mass_g") == 38.0
     assert goplus2.text("motor_driver_model") == "DRV8833"
     assert goplus2.fact_state("operating_voltage_min_v") == "unknown"
+    goplus2_envelope_claims = goplus2.fact("envelope_z_mm").claims  # type: ignore[union-attr]
+    assert goplus2_envelope_claims[1].evidence.locator == (  # type: ignore[union-attr]
+        "Model size drawing > thickness callout 13.2 mm"
+    )
+    goplus2_ir_claims = goplus2.fact("ir_pin_map").claims  # type: ignore[union-attr]
+    assert goplus2_ir_claims[1].evidence.source_id == (  # type: ignore[union-attr]
+        "goplus2-compatibility"
+    )
+    assert goplus2_ir_claims[1].original_value == (  # type: ignore[union-attr]
+        "IR_RX pin 2; IR_TX pin 20"
+    )
 
     wheel = OFFICIAL_CATALOG_V2.entry("pololu-wheel-1087")
     wheel_mass = wheel.fact("mass_g").claims[0]  # type: ignore[union-attr]
@@ -147,6 +180,10 @@ def test_official_seed_identities_facts_locators_and_document_digests() -> None:
     assert wheel_mass.canonical_unit == "g"
     assert wheel.numeric("shaft_diameter_mm") == 3.0
     assert wheel.text("shaft_profile") == "3mm D-shaft press-fit"
+    assert wheel.text("material") == "ABS hub and silicone tire"
+    assert wheel.fact("material").claims[0].evidence.source_id == (  # type: ignore[union-attr]
+        "wheel-1087-drawing"
+    )
 
     caster = OFFICIAL_CATALOG_V2.entry("pololu-ball-caster-950")
     ball = caster.fact("ball_diameter_mm").claims[0]  # type: ignore[union-attr]
@@ -155,10 +192,11 @@ def test_official_seed_identities_facts_locators_and_document_digests() -> None:
     assert ball.original_unit == "in"
     assert ball.canonical_value == pytest.approx(9.525)
     assert caster.numeric("mount_hole_spacing_mm") == 13.5
+    assert caster.text("material") == "plastic ball"
 
 
 def test_seed_digest_is_stable_and_excludes_advisory_data() -> None:
-    expected = "c1770480fcc57cf7c468a2f31bf4759e2292225a96045e19e8464d3a62e11474"
+    expected = "7ff65dbcb220c0b387ea1d060b9b5d9fd3cbd8f5d75dd2213118340d2f15f45d"
     assert OFFICIAL_CATALOG_V2.content_digest == expected
 
     advisory = AdvisoryData(
@@ -181,6 +219,7 @@ def test_digest_is_independent_of_source_entry_fact_and_claim_order() -> None:
         entry.model_copy(
             update={
                 "facts": tuple(reversed(entry.facts)),
+                "capabilities": tuple(reversed(entry.capabilities)),
             }
         )
         for entry in reversed(OFFICIAL_CATALOG_V2.entries)
@@ -194,6 +233,66 @@ def test_digest_is_independent_of_source_entry_fact_and_claim_order() -> None:
 
     with pytest.raises((ValidationError, TypeError)):
         OFFICIAL_CATALOG_V2.catalog_version = "mutated"  # type: ignore[misc]
+
+
+def test_digest_is_independent_of_set_like_capability_and_derived_source_order() -> (
+    None
+):
+    first = CatalogEntry(
+        entry_id="derived-order",
+        manufacturer="Example Manufacturer",
+        manufacturer_sku="EX-DERIVED",
+        variant="rev-a",
+        category="motor",
+        capabilities=("z-capability", "a-capability"),
+        facts=(
+            CatalogFact(
+                fact_key="mass_g",
+                claims=(
+                    NumericClaim(
+                        original_value=10.0,
+                        original_unit="g",
+                        canonical_value=10.0,
+                        canonical_unit="g",
+                        basis="derived",
+                        conversion_rule="identity",
+                        derived_from=("source-b", "source-a"),
+                    ),
+                ),
+            ),
+        ),
+    )
+    second = CatalogEntry(
+        entry_id="derived-order",
+        manufacturer="Example Manufacturer",
+        manufacturer_sku="EX-DERIVED",
+        variant="rev-a",
+        category="motor",
+        capabilities=("a-capability", "z-capability"),
+        facts=(
+            CatalogFact(
+                fact_key="mass_g",
+                claims=(
+                    NumericClaim(
+                        original_value=10.0,
+                        original_unit="g",
+                        canonical_value=10.0,
+                        canonical_unit="g",
+                        basis="derived",
+                        conversion_rule="identity",
+                        derived_from=("source-a", "source-b"),
+                    ),
+                ),
+            ),
+        ),
+    )
+    first_catalog = CatalogSnapshot(
+        catalog_version="test-catalog", sources=(), entries=(first,)
+    )
+    second_catalog = CatalogSnapshot(
+        catalog_version="test-catalog", sources=(), entries=(second,)
+    )
+    assert first_catalog.content_digest == second_catalog.content_digest
 
 
 def test_seed_eligibility_keeps_core_and_goplus_gaps_ineligible() -> None:
@@ -231,6 +330,80 @@ def test_seed_eligibility_keeps_core_and_goplus_gaps_ineligible() -> None:
     assert assess_eligibility(POLOLU_WHEEL_1087, "wheel_drive").eligible is True
     assert POLOLU_CASTER_950.entry_id == "pololu-ball-caster-950"
     assert assess_eligibility(POLOLU_CASTER_950, "caster").eligible is True
+
+
+@pytest.mark.parametrize(
+    ("minimum", "nominal", "maximum"),
+    [(24.0, None, 9.0), (24.0, 12.0, 24.0), (9.0, 30.0, 24.0)],
+)
+def test_known_operating_voltage_bounds_must_be_ordered(
+    minimum: float, nominal: float | None, maximum: float
+) -> None:
+    source = _source()
+    facts = [
+        _numeric_fact(source, "operating_voltage_min_v", minimum),
+        _numeric_fact(source, "operating_voltage_max_v", maximum),
+    ]
+    if nominal is not None:
+        facts.append(_numeric_fact(source, "operating_voltage_nominal_v", nominal))
+    with pytest.raises(ValidationError):
+        _entry(source, facts=tuple(facts))
+
+
+def test_voltage_query_requires_documented_interval_to_cover_requested_bounds() -> None:
+    source = _source()
+    wide = _entry(
+        source,
+        entry_id="wide-voltage",
+        facts=(
+            _numeric_fact(source, "operating_voltage_min_v", 9.0),
+            _numeric_fact(source, "operating_voltage_max_v", 24.0),
+        ),
+    )
+    narrow = _entry(
+        source,
+        entry_id="narrow-voltage",
+        variant="rev-b",
+        facts=(
+            _numeric_fact(source, "operating_voltage_min_v", 9.0),
+            _numeric_fact(source, "operating_voltage_max_v", 12.0),
+        ),
+    )
+    nominal_only = _entry(
+        source,
+        entry_id="nominal-voltage",
+        variant="rev-c",
+        facts=(_numeric_fact(source, "operating_voltage_nominal_v", 12.0),),
+    )
+    conflicting_min = CatalogFact(
+        fact_key="operating_voltage_min_v",
+        claims=(
+            _numeric_fact(source, "operating_voltage_min_v", 9.0).claims[0],
+            _numeric_fact(source, "operating_voltage_min_v", 15.0).claims[0],
+        ),
+    )
+    conflicting = _entry(
+        source,
+        entry_id="conflicting-voltage",
+        variant="rev-d",
+        facts=(
+            conflicting_min,
+            _numeric_fact(source, "operating_voltage_nominal_v", 12.0),
+            _numeric_fact(source, "operating_voltage_max_v", 24.0),
+        ),
+    )
+    catalog = _snapshot(source, wide, narrow, nominal_only, conflicting)
+
+    requested_range = CatalogQuery(min_voltage_v=10.0, max_voltage_v=20.0)
+    assert [
+        match.entry.entry_id
+        for match in query_catalog(catalog, requested_range).matches
+    ] == ["wide-voltage"]
+
+    assert [
+        match.entry.entry_id
+        for match in query_catalog(catalog, CatalogQuery(min_voltage_v=20.0)).matches
+    ] == ["wide-voltage"]
 
 
 def test_each_required_use_has_stable_reason_codes() -> None:
@@ -450,6 +623,26 @@ def test_exact_conversion_and_fact_type_boundaries_are_strict() -> None:
 
     with pytest.raises(ValidationError):
         NumericClaim(
+            original_value=1_000_000_000_000.0,
+            original_unit="kg",
+            canonical_value=1_000_000_000_000_100.0,
+            canonical_unit="g",
+            basis="converted",
+            conversion_rule="kg_to_g",
+            evidence=_evidence(source),
+        )
+    with pytest.raises(ValidationError):
+        NumericClaim(
+            original_value=1e308,
+            original_unit="kg",
+            canonical_value=1e308,
+            canonical_unit="g",
+            basis="converted",
+            conversion_rule="kg_to_g",
+            evidence=_evidence(source),
+        )
+    with pytest.raises(ValidationError):
+        NumericClaim(
             original_value=2.0,
             original_unit="in",
             canonical_value=50.0,
@@ -464,6 +657,16 @@ def test_exact_conversion_and_fact_type_boundaries_are_strict() -> None:
             original_unit="bananas",  # type: ignore[arg-type]
             canonical_value=1.0,
             canonical_unit="mm",
+            basis="manufacturer_stated",
+            conversion_rule="identity",
+            evidence=_evidence(source),
+        )
+    with pytest.raises(ValidationError):
+        NumericClaim(
+            original_value=1_000_000_000_000.0,
+            original_unit="g",
+            canonical_value=1_000_000_000_050.0,
+            canonical_unit="g",
             basis="manufacturer_stated",
             conversion_rule="identity",
             evidence=_evidence(source),
@@ -486,6 +689,24 @@ def test_exact_conversion_and_fact_type_boundaries_are_strict() -> None:
             canonical_unit="g",
             basis="manufacturer_stated",
             conversion_rule="identity",
+            evidence=_evidence(source),
+        )
+
+
+def test_text_and_boolean_identity_claims_cannot_change_canonical_value() -> None:
+    source = _source()
+    with pytest.raises(ValidationError):
+        TextClaim(
+            original_value="manufacturer label",
+            canonical_value="normalized label",
+            basis="manufacturer_stated",
+            evidence=_evidence(source),
+        )
+    with pytest.raises(ValidationError):
+        BooleanClaim(
+            original_value=True,
+            canonical_value=False,
+            basis="manufacturer_stated",
             evidence=_evidence(source),
         )
 
@@ -550,6 +771,21 @@ def test_negative_quantities_and_invalid_count_are_rejected_but_temperature_can_
                 ),
             ),
         )
+    with pytest.raises(ValidationError):
+        CatalogFact(
+            fact_key="capacity_mah",
+            claims=(
+                NumericClaim(
+                    original_value=0.0,
+                    original_unit="mAh",
+                    canonical_value=0.0,
+                    canonical_unit="mAh",
+                    basis="manufacturer_stated",
+                    conversion_rule="identity",
+                    evidence=_evidence(source),
+                ),
+            ),
+        )
 
 
 def test_claim_basis_evidence_and_duplicate_claim_rules() -> None:
@@ -590,6 +826,12 @@ def test_claim_basis_evidence_and_duplicate_claim_rules() -> None:
         )
     with pytest.raises(ValidationError):
         CatalogFact(fact_key="mass_g", unknown_reason="MISSING_CONNECTOR")
+    with pytest.raises(ValidationError):
+        CatalogFact(
+            fact_key="mass_g",
+            claims=(claim,),
+            unknown_evidence=(_evidence(source, "no mass field"),),
+        )
 
 
 def test_duplicate_entries_source_digest_and_evidence_references_are_rejected() -> None:

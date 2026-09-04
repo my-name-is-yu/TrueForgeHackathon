@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from character_robot.v2 import (
     V2ContractError,
     V2ValidationError,
     SAFE_TEXT_MAX_LENGTH,
+    V2_STORE_NAMESPACE,
     calculate_active_target_token,
     derive_readiness,
 )
@@ -275,6 +277,192 @@ def test_database_open_failure_is_a_retryable_structured_error(tmp_path: Path) -
     assert error["path"] == "database_path"
     assert error["retryable"] is True
     json.dumps(error, allow_nan=False)
+
+
+def test_impossible_database_parent_is_structured_and_read_only(
+    tmp_path: Path,
+) -> None:
+    parent_file = tmp_path / "parent-file"
+    parent_file.write_bytes(b"parent")
+    database = parent_file / "projects.sqlite3"
+    before = parent_file.read_bytes()
+
+    with pytest.raises(V2ContractError) as captured:
+        V2ProjectStore(database)
+
+    error = captured.value.as_dict()
+    assert error["code"] == "V2_STORAGE_ERROR"
+    assert error["path"] == "database_path"
+    assert error["retryable"] is True
+    json.dumps(error, allow_nan=False)
+    assert parent_file.read_bytes() == before
+    assert not database.exists()
+
+
+@pytest.mark.parametrize("database_kind", ["directory", "non_sqlite"])
+def test_store_operations_wrap_database_boundary_failures(
+    tmp_path: Path, database_kind: str
+) -> None:
+    database = tmp_path / "projects.sqlite3"
+    if database_kind == "directory":
+        database.mkdir()
+        before: bytes | None = None
+    else:
+        database.write_bytes(b"not a SQLite database")
+        before = database.read_bytes()
+    store = V2ProjectStore(database)
+    snapshot = _snapshot()
+
+    operations = (
+        lambda: store.load_project("studio"),
+        lambda: store.raw_project_bytes("studio"),
+        store.list_project_ids,
+        store.verify,
+        lambda: store.create_project("studio", _requirements()),
+        lambda: store.save_project(snapshot, snapshot.active_target_token),
+    )
+    for operation in operations:
+        with pytest.raises(V2ContractError) as captured:
+            operation()
+        error = captured.value.as_dict()
+        assert error["code"] == "V2_STORAGE_ERROR"
+        assert error["retryable"] is True
+        json.dumps(error, allow_nan=False)
+
+    if before is None:
+        assert database.is_dir()
+    else:
+        assert database.read_bytes() == before
+
+
+def test_create_validates_project_before_opening_a_broken_database(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "non-sqlite"
+    database.write_bytes(b"not a SQLite database")
+    before = database.read_bytes()
+    store = V2ProjectStore(database)
+
+    with pytest.raises(V2ValidationError) as captured:
+        store.create_project("Invalid ID", _requirements())
+
+    assert captured.value.as_dict()["path"] == "project_id"
+    assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize("project_id", [sqlite3.Binary(b"not-an-id"), "Invalid ID"])
+def test_list_rejects_invalid_persisted_project_ids_without_mutation(
+    tmp_path: Path, project_id: object
+) -> None:
+    database = tmp_path / "invalid-project-id.sqlite3"
+    store = V2ProjectStore(database)
+    store.create_project("studio", _requirements())
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE project_rows SET project_id = ? WHERE namespace = ?",
+            (project_id, V2_STORE_NAMESPACE),
+        )
+    before = database.read_bytes()
+
+    for operation in (store.list_project_ids, store.verify):
+        with pytest.raises(V2ValidationError) as captured:
+            operation()
+        error = captured.value.as_dict()
+        assert error["code"] == "INVALID_V2_PROJECT"
+        assert error["path"] == "project_id"
+        json.dumps(error, allow_nan=False)
+    assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ("not-an-integer", b"{}", "d" * 64),
+        (0, "not-bytes", "d" * 64),
+        (0, b"{}", b"not-text"),
+    ],
+)
+def test_malformed_v2_row_types_are_structured_and_read_only(
+    tmp_path: Path, row: tuple[object, object, object]
+) -> None:
+    database = tmp_path / "malformed-v2.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE project_rows(
+                namespace TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                snapshot_json BLOB NOT NULL,
+                snapshot_sha256 TEXT NOT NULL,
+                PRIMARY KEY(namespace, project_id)
+            ) WITHOUT ROWID
+            """
+        )
+        connection.execute(
+            "INSERT INTO project_rows VALUES (?, ?, ?, ?, ?)",
+            (V2_STORE_NAMESPACE, "studio", *row),
+        )
+    before = database.read_bytes()
+    store = V2ProjectStore(database)
+
+    operations = (
+        lambda: store.load_project("studio"),
+        lambda: store.raw_project_bytes("studio"),
+        store.verify,
+    )
+    for operation in operations:
+        with pytest.raises(V2ValidationError) as captured:
+            operation()
+        error = captured.value.as_dict()
+        assert error["code"] == "INVALID_V2_PROJECT"
+        assert error["path"] == "project_row"
+        json.dumps(error, allow_nan=False)
+    assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ("not-an-integer", b"{}", "d" * 64),
+        (0, "not-bytes", "d" * 64),
+        (0, b"{}", b"not-text"),
+    ],
+)
+def test_malformed_legacy_row_types_are_structured_and_read_only(
+    tmp_path: Path, row: tuple[object, object, object]
+) -> None:
+    database = tmp_path / "malformed-v1.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE projects(
+                project_id TEXT PRIMARY KEY,
+                generation INTEGER NOT NULL,
+                snapshot_json BLOB NOT NULL,
+                snapshot_sha256 TEXT NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        connection.execute(
+            "INSERT INTO projects VALUES (?, ?, ?, ?)",
+            ("studio", *row),
+        )
+    before = database.read_bytes()
+    store = V2ProjectStore(database)
+
+    operations = (
+        lambda: store.load_project("studio"),
+        lambda: store.raw_project_bytes("studio"),
+    )
+    for operation in operations:
+        with pytest.raises(V2ValidationError) as captured:
+            operation()
+        error = captured.value.as_dict()
+        assert error["code"] == "INVALID_V2_PROJECT"
+        assert error["path"] == "legacy_project_row"
+        json.dumps(error, allow_nan=False)
+    assert database.read_bytes() == before
 
 
 def test_target_token_changes_for_every_bound_field() -> None:
