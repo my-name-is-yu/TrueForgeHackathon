@@ -181,8 +181,10 @@ than inferred from distributor listings.
 
 ## Stable blockers
 
-The current derived blocking set includes the Issue #89 reason codes plus the
-following stack gate IDs:
+`readiness.blocking_codes` contains the Issue #89 reason codes and the digital
+stack gate IDs below. The physical gate IDs are listed as pending qualification
+records as well, but they are intentionally not promoted to datasheet
+eligibility blockers by the derived digital status.
 
 ```text
 missing-cores3-power-endpoint
