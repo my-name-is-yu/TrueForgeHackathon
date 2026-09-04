@@ -141,7 +141,9 @@ locator, source digest, and evidence date. The source table below is the
 machine-readable snapshot's source inventory. HTML digests are explicitly
 marked as dynamic observations: they hash the response bytes observed on
 2026-09-04 and are not treated as permanent document identities. PDF rows hash
-the retrieved response bytes.
+the retrieved response bytes. Each `CatalogSource` also carries the exact
+manufacturer SKU/variant identities it covers; a same-manufacturer URL without
+that identity coverage cannot support a claim or selection.
 
 | Source | URL | Digest |
 | --- | --- | --- |

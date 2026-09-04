@@ -447,8 +447,8 @@ def test_sr6_contact_and_coil_values_do_not_become_generic_load_facts() -> None:
 def test_reference_catalog_digest_is_persisted_and_stable() -> None:
     assert REFERENCE_STACK.catalog_digest == REFERENCE_STACK_CATALOG.content_digest
     assert REFERENCE_STACK.catalog_digest == (
-        "aec326815809cbe60e0ab7d95140259688364279bb3f15f75bcfee3969c5a143"
+        "c8e687e83be979ca763ca6bbf32d028d130f920def4418d78a42b532cf9c5228"
     )
     assert REFERENCE_STACK.content_digest == (
-        "13804a6b972a5094dfb7d52fab6726b9dac0e90418a70af122fe37c4dcc8f2d3"
+        "6ac9e3cdc5cbd7fe5cc826cd70ab72332b1b7d5a3e5cb747a462a7fac51c2764"
     )

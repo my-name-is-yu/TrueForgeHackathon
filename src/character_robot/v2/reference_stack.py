@@ -21,6 +21,7 @@ from .catalog import (
     CORES3_K128,
     CatalogEntry,
     CatalogFact,
+    CatalogIdentity,
     CatalogSnapshot,
     CatalogSource,
     CatalogUse,
@@ -1023,6 +1024,7 @@ def _source(
     url: str,
     media_type: Literal["text/html", "application/pdf", "text/plain"],
     document_sha256: str,
+    covered_identities: tuple[tuple[str, str], ...],
 ) -> CatalogSource:
     return CatalogSource(
         source_id=source_id,
@@ -1031,6 +1033,10 @@ def _source(
         url=url,
         media_type=media_type,
         document_sha256=document_sha256,
+        covered_identities=tuple(
+            CatalogIdentity(manufacturer_sku=sku, variant=variant)
+            for sku, variant in covered_identities
+        ),
         evidence_date="2026-09-04",
     )
 
@@ -1230,6 +1236,17 @@ _BASE_SOURCES = {
         "caster-950-drawing",
     }
 }
+_BASE_SOURCES["caster-950-specs"] = _BASE_SOURCES["caster-950-specs"].model_copy(
+    update={
+        "covered_identities": (
+            *_BASE_SOURCES["caster-950-specs"].covered_identities,
+            CatalogIdentity(
+                manufacturer_sku="#950",
+                variant="included #2 screws/nuts; separate fastener MPN unpublished",
+            ),
+        )
+    }
+)
 
 _NEW_SOURCES = (
     _source(
@@ -1239,6 +1256,7 @@ _NEW_SOURCES = (
         "https://en.robotis.com/shop_en/item.php?it_id=902-0135-000",
         "text/html",
         "010a48a8ebe76af206ed505ea0b050b46b2812ed94544e43a3a151f91cdc8958",
+        (("902-0135-000", "XL430-W250-T"),),
     ),
     _source(
         "robotis-xl430-manual",
@@ -1247,6 +1265,11 @@ _NEW_SOURCES = (
         "https://emanual.robotis.com/docs/en/dxl/x/xl430-w250/",
         "text/html",
         "49fed82a3b39539c8c65ee8be23013f06541a209adbeda28612cf269a6d4d52a",
+        (
+            ("902-0135-000", "XL430-W250-T"),
+            ("HN11-N101", "HN11-N101 assembled horn for XL430-W250-T"),
+            ("Robot Cable-X3P", "180 mm TTL JST-to-JST cable for XL430"),
+        ),
     ),
     _source(
         "robotis-tb3-shop",
@@ -1255,6 +1278,7 @@ _NEW_SOURCES = (
         "https://en.robotis.com/shop_en/item.php?it_id=903-0260-000",
         "text/html",
         "010a48a8ebe76af206ed505ea0b050b46b2812ed94544e43a3a151f91cdc8958",
+        (("903-0260-000", "TB3 Wheel/Tire Set-ISW-01"),),
     ),
     _source(
         "robotis-tb3-download",
@@ -1263,6 +1287,7 @@ _NEW_SOURCES = (
         "https://en.robotis.com/service/downloadpage.php?ca_id=70",
         "text/html",
         "010a48a8ebe76af206ed505ea0b050b46b2812ed94544e43a3a151f91cdc8958",
+        (("903-0260-000", "TB3 Wheel/Tire Set-ISW-01"),),
     ),
     _source(
         "robotis-mkr-shop",
@@ -1271,6 +1296,7 @@ _NEW_SOURCES = (
         "https://en.robotis.com/shop_en/item.php?it_id=902-0146-001",
         "text/html",
         "010a48a8ebe76af206ed505ea0b050b46b2812ed94544e43a3a151f91cdc8958",
+        (("902-0146-001", "DYNAMIXEL Shield for Arduino MKR series"),),
     ),
     _source(
         "robotis-mkr-docs",
@@ -1279,6 +1305,7 @@ _NEW_SOURCES = (
         "https://docs.robotis.com/docs/parts/interface/mkr_shield/",
         "text/html",
         "fbe6de5a399eb0fb1f2df17128177d00700df8bb850ec2c007ecff9d83af1805",
+        (("902-0146-001", "DYNAMIXEL Shield for Arduino MKR series"),),
     ),
     _source(
         "robotis-mkr-emanual",
@@ -1287,6 +1314,7 @@ _NEW_SOURCES = (
         "https://emanual.robotis.com/docs/en/parts/interface/mkr_shield/",
         "text/html",
         "f7a9f10afd838727277c71b3c5b3965518140aab2fb980e54d2b6dc2274e4745",
+        (("902-0146-001", "DYNAMIXEL Shield for Arduino MKR series"),),
     ),
     _source(
         "pololu-4869-specs",
@@ -1295,6 +1323,7 @@ _NEW_SOURCES = (
         "https://www.pololu.com/product/4869/specs",
         "text/html",
         "d9422600dd9e57ef2ae09d56dc27ff66bd6d32b41ebb6a6bd7ab6aad8e46ca74",
+        (("#4869", "227:1 Metal Gearmotor 25Dx71L MP 12V with 48 CPR Encoder"),),
     ),
     _source(
         "pololu-25d-datasheet",
@@ -1303,6 +1332,7 @@ _NEW_SOURCES = (
         "https://www.pololu.com/file/0J1829/pololu-25d-metal-gearmotors.pdf",
         "application/pdf",
         "a2db2ebd88546f6bdbf0a3e2ee9a45e211151abed10f6748a8839be30a1d4f10",
+        (("#4869", "227:1 Metal Gearmotor 25Dx71L MP 12V with 48 CPR Encoder"),),
     ),
     _source(
         "pololu-2520-specs",
@@ -1311,6 +1341,7 @@ _NEW_SOURCES = (
         "https://www.pololu.com/product/2520/specs",
         "text/html",
         "b6f5f06a981d7f029cf3add2e52c041c731c49dd8548671e9e1f0d0daa66e796",
+        (("#2520", "Dual TB9051FTG Motor Driver Shield"),),
     ),
     _source(
         "pololu-2851-specs",
@@ -1319,6 +1350,7 @@ _NEW_SOURCES = (
         "https://www.pololu.com/product/2851/specs",
         "text/html",
         "014da936e009686caa0c06fbaf935a036100e2622d04b9ab5bbfd96491483fa4",
+        (("#2851", "D24V50F5 5V step-down voltage regulator"),),
     ),
     _source(
         "bioenno-blf1206a",
@@ -1327,6 +1359,7 @@ _NEW_SOURCES = (
         "https://www.bioennopower.com/en-gb/products/12v-6ah-lifepo4-battery-pvc",
         "text/html",
         "a0bc0a394f3f2f7ae92b6321cda0cc2b4cb9c9bd39e52cf5dd0d9857bdc5b02b",
+        (("BLF-1206A", "12V 6Ah LiFePO4 battery PVC case"),),
     ),
     _source(
         "bioenno-bpc1502dc",
@@ -1335,6 +1368,7 @@ _NEW_SOURCES = (
         "https://www.bioennopower.com/en-gb/products/lithium-12v-2a-amp-lifepo4-battery-charger",
         "text/html",
         "5c1e10c88c444ca603a1e9449f3ca31d9b4591716e45b98eb38641c624290a7d",
+        (("BPC-1502DC", "14.6 V 2 A LiFePO4 AC-to-DC charger, DC plug"),),
     ),
     _source(
         "bioenno-bpc1502dc-us",
@@ -1343,6 +1377,7 @@ _NEW_SOURCES = (
         "https://www.bioennopower.com/products/lithium-12v-2a-amp-lifepo4-battery-charger",
         "text/html",
         "0e30361cf45376fb08d1c478de2ce4e1f332bbd1d2ac751fc15ab06708197f84",
+        (("BPC-1502DC", "14.6 V 2 A LiFePO4 AC-to-DC charger, DC plug"),),
     ),
     _source(
         "littelfuse-0287020",
@@ -1351,6 +1386,7 @@ _NEW_SOURCES = (
         "https://www.littelfuse.com/de/products/fuses-overcurrent-protection/fuses/automotive-fuses/blade-fuses-shunt/atof/287/0287020-u",
         "text/html",
         "d473a45e309fd67868a0535aacc3f560ce57f14abb4550d6862dcadcc96ff380",
+        (("0287020.U", "ATOF 20A 32V blade fuse"),),
     ),
     _source(
         "littelfuse-ato-holder",
@@ -1359,6 +1395,7 @@ _NEW_SOURCES = (
         "https://www.littelfuse.com/assetdocs/littelfuse-fuse-holder-ato-fha-datasheet?assetguid=988addec-bfe3-4ea2-9204-e2982cbb488e",
         "application/pdf",
         "05b49feda42c6acf013d9246ce94a95c3add9a3d63d2b5c88dead6ab55b14a6a",
+        (("0FHA0002ZXJA", "ATO FHA inline holder, 9 inch 12 AWG GXL leads"),),
     ),
     _source(
         "bluesea-6006",
@@ -1367,6 +1404,7 @@ _NEW_SOURCES = (
         "https://www.bluesea.com/products/6006/m-Series_Battery_Switch_-_On-Off",
         "text/html",
         "df6001c815a084467d79d4b499a5dc31562034e077a6da28fee920745bf6c923",
+        (("6006", "m-Series Mini On-Off Battery Switch with Knob, red"),),
     ),
     _source(
         "bluesea-6006-drawing",
@@ -1375,6 +1413,7 @@ _NEW_SOURCES = (
         "https://d2pyqm2yd3fw2i.cloudfront.net/files/resources/dimensioned_drawing/M_Switch_Knob.pdf",
         "application/pdf",
         "7cc74f7fbfefeb04505edb6118d069b5733d724e912a46875f926bb305f3f980",
+        (("6006", "m-Series Mini On-Off Battery Switch with Knob, red"),),
     ),
     _source(
         "te-sr6-product",
@@ -1383,6 +1422,7 @@ _NEW_SOURCES = (
         "https://www.te.com/en/product-1393260-4.html",
         "text/html",
         "7ae9f7546a316882223f3c04c2ccbc917a260486780c1628fe6b67a2a934efd3",
+        (("1393260-4", "SR6B4012 / V23050-A1012-A542 force-guided relay"),),
     ),
     _source(
         "te-sr6-datasheet",
@@ -1391,6 +1431,7 @@ _NEW_SOURCES = (
         "https://www.te.com/commerce/DocumentDelivery/DDEController?Action=srchrtrv&DocFormat=pdf&DocLang=English&DocNm=SR6&DocType=Data+Sheet&PartCntxt=1393260-4",
         "application/pdf",
         "7054dbcde9e6e2573020563cca0e487533c2c60764c00b7cf2898c2edc6aaa70",
+        (("1393260-4", "SR6B4012 / V23050-A1012-A542 force-guided relay"),),
     ),
     _source(
         "te-sr6-brochure",
@@ -1399,6 +1440,7 @@ _NEW_SOURCES = (
         "https://www.te.com/content/dam/te-com/documents/industrial/global/schrack-force-guided-relays.pdf",
         "application/pdf",
         "749d4bd0cc995f0048c623a8a8e819520e933ad61d4a279b25be69bd1628ad57",
+        (("1393260-4", "SR6B4012 / V23050-A1012-A542 force-guided relay"),),
     ),
     _source(
         "schneider-xb5as8442",
@@ -1407,6 +1449,7 @@ _NEW_SOURCES = (
         "https://iportal.se.com/Contents/docs/SQD-XB5AS8442_DATA%20SHEET.PDF",
         "application/pdf",
         "2bf2454adb85e792c717537c71d32394b8b7e7535157648c45c56b73c1b48b8f",
+        (("XB5AS8442", "red 40 mm mushroom emergency-stop, turn-to-release, 1NC"),),
     ),
     _source(
         "anderson-pp30-datasheet",
@@ -1415,6 +1458,10 @@ _NEW_SOURCES = (
         "https://www.andersonpower.com/content/dam/app/ecommerce/product-pdfs/PP30-P-S/ds-pp30ps.pdf",
         "application/pdf",
         "ece5128dad70938d13b63f8cb08a069e9e1e6e079ff0e0d218000cde1f19f6aa",
+        (
+            ("1327", "Powerpole red PP30 housing"),
+            ("1331-BK", "Powerpole 15-45 silver-plated contact, 16-12 AWG"),
+        ),
     ),
     _source(
         "anderson-1327",
@@ -1423,6 +1470,7 @@ _NEW_SOURCES = (
         "https://www.andersonpower.com/product/powerpole-connector-housing-red/",
         "text/html",
         "b45087cb522410e70da5ebf79646d3af85fafc34fd0d57e4a6bd748fdf93796d",
+        (("1327", "Powerpole red PP30 housing"),),
     ),
     _source(
         "anderson-1331-bk",
@@ -1431,6 +1479,7 @@ _NEW_SOURCES = (
         "https://www.andersonpower.com/product/powerpole-15-45-silver-plated-power-contacts-16-12-awg-bk/",
         "text/html",
         "c1c16afa7c698dea6f121c7750fd808834f34a8130dd170e6f1bf33188f9f89e",
+        (("1331-BK", "Powerpole 15-45 silver-plated contact, 16-12 AWG"),),
     ),
     _source(
         "alpha-461219",
@@ -1439,6 +1488,7 @@ _NEW_SOURCES = (
         "https://www.alphawire.com/products/wire/hook-up-wire/premium/461219",
         "text/html",
         "1e72466b3bb3ef9b7e64e712c596c7ead7ed880d1bda100d52086b9b8e37ba17",
+        (("461219", "12 AWG premium hook-up wire"),),
     ),
     _source(
         "spirol-151332",
@@ -1447,6 +1497,7 @@ _NEW_SOURCES = (
         "https://shop.spirol.com/item/self-tapping-inserts/series-10-thread-form-self-tapping-insert-metric/151332",
         "text/html",
         "a88bc9620b921ed0a68c3dc6aa41c8df1fab1f91ee547017164811ab6f23c06c",
+        (("151332", "Series 10 M3x0.5 self-tapping thread-forming insert"),),
     ),
     _source(
         "essentra-13rs018725",
@@ -1455,6 +1506,7 @@ _NEW_SOURCES = (
         "https://www.essentracomponents.com/en-gb/p/round-unthreaded-pa-spacers/13rs018725",
         "text/html",
         "9bc4eab6eac0c9f7fe76ca67abafe789d46dc1c5b3f2228bbce01872d58ab45b",
+        (("13RS018725", "round unthreaded PA spacer, M3, 7.9 mm length"),),
     ),
 )
 
