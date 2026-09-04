@@ -185,14 +185,12 @@ class V2ProjectService:
                 prefix = f"{domain.domain_id}: "
                 blocker_count = len(domain.blockers)
                 for index, blocker in enumerate(domain.blockers, start=1):
-                    message = f"{prefix}{blocker}"
-                    if len(message) > SAFE_TEXT_MAX_LENGTH:
-                        # Keep the domain identity and a stable ordinal when
-                        # truncation could otherwise collapse two blockers.
-                        suffix = f" [{index}/{blocker_count}]"
-                        head_length = SAFE_TEXT_MAX_LENGTH - len(prefix) - len(suffix)
-                        message = f"{prefix}{blocker[:head_length]}{suffix}"
-                    blockers.append(message)
+                    # Keep the domain identity and a stable ordinal in every
+                    # bounded representation, so distinct blocker positions
+                    # cannot collapse after truncation.
+                    suffix = f" [{index}/{blocker_count}]"
+                    head_length = SAFE_TEXT_MAX_LENGTH - len(prefix) - len(suffix)
+                    blockers.append(f"{prefix}{blocker[:head_length]}{suffix}")
                 if not domain.blockers:
                     blockers.append(f"{domain.domain_id}: blocked")
                 actions.append(f"Resolve blockers in {domain.domain_id}.")
