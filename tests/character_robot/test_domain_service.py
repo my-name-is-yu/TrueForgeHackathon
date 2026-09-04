@@ -967,6 +967,153 @@ def test_storage_failure_restores_display_pins_before_draft_refresh(tmp_path) ->
         assert file_name == artifact.file_name
 
 
+def test_multi_manifest_rollback_protects_reprepared_display_pack_under_pressure(
+    tmp_path,
+) -> None:
+    backing = ProjectStore(tmp_path / "project.sqlite3")
+    controlled = _ControlledProjectStore(backing)
+    service = CharacterRobotService(
+        data_root=tmp_path / "artifacts",
+        profile_registry=_Profiles(),
+        cad_compiler=_Compiler(),
+        project_store=controlled,  # type: ignore[arg-type]
+    )
+
+    first_draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(expected_revision=None, spec=_spec())
+        )
+    )
+    first_revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=None,
+                draft_hash=first_draft.draft_hash,
+                note="First historical Build Pack.",
+            )
+        )
+    )
+    first_pack = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id=first_revision.revision.revision_id,
+                expected_spec_hash=first_revision.revision.spec_hash,
+            )
+        )
+    )
+    assert first_pack.manifest is not None
+
+    second_spec = _spec().model_copy(
+        update={"hardware_profile_id": "pi-zero2wh-crickit-ws2/v1"}
+    )
+    second_draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(
+                expected_revision=first_revision.revision.revision_id,
+                expected_draft_hash=first_revision.draft_hash,
+                spec=second_spec,
+            )
+        )
+    )
+    second_revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=first_revision.revision.revision_id,
+                draft_hash=second_draft.draft_hash,
+                note="Second historical Build Pack.",
+            )
+        )
+    )
+    second_pack = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id=second_revision.revision.revision_id,
+                expected_spec_hash=second_revision.revision.spec_hash,
+            )
+        )
+    )
+    assert second_pack.manifest is not None
+
+    third_spec = _spec().model_copy(
+        update={"identity": _spec().identity.model_copy(update={"name": "Pip third"})}
+    )
+    third_draft = asyncio.run(
+        service.set_design_draft(
+            SetDesignDraftInput(
+                expected_revision=second_revision.revision.revision_id,
+                expected_draft_hash=second_revision.draft_hash,
+                spec=third_spec,
+            )
+        )
+    )
+    third_revision = asyncio.run(
+        service.create_revision_from_draft(
+            CreateRevisionFromDraftInput(
+                expected_revision=second_revision.revision.revision_id,
+                draft_hash=third_draft.draft_hash,
+                note="Candidate Build Pack must roll back.",
+            )
+        )
+    )
+
+    # Re-prepare the oldest manifest so it is the displayed pack while the
+    # durable project still contains the later historical manifest.
+    displayed_pack = asyncio.run(
+        service.prepare_build_pack(
+            PrepareBuildPackInput(
+                revision_id=first_revision.revision.revision_id,
+                expected_spec_hash=first_revision.revision.spec_hash,
+            )
+        )
+    )
+    assert displayed_pack.manifest is not None
+    displayed = tuple(displayed_pack.manifest.artifacts)
+    displayed_pins = frozenset(artifact.sha256 for artifact in displayed)
+    assert service._artifacts.display_pins == displayed_pins
+    durable_before_failure = backing.load_project("studio")
+    assert [
+        manifest.revision_id for manifest in durable_before_failure.artifact_manifests
+    ] == [
+        "r000",
+        "r001",
+    ]
+
+    service._artifacts.maximum_bytes = sum(artifact.byte_size for artifact in displayed)
+    controlled.fail_on_save = controlled.save_calls + 2
+    with pytest.raises(DomainError) as failed:
+        asyncio.run(
+            service.prepare_build_pack(
+                PrepareBuildPackInput(
+                    revision_id=third_revision.revision.revision_id,
+                    expected_spec_hash=third_revision.revision.spec_hash,
+                )
+            )
+        )
+    assert failed.value.code == "PROJECT_STORAGE_FAILED"
+    assert service._artifacts.display_pins == displayed_pins
+    durable_after_failure = backing.load_project("studio")
+    durable_digests = {
+        artifact.sha256
+        for manifest in durable_after_failure.artifact_manifests
+        for artifact in manifest.artifacts
+    }
+    assert service._artifacts.compile_pins <= durable_digests
+    assert service._artifacts.artifact_count <= service._artifacts.maximum_artifacts
+    assert service._artifacts.total_bytes <= service._artifacts.maximum_bytes
+
+    controlled.fail_on_save = None
+    service._compile_cache.clear()
+    refreshed = asyncio.run(service.get_studio_context(GetStudioContextInput()))
+    assert refreshed.draft is not None
+    assert refreshed.draft.spec_hash == spec_sha256(third_spec)
+    assert service._artifacts.display_pins == displayed_pins
+    for artifact in displayed:
+        content, media_type, file_name = service.read_artifact(artifact.sha256)
+        assert hashlib.sha256(content).hexdigest() == artifact.sha256
+        assert media_type == artifact.media_type
+        assert file_name == artifact.file_name
+
+
 def test_revision_limit_rejects_before_mutating_live_head_or_draft(monkeypatch) -> None:
     monkeypatch.setattr("character_robot.service.PROJECT_REVISION_LIMIT", 1)
     service = _service()

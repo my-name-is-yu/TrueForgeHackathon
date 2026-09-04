@@ -77,19 +77,26 @@ class SessionArtifactStore:
         self._total_bytes += descriptor.byte_size
         self._evict_to_budget(protected={descriptor.sha256})
 
-    def restore(self, descriptors: list[ArtifactDescriptor]) -> None:
+    def restore(
+        self,
+        descriptors: list[ArtifactDescriptor],
+        *,
+        display_pins: Sequence[str] = (),
+        compile_pins: Sequence[str] = (),
+    ) -> None:
         """Rebuild the bounded in-memory index from durable manifest metadata.
 
         Missing or corrupt historical objects are deliberately skipped. Their
         immutable Spec remains available and the compiler can regenerate them.
         Objects absent from durable manifests are removed so a process restart
-        cannot hide their bytes from the session budget.
+        cannot hide their bytes from the session budget.  Pin sets are supplied
+        before eviction so a rollback cannot evict its prior displayed pack.
         """
 
         self._descriptors.clear()
         self._total_bytes = 0
-        self._display_pins.clear()
-        self._compile_pins.clear()
+        self._display_pins = set(display_pins)
+        self._compile_pins = set(compile_pins)
         self._pending_drops.clear()
         self._eviction_pending = False
         for descriptor in descriptors:
@@ -104,12 +111,12 @@ class SessionArtifactStore:
                 self._total_bytes -= previous.byte_size
             self._descriptors[descriptor.sha256] = descriptor
             self._total_bytes += descriptor.byte_size
-        while (
-            len(self._descriptors) > self.maximum_artifacts
-            or self._total_bytes > self.maximum_bytes
-        ):
-            _, descriptor = self._descriptors.popitem(last=False)
-            self._total_bytes -= descriptor.byte_size
+        # Validate and sweep the object tree before eviction can unlink a
+        # descriptor. This keeps a malformed or symlinked root fail-closed.
+        self._remove_unindexed_objects()
+        self._evict_to_budget()
+        self._display_pins.intersection_update(self._descriptors)
+        self._compile_pins.intersection_update(self._descriptors)
         self._remove_unindexed_objects()
 
     def read(self, digest: str) -> tuple[bytes, ArtifactDescriptor]:

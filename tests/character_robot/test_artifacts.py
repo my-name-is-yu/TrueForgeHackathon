@@ -219,6 +219,29 @@ def test_restore_replaces_the_descriptor_index_and_deletes_unindexed_objects(
     assert not interrupted_temporary.exists()
 
 
+def test_restore_protects_supplied_pins_during_budget_eviction(tmp_path) -> None:
+    store = SessionArtifactStore(tmp_path, maximum_artifacts=3, maximum_bytes=12)
+    first = _artifact(b"1111", name="first.glb")
+    second = _artifact(b"2222", name="second.glb")
+    third = _artifact(b"3333", name="third.glb")
+
+    for descriptor, content in (
+        (first, b"1111"),
+        (second, b"2222"),
+        (third, b"3333"),
+    ):
+        store.put(descriptor, content)
+    store.maximum_artifacts = 2
+
+    store.restore([first, second, third], display_pins=[first.sha256])
+
+    assert first.sha256 in store
+    assert second.sha256 not in store
+    assert third.sha256 in store
+    assert store.display_pins == frozenset({first.sha256})
+    assert store._eviction_pending is False
+
+
 def test_restore_refuses_to_sweep_through_a_symlinked_object_root(tmp_path) -> None:
     session_root = tmp_path / "session"
     outside_root = tmp_path / "outside"

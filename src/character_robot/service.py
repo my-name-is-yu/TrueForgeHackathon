@@ -324,7 +324,13 @@ class CharacterRobotService:
                 snapshot = self.project_store.load_project(self.project_id)
         self._hydrate(snapshot)
 
-    def _hydrate(self, snapshot: ProjectSnapshot) -> None:
+    def _hydrate(
+        self,
+        snapshot: ProjectSnapshot,
+        *,
+        display_pins: Sequence[str] = (),
+        compile_pins: Sequence[str] = (),
+    ) -> None:
         self._persisted_snapshot = snapshot
         self._project_generation = snapshot.generation
         self._head_revision_id = snapshot.head_revision_id
@@ -352,7 +358,9 @@ class CharacterRobotService:
                 descriptor
                 for manifest in self._artifact_manifests
                 for descriptor in manifest.artifacts
-            ]
+            ],
+            display_pins=display_pins,
+            compile_pins=compile_pins,
         )
 
     def _snapshot(self) -> ProjectSnapshot:
@@ -431,7 +439,11 @@ class CharacterRobotService:
         compile_pins: frozenset[str],
     ) -> None:
         try:
-            self._hydrate(snapshot)
+            self._hydrate(
+                snapshot,
+                display_pins=display_pins,
+                compile_pins=compile_pins,
+            )
         finally:
             # A rollback rebuilds the index from durable manifests and normally
             # clears all transient pins. Reapply only descriptors that survived
