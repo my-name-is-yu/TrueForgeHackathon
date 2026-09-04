@@ -67,6 +67,20 @@ def test_standalone_serves_studio_only_routes_and_assets(tmp_path: Path) -> None
             assert client.get(path).status_code == 404, path
 
 
+def test_standalone_without_built_frontend_remains_api_usable(tmp_path: Path) -> None:
+    frontend = tmp_path / "incomplete-frontend"
+    frontend.mkdir()
+    app = create_studio_app(
+        manager=StudioSessionManager(root=tmp_path / "studio-sessions"),
+        frontend_dir=frontend,
+    )
+
+    with TestClient(app) as client:
+        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/studio").status_code == 404
+        assert client.get("/assets/studio.js").status_code == 404
+
+
 def test_standalone_runs_the_complete_eight_tool_v1_http_path(tmp_path: Path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as client:

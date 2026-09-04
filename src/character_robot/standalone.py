@@ -53,23 +53,29 @@ def create_studio_app(
         Route("/health", _health_endpoint, methods=["GET"]),
     ]
     if frontend_dir.is_dir():
-        routes.extend(
-            [
+        assets_dir = frontend_dir / "assets"
+        index_file = frontend_dir / "index.html"
+        if assets_dir.is_dir():
+            routes.append(
                 Mount(
                     "/assets",
-                    StaticFiles(directory=frontend_dir / "assets"),
+                    StaticFiles(directory=assets_dir),
                     name="studio-assets",
-                ),
-                Route(
-                    "/studio",
-                    lambda _request: FileResponse(frontend_dir / "index.html"),
-                ),
-                Route(
-                    "/studio/",
-                    lambda _request: FileResponse(frontend_dir / "index.html"),
-                ),
-            ]
-        )
+                )
+            )
+        if index_file.is_file():
+            routes.extend(
+                [
+                    Route(
+                        "/studio",
+                        lambda _request: FileResponse(index_file),
+                    ),
+                    Route(
+                        "/studio/",
+                        lambda _request: FileResponse(index_file),
+                    ),
+                ]
+            )
     app = Starlette(routes=routes)
     app.state.studio_manager = manager
     app.state.frontend_dir = frontend_dir
