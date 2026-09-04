@@ -1148,12 +1148,20 @@ def _within(value: float | None, lower: float | None, upper: float | None) -> bo
     return (lower is None or value >= lower) and (upper is None or value <= upper)
 
 
-def _first_numeric(entry: CatalogEntry, fact_keys: tuple[FactKey, ...]) -> float | None:
-    for fact_key in fact_keys:
-        value = entry.numeric(fact_key)
-        if value is not None:
-            return value
-    return None
+def _within_all_known(
+    entry: CatalogEntry,
+    fact_keys: tuple[FactKey, ...],
+    lower: float | None,
+    upper: float | None,
+) -> bool:
+    """Apply a generic bound to every known rating in a capability family."""
+
+    values = [
+        value
+        for fact_key in fact_keys
+        if (value := entry.numeric(fact_key)) is not None
+    ]
+    return bool(values) and all(_within(value, lower, upper) for value in values)
 
 
 def _operating_voltage_interval(
@@ -1244,27 +1252,34 @@ def query_catalog(catalog: CatalogSnapshot, query: CatalogQuery) -> CatalogQuery
             ):
                 continue
         if query.min_current_a is not None or query.max_current_a is not None:
-            current = _first_numeric(
+            if not _within_all_known(
                 entry,
                 (
                     "current_continuous_a",
-                    "current_limit_a",
                     "current_peak_a",
                     "current_stall_a",
+                    "current_limit_a",
+                    "rail_current_limit_a",
                 ),
-            )
-            if not _within(current, query.min_current_a, query.max_current_a):
+                query.min_current_a,
+                query.max_current_a,
+            ):
                 continue
         if query.min_torque_nm is not None or query.max_torque_nm is not None:
-            torque = _first_numeric(entry, ("torque_continuous_nm", "torque_stall_nm"))
-            if not _within(torque, query.min_torque_nm, query.max_torque_nm):
+            if not _within_all_known(
+                entry,
+                ("torque_continuous_nm", "torque_stall_nm"),
+                query.min_torque_nm,
+                query.max_torque_nm,
+            ):
                 continue
         if query.min_speed_rpm is not None or query.max_speed_rpm is not None:
-            speed = _first_numeric(
+            if not _within_all_known(
                 entry,
                 ("speed_nominal_rpm", "speed_max_rpm", "speed_no_load_rpm"),
-            )
-            if not _within(speed, query.min_speed_rpm, query.max_speed_rpm):
+                query.min_speed_rpm,
+                query.max_speed_rpm,
+            ):
                 continue
         if query.min_mass_g is not None or query.max_mass_g is not None:
             if not _within(entry.numeric("mass_g"), query.min_mass_g, query.max_mass_g):

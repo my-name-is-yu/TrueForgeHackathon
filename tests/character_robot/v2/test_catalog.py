@@ -435,6 +435,28 @@ def test_voltage_query_requires_documented_interval_to_cover_requested_bounds() 
     ] == ["wide-voltage"]
 
 
+def test_generic_rating_queries_apply_bounds_to_all_known_ratings() -> None:
+    source = _source()
+    motor = _entry(
+        source,
+        entry_id="multi-rating-motor",
+        facts=(
+            _numeric_fact(source, "current_continuous_a", 2.0, unit="A"),
+            _numeric_fact(source, "current_stall_a", 10.0, unit="A"),
+            _numeric_fact(source, "torque_continuous_nm", 0.2, unit="N*m"),
+            _numeric_fact(source, "torque_stall_nm", 0.8, unit="N*m"),
+            _numeric_fact(source, "speed_nominal_rpm", 100.0, unit="rpm"),
+            _numeric_fact(source, "speed_max_rpm", 1000.0, unit="rpm"),
+        ),
+    )
+    catalog = _snapshot(source, motor)
+
+    assert not query_catalog(catalog, CatalogQuery(max_current_a=3.0)).matches
+    assert not query_catalog(catalog, CatalogQuery(max_torque_nm=0.5)).matches
+    assert not query_catalog(catalog, CatalogQuery(max_speed_rpm=500.0)).matches
+    assert query_catalog(catalog, CatalogQuery(min_current_a=2.0)).matches
+
+
 def test_each_required_use_has_stable_reason_codes() -> None:
     source = _source()
     uses = (

@@ -18,6 +18,9 @@ specific exceptions such as signed thermal limits and AWG 0 retain their valid
 zero or signed representations.
 Voltage queries check requested bounds against the documented operating interval,
 not a preferred nominal scalar.
+Generic current, torque, and speed bounds are conservative: every known rating
+in the family (continuous/peak/stall, continuous/stall, or nominal/no-load/max)
+must satisfy the requested bounds; no rating is selected as a preferred scalar.
 
 Price and availability are timestamped advisory fields. They are intentionally
 excluded from the immutable engineering digest.
