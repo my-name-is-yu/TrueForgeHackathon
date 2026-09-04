@@ -14,6 +14,7 @@ import math
 import re
 from datetime import date
 from typing import Annotated, Literal, Self, TypeAlias
+from urllib.parse import urlsplit
 
 from pydantic import Field, StrictBool, field_validator, model_validator
 
@@ -311,6 +312,18 @@ _UNIT_CONVERSIONS: dict[tuple[Unit, str], tuple[ConversionRule, float]] = {
 _SAFE_URL = re.compile(r"^https://[^\s]+$")
 
 
+def _is_valid_https_url(value: str) -> bool:
+    if _SAFE_URL.fullmatch(value) is None:
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https" and bool(parsed.netloc) and parsed.hostname is not None
+    )
+
+
 def _canonical_json_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -346,8 +359,10 @@ class CatalogSource(V2Model):
     @field_validator("url")
     @classmethod
     def require_https_url(cls, value: str) -> str:
-        if _SAFE_URL.fullmatch(value) is None:
-            raise ValueError("catalog source URL must be an HTTPS URL")
+        if not _is_valid_https_url(value):
+            raise ValueError(
+                "catalog source URL must be an HTTPS URL with an authority"
+            )
         return value
 
     @field_validator("evidence_date", "published_date")
@@ -375,8 +390,10 @@ class EvidenceRef(V2Model):
     @field_validator("source_url")
     @classmethod
     def require_https_url(cls, value: str) -> str:
-        if _SAFE_URL.fullmatch(value) is None:
-            raise ValueError("evidence source URL must be an HTTPS URL")
+        if not _is_valid_https_url(value):
+            raise ValueError(
+                "evidence source URL must be an HTTPS URL with an authority"
+            )
         return value
 
     @field_validator("evidence_date")
@@ -1268,6 +1285,7 @@ def query_catalog(catalog: CatalogSnapshot, query: CatalogQuery) -> CatalogQuery
                     "current_stall_a",
                     "current_limit_a",
                     "rail_current_limit_a",
+                    "contact_rating_a",
                 ),
                 query.min_current_a,
                 query.max_current_a,

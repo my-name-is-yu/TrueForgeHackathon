@@ -467,6 +467,7 @@ def test_generic_rating_queries_apply_bounds_to_all_known_ratings() -> None:
         facts=(
             _numeric_fact(source, "current_continuous_a", 2.0, unit="A"),
             _numeric_fact(source, "current_stall_a", 10.0, unit="A"),
+            _numeric_fact(source, "contact_rating_a", 12.0, unit="A"),
             _numeric_fact(source, "torque_continuous_nm", 0.2, unit="N*m"),
             _numeric_fact(source, "torque_stall_nm", 0.8, unit="N*m"),
             _numeric_fact(source, "speed_nominal_rpm", 100.0, unit="rpm"),
@@ -479,6 +480,25 @@ def test_generic_rating_queries_apply_bounds_to_all_known_ratings() -> None:
     assert not query_catalog(catalog, CatalogQuery(max_torque_nm=0.5)).matches
     assert not query_catalog(catalog, CatalogQuery(max_speed_rpm=500.0)).matches
     assert query_catalog(catalog, CatalogQuery(min_current_a=2.0)).matches
+
+    low_contact = _entry(
+        source,
+        entry_id="low-contact-rating",
+        variant="rev-low-contact",
+        facts=(
+            _numeric_fact(source, "current_continuous_a", 2.0, unit="A"),
+            _numeric_fact(source, "current_stall_a", 10.0, unit="A"),
+            _numeric_fact(source, "contact_rating_a", 1.0, unit="A"),
+            _numeric_fact(source, "torque_continuous_nm", 0.2, unit="N*m"),
+            _numeric_fact(source, "torque_stall_nm", 0.8, unit="N*m"),
+            _numeric_fact(source, "speed_nominal_rpm", 100.0, unit="rpm"),
+            _numeric_fact(source, "speed_max_rpm", 1000.0, unit="rpm"),
+        ),
+    )
+    low_contact_catalog = _snapshot(source, low_contact)
+    assert not query_catalog(
+        low_contact_catalog, CatalogQuery(min_current_a=2.0)
+    ).matches
 
 
 def test_each_required_use_has_stable_reason_codes() -> None:
@@ -1053,6 +1073,10 @@ def test_date_and_url_boundaries_are_strict() -> None:
         _source(evidence_date="2026-02-30")
     with pytest.raises(ValidationError):
         _source(url="http://manufacturer.example/data-sheet.pdf")
+    with pytest.raises(ValidationError):
+        _source(url="https:///datasheet.pdf")
+    with pytest.raises(ValidationError):
+        _source(url="https://?query")
     with pytest.raises(ValidationError):
         CatalogSource(
             source_id="maker-doc",

@@ -16,6 +16,7 @@ conversions are recomputed and accept only a one-ULP floating-point difference.
 Required physical capability and rating values are strictly positive; domain
 specific exceptions such as signed thermal limits and AWG 0 retain their valid
 zero or signed representations.
+Source and evidence URLs require HTTPS with a non-empty authority.
 Voltage queries check requested bounds against the documented operating interval,
 not a preferred nominal scalar.
 Generic current, torque, and speed bounds are conservative: every known rating
