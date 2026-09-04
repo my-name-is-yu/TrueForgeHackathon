@@ -1171,13 +1171,19 @@ def _within_all_known(
     lower: float | None,
     upper: float | None,
 ) -> bool:
-    """Apply a generic bound to every known rating in a capability family."""
+    """Apply a generic bound to every present, known rating in a family."""
 
-    values = [
-        value
-        for fact_key in fact_keys
-        if (value := entry.numeric(fact_key)) is not None
-    ]
+    values: list[float] = []
+    for fact_key in fact_keys:
+        fact = entry.fact(fact_key)
+        if fact is None:
+            continue
+        if fact.state != "known":
+            return False
+        value = fact.canonical_value
+        if not isinstance(value, float):
+            return False
+        values.append(value)
     return bool(values) and all(_within(value, lower, upper) for value in values)
 
 
