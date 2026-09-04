@@ -14,6 +14,7 @@ import math
 import re
 from datetime import date
 from typing import Annotated, Literal, Self, TypeAlias
+from urllib.parse import urlsplit
 
 from pydantic import Field, StrictBool, field_validator, model_validator
 
@@ -244,6 +245,8 @@ _FACT_SPECS: dict[FactKey, tuple[FactKind, str | None]] = {
     "material": ("text", None),
 }
 
+# Signed thermal limits and AWG 0 intentionally remain outside this set because
+# zero (and, for temperature, negative values) has domain meaning there.
 _NUMERIC_STRICT_POSITIVE_KEYS = frozenset(
     key
     for key, (kind, _unit) in _FACT_SPECS.items()
@@ -265,8 +268,18 @@ _NUMERIC_STRICT_POSITIVE_KEYS = frozenset(
         "operating_voltage_min_v",
         "operating_voltage_nominal_v",
         "operating_voltage_max_v",
+        "current_continuous_a",
+        "current_peak_a",
+        "current_stall_a",
+        "current_limit_a",
+        "rail_current_limit_a",
         "capacity_mah",
         "contact_rating_a",
+        "torque_continuous_nm",
+        "torque_stall_nm",
+        "speed_nominal_rpm",
+        "speed_no_load_rpm",
+        "speed_max_rpm",
     }
 )
 
@@ -297,6 +310,18 @@ _UNIT_CONVERSIONS: dict[tuple[Unit, str], tuple[ConversionRule, float]] = {
 }
 
 _SAFE_URL = re.compile(r"^https://[^\s]+$")
+
+
+def _is_valid_https_url(value: str) -> bool:
+    if _SAFE_URL.fullmatch(value) is None:
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https" and bool(parsed.netloc) and parsed.hostname is not None
+    )
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -334,8 +359,10 @@ class CatalogSource(V2Model):
     @field_validator("url")
     @classmethod
     def require_https_url(cls, value: str) -> str:
-        if _SAFE_URL.fullmatch(value) is None:
-            raise ValueError("catalog source URL must be an HTTPS URL")
+        if not _is_valid_https_url(value):
+            raise ValueError(
+                "catalog source URL must be an HTTPS URL with an authority"
+            )
         return value
 
     @field_validator("evidence_date", "published_date")
@@ -363,8 +390,10 @@ class EvidenceRef(V2Model):
     @field_validator("source_url")
     @classmethod
     def require_https_url(cls, value: str) -> str:
-        if _SAFE_URL.fullmatch(value) is None:
-            raise ValueError("evidence source URL must be an HTTPS URL")
+        if not _is_valid_https_url(value):
+            raise ValueError(
+                "evidence source URL must be an HTTPS URL with an authority"
+            )
         return value
 
     @field_validator("evidence_date")
@@ -1136,12 +1165,20 @@ def _within(value: float | None, lower: float | None, upper: float | None) -> bo
     return (lower is None or value >= lower) and (upper is None or value <= upper)
 
 
-def _first_numeric(entry: CatalogEntry, fact_keys: tuple[FactKey, ...]) -> float | None:
-    for fact_key in fact_keys:
-        value = entry.numeric(fact_key)
-        if value is not None:
-            return value
-    return None
+def _within_all_known(
+    entry: CatalogEntry,
+    fact_keys: tuple[FactKey, ...],
+    lower: float | None,
+    upper: float | None,
+) -> bool:
+    """Apply a generic bound to every known rating in a capability family."""
+
+    values = [
+        value
+        for fact_key in fact_keys
+        if (value := entry.numeric(fact_key)) is not None
+    ]
+    return bool(values) and all(_within(value, lower, upper) for value in values)
 
 
 def _operating_voltage_interval(
@@ -1149,23 +1186,31 @@ def _operating_voltage_interval(
 ) -> tuple[float, float] | None:
     """Return the documented operating interval, expanding a nominal-only point."""
 
-    voltage_fact_keys = (
-        "operating_voltage_min_v",
-        "operating_voltage_nominal_v",
-        "operating_voltage_max_v",
-    )
+    minimum_fact = entry.fact("operating_voltage_min_v")
+    nominal_fact = entry.fact("operating_voltage_nominal_v")
+    maximum_fact = entry.fact("operating_voltage_max_v")
     if any(
-        (fact := entry.fact(fact_key)) is not None and fact.state != "known"
-        for fact_key in voltage_fact_keys
+        fact is not None and fact.state != "known"
+        for fact in (minimum_fact, maximum_fact)
     ):
         return None
-    minimum = entry.numeric("operating_voltage_min_v")
-    nominal = entry.numeric("operating_voltage_nominal_v")
-    maximum = entry.numeric("operating_voltage_max_v")
-    if minimum is None and nominal is not None:
-        minimum = nominal
-    if maximum is None and nominal is not None:
-        maximum = nominal
+    # Nominal fills only an absent endpoint. A non-known endpoint must not be
+    # hidden by nominal, while a non-known nominal does not poison known bounds.
+    nominal = (
+        entry.numeric("operating_voltage_nominal_v")
+        if nominal_fact is not None and nominal_fact.state == "known"
+        else None
+    )
+    minimum = (
+        entry.numeric("operating_voltage_min_v")
+        if minimum_fact is not None
+        else nominal
+    )
+    maximum = (
+        entry.numeric("operating_voltage_max_v")
+        if maximum_fact is not None
+        else nominal
+    )
     if minimum is None or maximum is None:
         return None
     return minimum, maximum
@@ -1232,27 +1277,35 @@ def query_catalog(catalog: CatalogSnapshot, query: CatalogQuery) -> CatalogQuery
             ):
                 continue
         if query.min_current_a is not None or query.max_current_a is not None:
-            current = _first_numeric(
+            if not _within_all_known(
                 entry,
                 (
                     "current_continuous_a",
-                    "current_limit_a",
                     "current_peak_a",
                     "current_stall_a",
+                    "current_limit_a",
+                    "rail_current_limit_a",
+                    "contact_rating_a",
                 ),
-            )
-            if not _within(current, query.min_current_a, query.max_current_a):
+                query.min_current_a,
+                query.max_current_a,
+            ):
                 continue
         if query.min_torque_nm is not None or query.max_torque_nm is not None:
-            torque = _first_numeric(entry, ("torque_continuous_nm", "torque_stall_nm"))
-            if not _within(torque, query.min_torque_nm, query.max_torque_nm):
+            if not _within_all_known(
+                entry,
+                ("torque_continuous_nm", "torque_stall_nm"),
+                query.min_torque_nm,
+                query.max_torque_nm,
+            ):
                 continue
         if query.min_speed_rpm is not None or query.max_speed_rpm is not None:
-            speed = _first_numeric(
+            if not _within_all_known(
                 entry,
                 ("speed_nominal_rpm", "speed_max_rpm", "speed_no_load_rpm"),
-            )
-            if not _within(speed, query.min_speed_rpm, query.max_speed_rpm):
+                query.min_speed_rpm,
+                query.max_speed_rpm,
+            ):
                 continue
         if query.min_mass_g is not None or query.max_mass_g is not None:
             if not _within(entry.numeric("mass_g"), query.min_mass_g, query.max_mass_g):
@@ -1279,6 +1332,7 @@ def query_catalog(catalog: CatalogSnapshot, query: CatalogQuery) -> CatalogQuery
         ):
             continue
         matches.append(CatalogMatch(entry=entry, eligibility=assessment))
+    matches.sort(key=lambda match: match.entry.entry_id)
     return CatalogQueryResult(
         catalog_digest=catalog.content_digest,
         matches=tuple(matches),

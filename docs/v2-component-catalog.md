@@ -13,8 +13,15 @@ conflicts are distinct. Eligibility is derived for a concrete use from the
 facts; no entry accepts a caller-supplied `eligible` flag.
 Identity claims keep `original_value == canonical_value`; non-identity numeric
 conversions are recomputed and accept only a one-ULP floating-point difference.
+Required physical capability and rating values are strictly positive; domain
+specific exceptions such as signed thermal limits and AWG 0 retain their valid
+zero or signed representations.
+Source and evidence URLs require HTTPS with a non-empty authority.
 Voltage queries check requested bounds against the documented operating interval,
 not a preferred nominal scalar.
+Generic current, torque, and speed bounds are conservative: every known rating
+in the family (continuous/peak/stall, continuous/stall, or nominal/no-load/max)
+must satisfy the requested bounds; no rating is selected as a preferred scalar.
 
 Price and availability are timestamped advisory fields. They are intentionally
 excluded from the immutable engineering digest.

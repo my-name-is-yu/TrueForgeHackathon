@@ -23,7 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from asset_autopsy.storage import MAX_OBJECT_BYTES
 
-from .artifacts import ArtifactStoreError, SessionArtifactStore
+from .artifacts import ArtifactDownload, ArtifactStoreError, SessionArtifactStore
 from .maker_pack import (
     MakerPackResult,
     QualifiedBuildInstructions,
@@ -434,6 +434,22 @@ class CharacterRobotService:
                 "Regenerate the preview or build manifest and use its current digest.",
             ) from None
         return content, descriptor.media_type, descriptor.file_name
+
+    def prepare_artifact_download(self, sha256: str) -> ArtifactDownload:
+        """Open a verified artifact for the bounded human download transport."""
+
+        request_id = f"req_{uuid.uuid4().hex}"
+        try:
+            return self._artifacts.prepare_download(sha256)
+        except (ArtifactStoreError, TypeError, ValueError):
+            raise self._error(
+                request_id,
+                "ARTIFACT_NOT_FOUND",
+                "The requested artifact is not available in this Studio session.",
+                False,
+                404,
+                "Regenerate the preview or build manifest and use its current digest.",
+            ) from None
 
     def restore_portable_project(
         self,

@@ -272,6 +272,7 @@ def test_studio_http_flow_uses_real_cad_and_keeps_artifacts_in_session(
         assert artifact.status_code == 200
         assert hashlib.sha256(artifact.content).hexdigest() == preview["sha256"]
         assert artifact.headers["content-type"] == "model/gltf-binary"
+        assert artifact.headers["content-length"] == str(preview["byte_size"])
         assert artifact.headers["x-content-type-options"] == "nosniff"
         assert 'filename="preview.glb"' in artifact.headers["content-disposition"]
 

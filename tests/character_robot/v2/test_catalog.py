@@ -295,6 +295,35 @@ def test_digest_is_independent_of_set_like_capability_and_derived_source_order()
     assert first_catalog.content_digest == second_catalog.content_digest
 
 
+def test_query_results_are_sorted_by_entry_id_independent_of_snapshot_order() -> None:
+    source = _source()
+    z_entry = _entry(
+        source,
+        entry_id="z-entry",
+        variant="rev-z",
+        capabilities=("shared-capability",),
+    )
+    a_entry = _entry(
+        source,
+        entry_id="a-entry",
+        variant="rev-a",
+        capabilities=("shared-capability",),
+    )
+    first = _snapshot(source, z_entry, a_entry)
+    second = _snapshot(source, a_entry, z_entry)
+    assert first.content_digest == second.content_digest
+
+    query = CatalogQuery(category="motor", capability="shared-capability")
+    assert [match.entry.entry_id for match in query_catalog(first, query).matches] == [
+        "a-entry",
+        "z-entry",
+    ]
+    assert [match.entry.entry_id for match in query_catalog(second, query).matches] == [
+        "a-entry",
+        "z-entry",
+    ]
+
+
 def test_seed_eligibility_keeps_core_and_goplus_gaps_ineligible() -> None:
     cores3 = OFFICIAL_CATALOG_V2.entry("m5stack-cores3-k128")
     isolated = assess_eligibility(cores3, "controller_isolated")
@@ -404,6 +433,72 @@ def test_voltage_query_requires_documented_interval_to_cover_requested_bounds() 
         match.entry.entry_id
         for match in query_catalog(catalog, CatalogQuery(min_voltage_v=20.0)).matches
     ] == ["wide-voltage"]
+
+
+def test_voltage_query_uses_known_endpoints_when_nominal_is_unknown() -> None:
+    source = _source()
+    endpoints_only = _entry(
+        source,
+        entry_id="endpoints-only-voltage",
+        facts=(
+            _numeric_fact(source, "operating_voltage_min_v", 9.0),
+            CatalogFact(
+                fact_key="operating_voltage_nominal_v",
+                unknown_reason="UNKNOWN_OFFICIAL_FACT",
+            ),
+            _numeric_fact(source, "operating_voltage_max_v", 24.0),
+        ),
+    )
+    catalog = _snapshot(source, endpoints_only)
+
+    result = query_catalog(
+        catalog, CatalogQuery(min_voltage_v=10.0, max_voltage_v=20.0)
+    )
+    assert [match.entry.entry_id for match in result.matches] == [
+        "endpoints-only-voltage"
+    ]
+
+
+def test_generic_rating_queries_apply_bounds_to_all_known_ratings() -> None:
+    source = _source()
+    motor = _entry(
+        source,
+        entry_id="multi-rating-motor",
+        facts=(
+            _numeric_fact(source, "current_continuous_a", 2.0, unit="A"),
+            _numeric_fact(source, "current_stall_a", 10.0, unit="A"),
+            _numeric_fact(source, "contact_rating_a", 12.0, unit="A"),
+            _numeric_fact(source, "torque_continuous_nm", 0.2, unit="N*m"),
+            _numeric_fact(source, "torque_stall_nm", 0.8, unit="N*m"),
+            _numeric_fact(source, "speed_nominal_rpm", 100.0, unit="rpm"),
+            _numeric_fact(source, "speed_max_rpm", 1000.0, unit="rpm"),
+        ),
+    )
+    catalog = _snapshot(source, motor)
+
+    assert not query_catalog(catalog, CatalogQuery(max_current_a=3.0)).matches
+    assert not query_catalog(catalog, CatalogQuery(max_torque_nm=0.5)).matches
+    assert not query_catalog(catalog, CatalogQuery(max_speed_rpm=500.0)).matches
+    assert query_catalog(catalog, CatalogQuery(min_current_a=2.0)).matches
+
+    low_contact = _entry(
+        source,
+        entry_id="low-contact-rating",
+        variant="rev-low-contact",
+        facts=(
+            _numeric_fact(source, "current_continuous_a", 2.0, unit="A"),
+            _numeric_fact(source, "current_stall_a", 10.0, unit="A"),
+            _numeric_fact(source, "contact_rating_a", 1.0, unit="A"),
+            _numeric_fact(source, "torque_continuous_nm", 0.2, unit="N*m"),
+            _numeric_fact(source, "torque_stall_nm", 0.8, unit="N*m"),
+            _numeric_fact(source, "speed_nominal_rpm", 100.0, unit="rpm"),
+            _numeric_fact(source, "speed_max_rpm", 1000.0, unit="rpm"),
+        ),
+    )
+    low_contact_catalog = _snapshot(source, low_contact)
+    assert not query_catalog(
+        low_contact_catalog, CatalogQuery(min_current_a=2.0)
+    ).matches
 
 
 def test_each_required_use_has_stable_reason_codes() -> None:
@@ -741,6 +836,31 @@ def test_negative_quantities_and_invalid_count_are_rejected_but_temperature_can_
         == "known"
     )
 
+    zero_temperature = NumericClaim(
+        original_value=0.0,
+        original_unit="C",
+        canonical_value=0.0,
+        canonical_unit="C",
+        basis="manufacturer_stated",
+        conversion_rule="identity",
+        evidence=_evidence(source),
+    )
+    assert (
+        CatalogFact(fact_key="thermal_limit_c", claims=(zero_temperature,)).state
+        == "known"
+    )
+
+    zero_awg = NumericClaim(
+        original_value=0.0,
+        original_unit="none",
+        canonical_value=0.0,
+        canonical_unit="none",
+        basis="manufacturer_stated",
+        conversion_rule="identity",
+        evidence=_evidence(source),
+    )
+    assert CatalogFact(fact_key="wire_gauge_awg", claims=(zero_awg,)).state == "known"
+
     with pytest.raises(ValidationError):
         CatalogFact(
             fact_key="quantity_per_pack",
@@ -786,6 +906,30 @@ def test_negative_quantities_and_invalid_count_are_rejected_but_temperature_can_
                 ),
             ),
         )
+
+
+@pytest.mark.parametrize(
+    ("fact_key", "unit"),
+    [
+        ("current_continuous_a", "A"),
+        ("current_peak_a", "A"),
+        ("current_stall_a", "A"),
+        ("current_limit_a", "A"),
+        ("rail_current_limit_a", "A"),
+        ("contact_rating_a", "A"),
+        ("torque_continuous_nm", "N*m"),
+        ("torque_stall_nm", "N*m"),
+        ("speed_nominal_rpm", "rpm"),
+        ("speed_no_load_rpm", "rpm"),
+        ("speed_max_rpm", "rpm"),
+    ],
+)
+def test_zero_required_capability_values_cannot_become_eligible(
+    fact_key: str, unit: str
+) -> None:
+    source = _source()
+    with pytest.raises(ValidationError):
+        _numeric_fact(source, fact_key, 0.0, unit=unit)
 
 
 def test_claim_basis_evidence_and_duplicate_claim_rules() -> None:
@@ -929,6 +1073,10 @@ def test_date_and_url_boundaries_are_strict() -> None:
         _source(evidence_date="2026-02-30")
     with pytest.raises(ValidationError):
         _source(url="http://manufacturer.example/data-sheet.pdf")
+    with pytest.raises(ValidationError):
+        _source(url="https:///datasheet.pdf")
+    with pytest.raises(ValidationError):
+        _source(url="https://?query")
     with pytest.raises(ValidationError):
         CatalogSource(
             source_id="maker-doc",
