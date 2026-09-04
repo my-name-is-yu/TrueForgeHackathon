@@ -6,6 +6,8 @@ import hashlib
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,33 @@ _V2_INSERT_TRIGGER = "v2_prevent_legacy_project_collision"
 _V2_UPDATE_TRIGGER = "v2_prevent_legacy_project_update_collision"
 _LEGACY_INSERT_TRIGGER = "v2_prevent_v2_project_collision"
 _LEGACY_UPDATE_TRIGGER = "v2_prevent_v2_project_update_collision"
+
+
+def _storage_error(
+    error: BaseException,
+    *,
+    path: str,
+    expected: str,
+    message: str,
+    current_target: str | None = None,
+) -> V2ContractError:
+    return V2ContractError(
+        code="V2_STORAGE_ERROR",
+        path=path,
+        expected=expected,
+        actual=type(error).__name__,
+        retryable=True,
+        current_target=current_target,
+        next_actions=("Retry the project operation.",),
+        message=message,
+    )
+
+
+def _rollback_safely(connection: sqlite3.Connection) -> None:
+    try:
+        connection.rollback()
+    except (OSError, sqlite3.Error):
+        pass
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -79,15 +108,24 @@ class V2ProjectStore:
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        try:
+            self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise _storage_error(
+                error,
+                path="database_path",
+                expected="a writable parent directory for the SQLite database",
+                message="the V2 SQLite database parent directory could not be created",
+            ) from error
 
     def create_project(
         self, project_id: str, requirements: Requirements
     ) -> V2ProjectSnapshot:
+        self._reject_legacy_before_write(project_id)
         snapshot = empty_v2_project_snapshot(project_id, requirements)
         payload, digest = self._encode(snapshot)
-        with self._lock, self._connection() as connection:
+        with self._lock, self._connection_scope() as connection:
             # Keep a rejected legacy admission read-only.  A second check is
             # required after taking the write lock to close the admission race.
             self._reject_legacy_if_present(connection, project_id)
@@ -106,7 +144,7 @@ class V2ProjectStore:
                     (V2_STORE_NAMESPACE, project_id),
                 ).fetchone()
                 if existing is not None:
-                    connection.rollback()
+                    _rollback_safely(connection)
                     raise V2ProjectAlreadyExistsError(project_id)
                 connection.execute(
                     f"""
@@ -119,27 +157,25 @@ class V2ProjectStore:
                 )
                 connection.commit()
             except V2ContractError:
+                _rollback_safely(connection)
                 raise
             except sqlite3.IntegrityError as error:
-                connection.rollback()
+                _rollback_safely(connection)
                 raise V2ProjectAlreadyExistsError(project_id) from error
-            except sqlite3.Error as error:
-                connection.rollback()
-                raise V2ContractError(
-                    code="V2_STORAGE_ERROR",
+            except (OSError, sqlite3.Error) as error:
+                _rollback_safely(connection)
+                raise _storage_error(
+                    error,
                     path="project_id",
                     expected="a writable SQLite V2 project store",
-                    actual=str(error),
-                    retryable=True,
-                    next_actions=("Retry the project operation.",),
                     message="the V2 project could not be created",
                 ) from error
         return snapshot
 
     def load_project(self, project_id: str) -> V2ProjectSnapshot:
-        if not self.database_path.exists():
+        if not self._database_exists():
             raise V2ProjectNotFoundError(project_id)
-        with self._lock, self._connection() as connection:
+        with self._lock, self._connection_scope(read_only=True) as connection:
             self._reject_legacy_if_present(connection, project_id)
             row = self._read_v2_row(connection, project_id)
             if row is not None:
@@ -179,36 +215,37 @@ class V2ProjectStore:
                 expected="a string target token",
                 actual=expected_target_token,
             )
+        self._reject_legacy_before_write(validated.project_id)
         payload_snapshot = validated.model_copy(
             update={"generation": validated.generation + 1}
         )
         payload, digest = self._encode(payload_snapshot)
 
-        with self._lock, self._connection() as connection:
+        with self._lock, self._connection_scope() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 self._reject_legacy_if_present(connection, validated.project_id)
                 self._ensure_schema(connection)
                 row = self._read_v2_row(connection, validated.project_id)
                 if row is None:
-                    connection.rollback()
+                    _rollback_safely(connection)
                     raise V2ProjectNotFoundError(validated.project_id)
                 current = self._decode_row(validated.project_id, row)
                 if current.active_target_token != expected_target_token:
-                    connection.rollback()
+                    _rollback_safely(connection)
                     raise StaleTargetTokenError(
                         actual=expected_target_token,
                         current_target=current.active_target_token,
                     )
                 if current.generation != validated.generation:
-                    connection.rollback()
+                    _rollback_safely(connection)
                     raise StaleTargetTokenError(
                         actual=expected_target_token,
                         current_target=current.active_target_token,
                         path="generation",
                     )
                 if current.spec.requirements != validated.spec.requirements:
-                    connection.rollback()
+                    _rollback_safely(connection)
                     raise ImmutableRequirementsError(
                         current_target=current.active_target_token
                     )
@@ -228,7 +265,7 @@ class V2ProjectStore:
                     ),
                 )
                 if cursor.rowcount != 1:
-                    connection.rollback()
+                    _rollback_safely(connection)
                     current_row = self._read_v2_row(connection, validated.project_id)
                     if current_row is None:
                         raise V2ProjectNotFoundError(validated.project_id)
@@ -239,26 +276,22 @@ class V2ProjectStore:
                     )
                 connection.commit()
             except V2ContractError:
-                connection.rollback()
+                _rollback_safely(connection)
                 raise
-            except sqlite3.Error as error:
-                connection.rollback()
-                raise V2ContractError(
-                    code="V2_STORAGE_ERROR",
+            except (OSError, sqlite3.Error) as error:
+                _rollback_safely(connection)
+                raise _storage_error(
+                    error,
                     path="project_id",
                     expected="an atomic SQLite write",
-                    actual=str(error),
-                    retryable=True,
-                    current_target=None,
-                    next_actions=("Retry the project operation.",),
                     message="the V2 project could not be saved atomically",
                 ) from error
         return payload_snapshot
 
     def list_project_ids(self) -> tuple[str, ...]:
-        if not self.database_path.exists():
+        if not self._database_exists():
             return ()
-        with self._lock, self._connection() as connection:
+        with self._lock, self._connection_scope(read_only=True) as connection:
             if not self._table_exists(connection):
                 return ()
             try:
@@ -269,14 +302,11 @@ class V2ProjectStore:
                     """,
                     (V2_STORE_NAMESPACE,),
                 ).fetchall()
-            except sqlite3.Error as error:
-                raise V2ContractError(
-                    code="V2_STORAGE_ERROR",
+            except (OSError, sqlite3.Error) as error:
+                raise _storage_error(
+                    error,
                     path="project_id",
                     expected="a readable SQLite V2 project store",
-                    actual=str(error),
-                    retryable=True,
-                    next_actions=("Retry the project operation.",),
                     message="V2 projects could not be listed",
                 ) from error
         return tuple(str(row[0]) for row in rows)
@@ -284,24 +314,37 @@ class V2ProjectStore:
     def verify(self) -> None:
         """Validate all V2 rows without changing SQLite state."""
 
-        if not self.database_path.exists():
+        if not self._database_exists():
             return
-        with self._lock, self._connection() as connection:
+        with self._lock, self._connection_scope(read_only=True) as connection:
             if not self._table_exists(connection):
                 return
-            rows = connection.execute(
-                f"""
-                SELECT project_id, generation, snapshot_json, snapshot_sha256
-                FROM {_TABLE_NAME} WHERE namespace = ? ORDER BY project_id
-                """,
-                (V2_STORE_NAMESPACE,),
-            ).fetchall()
+            try:
+                rows = connection.execute(
+                    f"""
+                    SELECT project_id, generation, snapshot_json, snapshot_sha256
+                    FROM {_TABLE_NAME} WHERE namespace = ? ORDER BY project_id
+                    """,
+                    (V2_STORE_NAMESPACE,),
+                ).fetchall()
+            except (OSError, sqlite3.Error) as error:
+                raise _storage_error(
+                    error,
+                    path="project_id",
+                    expected="a readable SQLite V2 project store",
+                    message="V2 projects could not be verified",
+                ) from error
         for project_id, generation, payload, digest in rows:
-            snapshot = self._decode_row(str(project_id), (generation, payload, digest))
-            if snapshot.generation != int(generation):
+            row = self._coerce_row_values(
+                (generation, payload, digest),
+                path="project_row",
+                expected="generation INTEGER, snapshot_json BLOB, snapshot_sha256 TEXT",
+            )
+            snapshot = self._decode_row(str(project_id), row)
+            if snapshot.generation != row[0]:
                 raise V2ValidationError(
                     path="generation",
-                    expected=int(generation),
+                    expected=row[0],
                     actual=snapshot.generation,
                 )
 
@@ -317,49 +360,115 @@ class V2ProjectStore:
     def raw_project_bytes(self, project_id: str) -> bytes:
         """Return the persisted payload bytes for diagnostics and tests."""
 
-        if not self.database_path.exists():
+        if not self._database_exists():
             raise V2ProjectNotFoundError(project_id)
-        with self._lock, self._connection() as connection:
+        with self._lock, self._connection_scope(read_only=True) as connection:
             self._reject_legacy_if_present(connection, project_id)
             row = self._read_v2_row(connection, project_id)
             if row is None:
                 raise V2ProjectNotFoundError(project_id)
             return bytes(row[1])
 
-    def _connection(self) -> sqlite3.Connection:
+    def _connection(self, *, read_only: bool = False) -> sqlite3.Connection:
         connection: sqlite3.Connection | None = None
         try:
-            connection = sqlite3.connect(
-                self.database_path,
-                timeout=5.0,
-                isolation_level=None,
-            )
+            if read_only:
+                connection = sqlite3.connect(
+                    f"{self.database_path.absolute().as_uri()}?mode=ro",
+                    uri=True,
+                    timeout=5.0,
+                    isolation_level=None,
+                )
+            else:
+                connection = sqlite3.connect(
+                    self.database_path,
+                    timeout=5.0,
+                    isolation_level=None,
+                )
             connection.execute("PRAGMA busy_timeout=5000")
+            if read_only:
+                connection.execute("BEGIN")
             return connection
         except (OSError, sqlite3.Error) as error:
             if connection is not None:
                 try:
                     connection.close()
-                except sqlite3.Error:
+                except (OSError, sqlite3.Error):
                     pass
-            raise V2ContractError(
-                code="V2_STORAGE_ERROR",
+            raise _storage_error(
+                error,
                 path="database_path",
                 expected="an accessible SQLite database path",
-                actual=type(error).__name__,
-                retryable=True,
-                next_actions=("Retry the project operation.",),
                 message="the V2 SQLite database could not be opened",
             ) from error
 
+    @contextmanager
+    def _connection_scope(
+        self, *, read_only: bool = False
+    ) -> Iterator[sqlite3.Connection]:
+        connection = self._connection(read_only=read_only)
+        had_error = False
+        try:
+            try:
+                yield connection
+            except (OSError, sqlite3.Error) as error:
+                had_error = True
+                raise _storage_error(
+                    error,
+                    path="database_path",
+                    expected="a readable SQLite database connection",
+                    message="the V2 SQLite database operation failed",
+                ) from error
+            except BaseException:
+                had_error = True
+                raise
+        finally:
+            if read_only:
+                _rollback_safely(connection)
+            try:
+                connection.close()
+            except (OSError, sqlite3.Error) as error:
+                if not had_error:
+                    raise _storage_error(
+                        error,
+                        path="database_path",
+                        expected="a closable SQLite database connection",
+                        message="the V2 SQLite database could not be closed",
+                    ) from error
+
+    def _reject_legacy_before_write(self, project_id: str) -> None:
+        if not self._database_exists():
+            return
+        with self._lock, self._connection_scope(read_only=True) as connection:
+            self._reject_legacy_if_present(connection, project_id)
+
+    def _database_exists(self) -> bool:
+        try:
+            return self.database_path.exists()
+        except OSError as error:
+            raise _storage_error(
+                error,
+                path="database_path",
+                expected="an accessible SQLite database path",
+                message="the V2 SQLite database path could not be inspected",
+            ) from error
+
     def _table_exists(self, connection: sqlite3.Connection) -> bool:
-        row = connection.execute(
-            """
-            SELECT 1 FROM sqlite_master
-            WHERE type = 'table' AND name = ?
-            """,
-            (_TABLE_NAME,),
-        ).fetchone()
+        try:
+            row = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = ?
+                """,
+                (_TABLE_NAME,),
+            ).fetchone()
+        except (OSError, sqlite3.Error) as error:
+            raise _storage_error(
+                error,
+                path="database_path",
+                expected="readable SQLite schema metadata",
+                message="the V2 SQLite schema could not be inspected",
+            ) from error
         return row is not None
 
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
@@ -460,29 +569,30 @@ class V2ProjectStore:
                 """,
                 (V2_STORE_NAMESPACE, project_id),
             ).fetchone()
-        except sqlite3.Error as error:
-            raise V2ContractError(
-                code="V2_STORAGE_ERROR",
+        except (OSError, sqlite3.Error) as error:
+            raise _storage_error(
+                error,
                 path="project_id",
                 expected="a readable V2 project row",
-                actual=str(error),
-                retryable=True,
-                next_actions=("Repair or reopen the SQLite project store.",),
                 message="the V2 project row could not be read",
             ) from error
         if row is None:
             return None
-        return int(row[0]), bytes(row[1]), str(row[2])
+        return self._coerce_row_values(
+            row,
+            path="project_row",
+            expected="generation INTEGER, snapshot_json BLOB, snapshot_sha256 TEXT",
+        )
 
     def _legacy_row(
         self, connection: sqlite3.Connection, project_id: str
     ) -> tuple[int, bytes, str] | None:
-        row = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'"
-        ).fetchone()
-        if row is None:
-            return None
         try:
+            row = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'"
+            ).fetchone()
+            if row is None:
+                return None
             legacy = connection.execute(
                 """
                 SELECT generation, snapshot_json, snapshot_sha256
@@ -490,19 +600,47 @@ class V2ProjectStore:
                 """,
                 (project_id,),
             ).fetchone()
-        except sqlite3.Error as error:
-            raise V2ContractError(
-                code="V2_STORAGE_ERROR",
+        except (OSError, sqlite3.Error) as error:
+            raise _storage_error(
+                error,
                 path="project_id",
                 expected="a readable legacy project row",
-                actual=str(error),
-                retryable=True,
-                next_actions=("Repair or reopen the SQLite project store.",),
                 message="the legacy project row could not be inspected",
             ) from error
         if legacy is None:
             return None
-        return int(legacy[0]), bytes(legacy[1]), str(legacy[2])
+        return self._coerce_row_values(
+            legacy,
+            path="legacy_project_row",
+            expected="generation INTEGER, snapshot_json BLOB, snapshot_sha256 TEXT",
+        )
+
+    @staticmethod
+    def _coerce_row_values(
+        row: tuple[Any, ...], *, path: str, expected: str
+    ) -> tuple[int, bytes, str]:
+        try:
+            generation, payload, digest = row
+            if not isinstance(generation, int) or isinstance(generation, bool):
+                raise TypeError("generation is not an integer")
+            if not isinstance(payload, (bytes, bytearray, memoryview)):
+                raise TypeError("snapshot_json is not a byte sequence")
+            if not isinstance(digest, str):
+                raise TypeError("snapshot_sha256 is not text")
+            return generation, bytes(payload), digest
+        except (
+            IndexError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            UnicodeError,
+        ) as error:
+            raise V2ValidationError(
+                path=path,
+                expected=expected,
+                actual=type(error).__name__,
+                message="the persisted SQLite project row has invalid column types",
+            ) from error
 
     def _reject_legacy_if_present(
         self, connection: sqlite3.Connection, project_id: str
