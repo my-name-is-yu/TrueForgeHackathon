@@ -573,6 +573,15 @@ describe("mountCharacterRobotStudio", () => {
     await vi.waitFor(() => expect(document.querySelector(".crs-manifest")).not.toBeNull());
 
     current = structuredClone(current);
+    current.draft!.draftHash = "e".repeat(64);
+    current.draft!.specHash = "f".repeat(64);
+    await studio.refresh();
+    expect(document.querySelector(".crs-manifest")).toBeNull();
+    expect(document.querySelector(".crs-artifact")).toBeNull();
+
+    current = context();
+    await studio.refresh();
+    current = structuredClone(current);
     current.headSpecSha256 = "a".repeat(64);
     await studio.refresh();
     expect(document.querySelector(".crs-manifest")).toBeNull();

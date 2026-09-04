@@ -1059,7 +1059,7 @@ export async function mountCharacterRobotStudio(
     const buildButton = query<HTMLButtonElement>("#crs-prepare-pack");
     buildButton.disabled = !nextContext.headRevisionId || !nextContext.headSpecSha256;
     updateInspectionButton();
-    if (preparedForBuildPackTarget !== buildPackDisplayTargetKey(nextContext)) {
+    if (targetChanged || preparedForBuildPackTarget !== buildPackDisplayTargetKey(nextContext)) {
       preparedForBuildPackTarget = null;
       query<HTMLElement>("#crs-artifacts").replaceChildren();
       query<HTMLElement>("#crs-build-copy").textContent = nextContext.headRevisionId

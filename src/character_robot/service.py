@@ -324,7 +324,13 @@ class CharacterRobotService:
                 snapshot = self.project_store.load_project(self.project_id)
         self._hydrate(snapshot)
 
-    def _hydrate(self, snapshot: ProjectSnapshot) -> None:
+    def _hydrate(
+        self,
+        snapshot: ProjectSnapshot,
+        *,
+        display_pins: Sequence[str] = (),
+        compile_pins: Sequence[str] = (),
+    ) -> None:
         self._persisted_snapshot = snapshot
         self._project_generation = snapshot.generation
         self._head_revision_id = snapshot.head_revision_id
@@ -352,7 +358,9 @@ class CharacterRobotService:
                 descriptor
                 for manifest in self._artifact_manifests
                 for descriptor in manifest.artifacts
-            ]
+            ],
+            display_pins=display_pins,
+            compile_pins=compile_pins,
         )
 
     def _snapshot(self) -> ProjectSnapshot:
@@ -382,13 +390,19 @@ class CharacterRobotService:
         if self.project_store is None:
             self._project_generation += 1
             return
+        display_pins = self._artifacts.display_pins
+        compile_pins = self._artifacts.compile_pins
         try:
             saved = self.project_store.save_project(
                 self._snapshot(), expected_generation=self._project_generation
             )
         except ProjectConflictError:
             try:
-                self._hydrate(self.project_store.load_project(self.project_id))
+                self._hydrate_preserving_artifact_pins(
+                    self.project_store.load_project(self.project_id),
+                    display_pins=display_pins,
+                    compile_pins=compile_pins,
+                )
             except ProjectStoreError:
                 pass
             raise self._error(
@@ -401,7 +415,11 @@ class CharacterRobotService:
             ) from None
         except ProjectStoreError:
             if self._persisted_snapshot is not None:
-                self._hydrate(self._persisted_snapshot)
+                self._hydrate_preserving_artifact_pins(
+                    self._persisted_snapshot,
+                    display_pins=display_pins,
+                    compile_pins=compile_pins,
+                )
             raise self._error(
                 request_id,
                 "PROJECT_STORAGE_FAILED",
@@ -412,6 +430,30 @@ class CharacterRobotService:
             ) from None
         self._project_generation = saved.generation
         self._persisted_snapshot = saved
+
+    def _hydrate_preserving_artifact_pins(
+        self,
+        snapshot: ProjectSnapshot,
+        *,
+        display_pins: frozenset[str],
+        compile_pins: frozenset[str],
+    ) -> None:
+        try:
+            self._hydrate(
+                snapshot,
+                display_pins=display_pins,
+                compile_pins=compile_pins,
+            )
+        finally:
+            # A rollback rebuilds the index from durable manifests and normally
+            # clears all transient pins. Reapply only descriptors that survived
+            # that rebuild so a failed candidate cannot leave a dangling pin.
+            self._artifacts.replace_compile_pins(
+                tuple(digest for digest in compile_pins if digest in self._artifacts)
+            )
+            self._artifacts.replace_display_pins(
+                tuple(digest for digest in display_pins if digest in self._artifacts)
+            )
 
     def artifact_bytes(self, sha256: str) -> bytes:
         """Return an artifact to a human-authorized transport outside WebMCP."""
@@ -450,6 +492,11 @@ class CharacterRobotService:
                 404,
                 "Regenerate the preview or build manifest and use its current digest.",
             ) from None
+
+    def release_displayed_build_pack(self) -> None:
+        """Release the currently displayed Build Pack artifact lifetime."""
+
+        self._artifacts.release_display_pins()
 
     def restore_portable_project(
         self,
@@ -606,9 +653,15 @@ class CharacterRobotService:
             # design constraint rejects the candidate.
             self._persist(request_id)
             self._require_within_maximum_dimensions(value.spec, compiled, request_id)
-            self._draft = self._make_draft(value.spec)
+            next_draft = self._make_draft(value.spec)
+            release_display_pins = (
+                self._draft is None or self._draft.draft_hash != next_draft.draft_hash
+            )
+            self._draft = next_draft
             self._latest_validation = None
             self._persist(request_id)
+            if release_display_pins:
+                self.release_displayed_build_pack()
             return SetDesignDraftOutput(
                 **self._draft_output(
                     self._draft,
@@ -669,9 +722,13 @@ class CharacterRobotService:
             compiled = await self._compile(candidate, request_id)
             self._persist(request_id)
             self._require_within_maximum_dimensions(candidate, compiled, request_id)
-            self._draft = self._make_draft(candidate)
+            next_draft = self._make_draft(candidate)
+            release_display_pins = next_draft.draft_hash != draft.draft_hash
+            self._draft = next_draft
             self._latest_validation = None
             self._persist(request_id)
+            if release_display_pins:
+                self.release_displayed_build_pack()
             return ReviseDesignDraftOutput(
                 **self._draft_output(
                     self._draft,
@@ -846,6 +903,7 @@ class CharacterRobotService:
                 draft_hash=self._draft.draft_hash,
             )
             self._persist(request_id)
+            self.release_displayed_build_pack()
             return result
 
     async def validate_selection(self, value: StudioSelectionInput) -> None:
@@ -1154,6 +1212,59 @@ class CharacterRobotService:
                     )
                 else:
                     artifacts.append(archive)
+            unique_display_descriptors = {
+                artifact.descriptor.sha256: artifact.descriptor
+                for artifact in artifacts
+            }
+            display_bytes = sum(
+                descriptor.byte_size
+                for descriptor in unique_display_descriptors.values()
+            )
+            display_count = len(unique_display_descriptors)
+            if display_bytes > self._artifacts.maximum_bytes:
+                capacity_issue = ValidationIssue(
+                    code="build_pack_artifacts_too_large",
+                    severity="error",
+                    path="build_pack",
+                    message="The unique Build Pack artifacts exceed this session's artifact budget.",
+                    measured_value=float(display_bytes),
+                    limit_value=float(self._artifacts.maximum_bytes),
+                    suggestion="Reduce the generated artifacts or use a future streaming artifact store.",
+                )
+            elif display_count > self._artifacts.maximum_artifacts:
+                capacity_issue = ValidationIssue(
+                    code="build_pack_artifacts_too_many",
+                    severity="error",
+                    path="build_pack",
+                    message="The unique Build Pack artifacts exceed this session's artifact count budget.",
+                    measured_value=float(display_count),
+                    limit_value=float(self._artifacts.maximum_artifacts),
+                    suggestion="Reduce the generated artifact set or use a future streaming artifact store.",
+                )
+            else:
+                capacity_issue = None
+            if capacity_issue is not None:
+                self._record_run(
+                    kind="build_pack",
+                    spec=revision.spec,
+                    started=pack_started,
+                    cache_hit=False,
+                    cad_engine_version=compiled.cad_engine_version,
+                    simulation_engine_version=(
+                        simulation.engine_version if simulation is not None else None
+                    ),
+                    error_codes=[capacity_issue.code],
+                )
+                result = PrepareBuildPackOutput(
+                    schema_version=SCHEMA_VERSION,
+                    request_id=request_id,
+                    status="blocked",
+                    manifest=None,
+                    blockers=[capacity_issue],
+                    next_action="Reduce the exact artifact set before preparing another Build Pack.",
+                )
+                self._persist(request_id)
+                return result
             manifest_payload = {
                 "revision_id": revision.summary.revision_id,
                 "spec_hash": revision.summary.spec_hash,
@@ -1217,8 +1328,19 @@ class CharacterRobotService:
                 )
                 self._persist(request_id)
                 return result
-            for artifact in artifacts:
-                self._store_artifact(artifact, request_id)
+            display_digests = tuple(unique_display_descriptors)
+            previous_display_pins = self._artifacts.display_pins
+            # Each display set is bounded above by the preflighted pack.  The
+            # old and candidate sets may overlap only during this transition.
+            # Keep the prior displayed pack protected until this candidate has
+            # been stored completely; failed retries must not strand its links.
+            self._artifacts.reserve_display_pins(display_digests)
+            try:
+                for artifact in artifacts:
+                    self._store_artifact(artifact, request_id)
+            except Exception:
+                self._artifacts.replace_display_pins(tuple(previous_display_pins))
+                raise
             if is_new_manifest:
                 self._artifact_manifests.append(manifest)
             maker_blocker_codes = list(maker_pack.blockers)
@@ -1277,7 +1399,12 @@ class CharacterRobotService:
                     )
                 ),
             )
-            self._persist(request_id)
+            try:
+                self._persist(request_id)
+            except Exception:
+                self._artifacts.replace_display_pins(tuple(previous_display_pins))
+                raise
+            self._artifacts.replace_display_pins(display_digests)
             return result
 
     def _begin(self, name: str, value: object, expected: type[_MODEL]) -> str:
@@ -1811,6 +1938,9 @@ class CharacterRobotService:
         cache_key = _cad_cache_key(spec, profile)
         if cached := self._compile_cache.get(cache_key):
             if self._compile_artifacts_available(cached):
+                self._artifacts.replace_compile_pins(
+                    tuple(artifact.sha256 for artifact in cached.artifacts)
+                )
                 self._compile_cache.move_to_end(cache_key)
                 self._record_run(
                     kind="compile",
@@ -1904,25 +2034,63 @@ class CharacterRobotService:
             )
             self._persist(request_id)
             raise domain_error from None
-        for artifact in artifact_payloads:
-            self._store_artifact(artifact, request_id)
-        self._compile_cache[cache_key] = compiled
-        self._compile_cache.move_to_end(cache_key)
-        while len(self._compile_cache) > _MAX_COMPILE_CACHE_ENTRIES:
-            self._compile_cache.popitem(last=False)
-        self._record_run(
-            kind="compile",
-            spec=spec,
-            started=started,
-            cache_hit=False,
-            cad_engine_version=compiled.cad_engine_version,
-            warning_codes=[
-                issue.code for issue in compiled.issues if issue.severity != "error"
-            ],
-            error_codes=[
-                issue.code for issue in compiled.issues if issue.severity == "error"
-            ],
+        batch_descriptors = {
+            artifact.descriptor.sha256: artifact.descriptor
+            for artifact in artifact_payloads
+        }
+        batch_bytes = sum(
+            descriptor.byte_size for descriptor in batch_descriptors.values()
         )
+        if (
+            len(batch_descriptors) > self._artifacts.maximum_artifacts
+            or batch_bytes > self._artifacts.maximum_bytes
+        ):
+            error = self._error(
+                request_id,
+                "ARTIFACT_STORAGE_FAILED",
+                "The generated CAD batch exceeds this session's artifact budget.",
+                False,
+                500,
+                "Reduce the generated artifact set or increase the private session storage budget.",
+            )
+            self._record_run(
+                kind="compile",
+                spec=spec,
+                started=started,
+                cache_hit=False,
+                cad_engine_version=compiled.cad_engine_version,
+                error_codes=[error.code],
+            )
+            self._persist(request_id)
+            raise error
+
+        previous_compile_pins = self._artifacts.compile_pins
+        batch_digests = tuple(batch_descriptors)
+        self._artifacts.reserve_compile_pins(batch_digests)
+        try:
+            for artifact in artifact_payloads:
+                self._store_artifact(artifact, request_id)
+            self._artifacts.replace_compile_pins(batch_digests)
+            self._compile_cache[cache_key] = compiled
+            self._compile_cache.move_to_end(cache_key)
+            while len(self._compile_cache) > _MAX_COMPILE_CACHE_ENTRIES:
+                self._compile_cache.popitem(last=False)
+            self._record_run(
+                kind="compile",
+                spec=spec,
+                started=started,
+                cache_hit=False,
+                cad_engine_version=compiled.cad_engine_version,
+                warning_codes=[
+                    issue.code for issue in compiled.issues if issue.severity != "error"
+                ],
+                error_codes=[
+                    issue.code for issue in compiled.issues if issue.severity == "error"
+                ],
+            )
+        except Exception:
+            self._artifacts.replace_compile_pins(tuple(previous_compile_pins))
+            raise
         return compiled
 
     def _compile_artifacts_available(self, compiled: _CompileView) -> bool:
