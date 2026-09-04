@@ -140,7 +140,10 @@ def test_readiness_preserves_max_length_requirement_text(tmp_path: Path) -> None
     service = V2ProjectService(tmp_path / "projects.sqlite3")
     created = service.create_project("studio", requirements)
     result = service.write_project("studio", created.active_target_token)
-    expected = f"requirements: {question}"[:SAFE_TEXT_MAX_LENGTH]
+    prefix = "requirements: "
+    suffix = " [1/1]"
+    head_length = SAFE_TEXT_MAX_LENGTH - len(prefix) - len(suffix)
+    expected = f"{prefix}{question[:head_length]}{suffix}"
     assert result.blockers[0] == expected
 
 
@@ -169,6 +172,94 @@ def test_identical_max_length_blockers_keep_domain_identity_and_persist(
     assert result.blockers[0] != result.blockers[1]
     assert all(len(blocker) <= SAFE_TEXT_MAX_LENGTH for blocker in result.blockers)
     assert service.get_project_state("studio") == result.state
+
+
+def test_same_domain_long_blockers_keep_ordinal_and_persist(tmp_path: Path) -> None:
+    first = "x" * (SAFE_TEXT_MAX_LENGTH - 1) + "a"
+    second = "x" * (SAFE_TEXT_MAX_LENGTH - 1) + "b"
+    service = V2ProjectService(tmp_path / "projects.sqlite3")
+    created = service.create_project("studio", _requirements())
+
+    result = service.write_project(
+        "studio",
+        created.active_target_token,
+        update={
+            "domains": [
+                {
+                    "domain_id": "visual_design",
+                    "blockers": [first, second],
+                }
+            ]
+        },
+    )
+
+    visual_blockers = result.blockers[:2]
+    assert visual_blockers[0].startswith("visual_design: ")
+    assert visual_blockers[1].startswith("visual_design: ")
+    assert visual_blockers[0].endswith("[1/2]")
+    assert visual_blockers[1].endswith("[2/2]")
+    assert visual_blockers[0] != visual_blockers[1]
+    assert all(len(blocker) <= SAFE_TEXT_MAX_LENGTH for blocker in visual_blockers)
+    assert service.get_project_state("studio") == result.state
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"original_request": "bad\ud800text"},
+        {"environment": {"description": "bad\ud800text", "indoor_only": True}},
+    ],
+)
+def test_surrogate_codepoints_are_rejected_at_text_boundaries(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        _requirements(**changes)
+
+
+def test_normal_unicode_text_is_accepted(tmp_path: Path) -> None:
+    requirements = _requirements(
+        original_request="屋内で挨拶するペンギン型ロボット",
+        environment={"description": "屋内の机上", "indoor_only": True},
+    )
+    service = V2ProjectService(tmp_path / "projects.sqlite3")
+    created = service.create_project("studio", requirements)
+    assert service.get_project_state("studio") == created
+
+
+def test_surrogate_create_write_and_import_are_structured_and_read_only(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "projects.sqlite3"
+    service = V2ProjectService(database)
+    invalid_requirements = _requirements().model_dump(mode="python")
+    invalid_requirements["original_request"] = "bad\ud800"
+    with pytest.raises(V2ValidationError):
+        service.create_project("studio", invalid_requirements)
+    assert not database.exists()
+
+    created = service.create_project("studio", _requirements())
+    before = database.read_bytes()
+    with pytest.raises(V2ValidationError):
+        service.write_project(
+            "studio",
+            created.active_target_token,
+            update={
+                "requirements": {
+                    **created.spec.requirements.model_dump(mode="python"),
+                    "original_request": "bad\ud800",
+                }
+            },
+        )
+    assert database.read_bytes() == before
+    assert service.get_project_state("studio") == created
+
+    payload = created.model_dump(mode="python")
+    payload["spec"]["requirements"]["original_request"] = "bad\ud800"
+    import_store = V2ProjectStore(tmp_path / "import.sqlite3")
+    with pytest.raises(V2ValidationError):
+        import_store.import_payload(payload)
+    assert not (tmp_path / "import.sqlite3").exists()
 
 
 def test_database_open_failure_is_a_retryable_structured_error(tmp_path: Path) -> None:

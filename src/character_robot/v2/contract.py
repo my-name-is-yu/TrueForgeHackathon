@@ -13,6 +13,7 @@ from typing import Annotated, Literal, Self, TypeAlias
 
 from pydantic import (
     AllowInfNan,
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -46,6 +47,13 @@ READINESS_STATES: tuple[str, ...] = ("missing", "dirty", "blocked", "checked")
 _MAX_TEXT_COLLECTION_ITEMS = 128
 _MAX_READINESS_OUTPUT_ITEMS = len(READINESS_DOMAINS) * _MAX_TEXT_COLLECTION_ITEMS
 
+
+def _reject_unicode_surrogates(value: str) -> str:
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+        raise ValueError("text must not contain Unicode surrogate code points")
+    return value
+
+
 SafeText: TypeAlias = Annotated[
     str,
     StringConstraints(
@@ -54,6 +62,7 @@ SafeText: TypeAlias = Annotated[
         min_length=1,
         max_length=SAFE_TEXT_MAX_LENGTH,
     ),
+    AfterValidator(_reject_unicode_surrogates),
 ]
 ShortText: TypeAlias = Annotated[
     str,
@@ -63,6 +72,7 @@ ShortText: TypeAlias = Annotated[
         min_length=1,
         max_length=240,
     ),
+    AfterValidator(_reject_unicode_surrogates),
 ]
 SafeIdentifier: TypeAlias = Annotated[
     str,
@@ -73,6 +83,7 @@ SafeIdentifier: TypeAlias = Annotated[
         max_length=96,
         pattern=r"^[a-z][a-z0-9_-]*$",
     ),
+    AfterValidator(_reject_unicode_surrogates),
 ]
 Sha256: TypeAlias = Annotated[
     str,
@@ -82,6 +93,7 @@ Sha256: TypeAlias = Annotated[
         max_length=64,
         pattern=r"^[0-9a-f]{64}$",
     ),
+    AfterValidator(_reject_unicode_surrogates),
 ]
 FiniteFloat: TypeAlias = Annotated[float, Strict(), AllowInfNan(False)]
 

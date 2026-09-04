@@ -183,10 +183,16 @@ class V2ProjectService:
         for domain in readiness.domains:
             if domain.state == "blocked":
                 prefix = f"{domain.domain_id}: "
-                for blocker in domain.blockers:
-                    # Keep the domain identity even when the source text
-                    # already consumes the complete bounded output budget.
-                    blockers.append(f"{prefix}{blocker}"[:SAFE_TEXT_MAX_LENGTH])
+                blocker_count = len(domain.blockers)
+                for index, blocker in enumerate(domain.blockers, start=1):
+                    message = f"{prefix}{blocker}"
+                    if len(message) > SAFE_TEXT_MAX_LENGTH:
+                        # Keep the domain identity and a stable ordinal when
+                        # truncation could otherwise collapse two blockers.
+                        suffix = f" [{index}/{blocker_count}]"
+                        head_length = SAFE_TEXT_MAX_LENGTH - len(prefix) - len(suffix)
+                        message = f"{prefix}{blocker[:head_length]}{suffix}"
+                    blockers.append(message)
                 if not domain.blockers:
                     blockers.append(f"{domain.domain_id}: blocked")
                 actions.append(f"Resolve blockers in {domain.domain_id}.")
