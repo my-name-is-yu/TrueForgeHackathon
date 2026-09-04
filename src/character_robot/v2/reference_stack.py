@@ -718,6 +718,12 @@ class ReferenceStackSnapshot(V2Model):
             for input_ref, selection_id in zip(
                 calculation.inputs, calculation.input_selection_ids, strict=True
             ):
+                if calculation.operation in {"sum_quantity_weighted", "ratio"} and (
+                    not input_ref.fact_key.endswith("_a")
+                ):
+                    raise ValueError(
+                        "current calculations must use current/rating facts"
+                    )
                 entry = entries.get(input_ref.entry_id)
                 if entry is None:
                     raise ValueError("calculation references unknown catalog entry")

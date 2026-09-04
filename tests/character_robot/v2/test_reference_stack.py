@@ -163,6 +163,11 @@ def test_tampered_published_calculation_value_is_rejected() -> None:
     with pytest.raises(ValidationError, match="calculation value"):
         ReferenceStackSnapshot.model_validate(payload)
 
+    payload = REFERENCE_STACK.model_dump(mode="json")
+    payload["calculations"][0]["inputs"][0]["fact_key"] = "operating_voltage_nominal_v"
+    with pytest.raises(ValidationError, match="current/rating facts"):
+        ReferenceStackSnapshot.model_validate(payload)
+
 
 @pytest.mark.parametrize(
     ("collection", "match"),
