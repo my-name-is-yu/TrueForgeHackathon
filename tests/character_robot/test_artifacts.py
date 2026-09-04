@@ -66,6 +66,73 @@ def test_session_artifacts_drop_corrupt_payload_on_read(tmp_path) -> None:
     assert descriptor.sha256 not in store
 
 
+def test_session_artifact_download_pin_survives_budget_eviction(tmp_path) -> None:
+    store = SessionArtifactStore(tmp_path, maximum_artifacts=1, maximum_bytes=4)
+    first = _artifact(b"1111", name="first.glb")
+    second = _artifact(b"2222", name="second.glb")
+    store.put(first, b"1111")
+
+    download = store.prepare_download(first.sha256)
+    try:
+        store.put(second, b"2222")
+        assert first.sha256 in store
+        assert second.sha256 in store
+        assert store._eviction_pending is True
+        assert download.source.read() == b"1111"
+    finally:
+        download.close()
+
+    assert first.sha256 not in store
+    assert second.sha256 in store
+    assert store.read(second.sha256)[0] == b"2222"
+    assert store._eviction_pending is False
+
+
+def test_session_artifact_download_defers_drop_until_close(tmp_path) -> None:
+    store = SessionArtifactStore(tmp_path)
+    descriptor = _artifact(b"pinned")
+    store.put(descriptor, b"pinned")
+    download = store.prepare_download(descriptor.sha256)
+
+    try:
+        store._drop(descriptor.sha256)
+        assert descriptor.sha256 in store
+        assert store.objects.path_for(descriptor.sha256).is_file()
+    finally:
+        download.close()
+
+    assert descriptor.sha256 not in store
+    assert not store.objects.path_for(descriptor.sha256).exists()
+
+
+def test_session_artifact_download_rejects_corrupt_payload_without_a_pin(
+    tmp_path,
+) -> None:
+    store = SessionArtifactStore(tmp_path)
+    descriptor = _artifact(b"correct")
+    store.put(descriptor, b"correct")
+    store.objects.path_for(descriptor.sha256).write_bytes(b"corrupt")
+
+    with pytest.raises(ArtifactStoreError, match="integrity"):
+        store.prepare_download(descriptor.sha256)
+
+    assert descriptor.sha256 not in store
+    assert not store._download_pins
+
+
+def test_session_artifacts_reject_payload_larger_than_budget_before_storage(
+    tmp_path,
+) -> None:
+    store = SessionArtifactStore(tmp_path, maximum_bytes=3)
+    descriptor = _artifact(b"1234")
+
+    with pytest.raises(ArtifactStoreError, match="byte budget"):
+        store.put(descriptor, b"1234")
+
+    assert descriptor.sha256 not in store
+    assert not store.objects.path_for(descriptor.sha256).exists()
+
+
 def test_restore_replaces_the_descriptor_index_and_deletes_unindexed_objects(
     tmp_path,
 ) -> None:
