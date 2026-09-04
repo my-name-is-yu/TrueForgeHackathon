@@ -1169,23 +1169,31 @@ def _operating_voltage_interval(
 ) -> tuple[float, float] | None:
     """Return the documented operating interval, expanding a nominal-only point."""
 
-    voltage_fact_keys = (
-        "operating_voltage_min_v",
-        "operating_voltage_nominal_v",
-        "operating_voltage_max_v",
-    )
+    minimum_fact = entry.fact("operating_voltage_min_v")
+    nominal_fact = entry.fact("operating_voltage_nominal_v")
+    maximum_fact = entry.fact("operating_voltage_max_v")
     if any(
-        (fact := entry.fact(fact_key)) is not None and fact.state != "known"
-        for fact_key in voltage_fact_keys
+        fact is not None and fact.state != "known"
+        for fact in (minimum_fact, maximum_fact)
     ):
         return None
-    minimum = entry.numeric("operating_voltage_min_v")
-    nominal = entry.numeric("operating_voltage_nominal_v")
-    maximum = entry.numeric("operating_voltage_max_v")
-    if minimum is None and nominal is not None:
-        minimum = nominal
-    if maximum is None and nominal is not None:
-        maximum = nominal
+    # Nominal fills only an absent endpoint. A non-known endpoint must not be
+    # hidden by nominal, while a non-known nominal does not poison known bounds.
+    nominal = (
+        entry.numeric("operating_voltage_nominal_v")
+        if nominal_fact is not None and nominal_fact.state == "known"
+        else None
+    )
+    minimum = (
+        entry.numeric("operating_voltage_min_v")
+        if minimum_fact is not None
+        else nominal
+    )
+    maximum = (
+        entry.numeric("operating_voltage_max_v")
+        if maximum_fact is not None
+        else nominal
+    )
     if minimum is None or maximum is None:
         return None
     return minimum, maximum

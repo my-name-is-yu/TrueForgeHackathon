@@ -435,6 +435,30 @@ def test_voltage_query_requires_documented_interval_to_cover_requested_bounds() 
     ] == ["wide-voltage"]
 
 
+def test_voltage_query_uses_known_endpoints_when_nominal_is_unknown() -> None:
+    source = _source()
+    endpoints_only = _entry(
+        source,
+        entry_id="endpoints-only-voltage",
+        facts=(
+            _numeric_fact(source, "operating_voltage_min_v", 9.0),
+            CatalogFact(
+                fact_key="operating_voltage_nominal_v",
+                unknown_reason="UNKNOWN_OFFICIAL_FACT",
+            ),
+            _numeric_fact(source, "operating_voltage_max_v", 24.0),
+        ),
+    )
+    catalog = _snapshot(source, endpoints_only)
+
+    result = query_catalog(
+        catalog, CatalogQuery(min_voltage_v=10.0, max_voltage_v=20.0)
+    )
+    assert [match.entry.entry_id for match in result.matches] == [
+        "endpoints-only-voltage"
+    ]
+
+
 def test_generic_rating_queries_apply_bounds_to_all_known_ratings() -> None:
     source = _source()
     motor = _entry(
