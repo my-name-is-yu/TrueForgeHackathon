@@ -32,7 +32,9 @@ physical_verification_pending=true
 
 Unknown, conflict, assumption, and derived-only facts remain blockers. A
 planning assumption is never copied into a `CatalogFact` as a manufacturer
-claim.
+claim. `active=false` is reserved for the off-robot charger and unused
+regulator fallback; every controller or actuator-topology selection must stay
+active and the snapshot validator enforces that boundary.
 
 ## Selected identities
 
